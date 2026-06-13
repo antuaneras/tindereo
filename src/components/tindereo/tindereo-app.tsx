@@ -11,6 +11,7 @@ import {
   Heart,
   Instagram,
   MapPin,
+  RefreshCw,
   Search,
   Send,
   Settings,
@@ -209,6 +210,11 @@ export function TindereoApp() {
   }
 
   function startDemoMode() {
+    applyState(buildDemoState());
+  }
+
+  function refreshDemoDeck() {
+    if (currentUser?.id !== DEMO_USER.id) return;
     applyState(buildDemoState());
   }
 
@@ -441,6 +447,8 @@ export function TindereoApp() {
             candidates={availableCards}
             onSwipe={handleSwipe}
             onNavigate={setScreen}
+            isDemoMode={currentUser.id === DEMO_USER.id}
+            onRefreshDemo={refreshDemoDeck}
           />
         ) : null;
       case "match":
@@ -1156,12 +1164,16 @@ function SwipeHomeScreen({
   currentUser,
   candidates,
   onSwipe,
-  onNavigate
+  onNavigate,
+  isDemoMode,
+  onRefreshDemo
 }: {
   currentUser: UserProfile;
   candidates: UserProfile[];
   onSwipe: (user: UserProfile, direction: SwipeDirection) => void;
   onNavigate: (screen: Screen) => void;
+  isDemoMode: boolean;
+  onRefreshDemo: () => void;
 }) {
   const topCandidate = candidates[0] ?? null;
   const gestureHints = [
@@ -1199,6 +1211,15 @@ function SwipeHomeScreen({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {isDemoMode ? (
+              <button
+                onClick={onRefreshDemo}
+                className="flex h-10 items-center gap-2 rounded-full border border-[#EDE8E0] bg-white px-3 text-xs font-semibold text-[#7A7068] shadow-sm"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                <span>Refrescar</span>
+              </button>
+            ) : null}
             <button className="flex h-10 w-10 items-center justify-center rounded-full border border-[#EDE8E0] bg-white shadow-sm">
               <Filter className="h-4 w-4 text-[#7A7068]" />
             </button>
@@ -1254,6 +1275,14 @@ function SwipeHomeScreen({
               >
                 Ver mis chats
               </button>
+              {isDemoMode ? (
+                <button
+                  onClick={onRefreshDemo}
+                  className="mt-3 rounded-2xl border border-[#EDE8E0] bg-white px-4 py-3 text-sm font-semibold text-[#7A7068]"
+                >
+                  Recargar personas demo
+                </button>
+              ) : null}
             </div>
           ) : (
             candidates
@@ -2336,26 +2365,29 @@ function BottomNav({
   ];
 
   return (
-    <div className="border-t border-[#EDE8E0] bg-white/95 backdrop-blur">
-      <div className="flex items-center justify-around px-2 py-3">
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => onNavigate(tab.id)}
-            className="flex min-w-[52px] flex-col items-center gap-1 py-1"
-          >
-            <span className="text-xl">{tab.icon}</span>
-            <span
-              className={`text-[10px] font-semibold ${
-                active === tab.id ? "text-[#FF5A5F]" : "text-[#B8AFA4]"
-              }`}
+    <>
+      <div className="h-[86px] md:hidden" />
+      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-[#EDE8E0] bg-white/95 backdrop-blur md:static">
+        <div className="mx-auto flex w-full max-w-[430px] items-center justify-around px-2 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] pt-3 md:max-w-none md:pb-3">
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => onNavigate(tab.id)}
+              className="flex min-w-[52px] flex-col items-center gap-1 py-1"
             >
-              {tab.label}
-            </span>
-            {active === tab.id ? <span className="h-1 w-1 rounded-full bg-[#FF5A5F]" /> : null}
-          </button>
-        ))}
+              <span className="text-xl">{tab.icon}</span>
+              <span
+                className={`text-[10px] font-semibold ${
+                  active === tab.id ? "text-[#FF5A5F]" : "text-[#B8AFA4]"
+                }`}
+              >
+                {tab.label}
+              </span>
+              {active === tab.id ? <span className="h-1 w-1 rounded-full bg-[#FF5A5F]" /> : null}
+            </button>
+          ))}
+        </div>
       </div>
-    </div>
+    </>
   );
 }
