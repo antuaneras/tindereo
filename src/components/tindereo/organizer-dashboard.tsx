@@ -159,14 +159,23 @@ export function OrganizerDashboard({
 
         <div className="flex min-h-screen flex-1 flex-col">
           <header className="sticky top-0 z-20 border-b border-[#EDE8E0] bg-white/95 px-5 py-4 backdrop-blur lg:px-8">
-            <div className="flex items-center justify-between gap-4">
-              <div>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start justify-between gap-3">
+                <div>
                 <h1 className="text-xl font-extrabold">Control del evento</h1>
                 <p className="text-sm text-[#B8AFA4]">
                   {EVENT_INFO.name} · Actualizado en esta demo local
                 </p>
+                </div>
+                <button
+                  onClick={onExit}
+                  className="flex items-center gap-2 rounded-2xl border border-[#EDE8E0] bg-[#FAF7F3] px-3 py-2 text-sm font-semibold text-[#7A7068] lg:hidden"
+                >
+                  <LogOut className="h-4 w-4" />
+                  <span>Salir</span>
+                </button>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center justify-end gap-2">
                 <button className="hidden items-center gap-2 rounded-2xl border border-[#EDE8E0] px-4 py-2 text-sm font-semibold text-[#7A7068] sm:flex">
                   <RefreshCw className="h-4 w-4" />
                   <span>Refrescar</span>
