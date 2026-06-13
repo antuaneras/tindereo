@@ -529,8 +529,8 @@ export function TindereoApp() {
   }
 
   return (
-    <div className="min-h-screen px-4 py-4 md:px-6 lg:px-10">
-      <div className="mx-auto flex min-h-[calc(100vh-2rem)] max-w-7xl items-center gap-8">
+    <div className="min-h-[100dvh] md:px-6 md:py-4 lg:px-10">
+      <div className="mx-auto flex min-h-[100dvh] max-w-7xl items-stretch gap-8 md:min-h-[calc(100dvh-2rem)] md:items-center">
         <aside className="hidden w-[360px] shrink-0 space-y-5 text-white lg:block">
           <div className="rounded-[36px] border border-white/10 bg-white/5 p-7 shadow-[0_30px_80px_rgba(0,0,0,0.35)] backdrop-blur">
             <div className="mb-5 inline-flex items-center gap-3 rounded-full border border-white/10 bg-white/10 px-4 py-2">
@@ -600,8 +600,8 @@ export function TindereoApp() {
         </aside>
 
         <div className="flex flex-1 justify-center">
-          <div className="w-full max-w-[430px]">
-            <div className="relative overflow-hidden bg-[#111111] shadow-[0_40px_120px_rgba(0,0,0,0.55)] md:rounded-[42px] md:border-[8px] md:border-[#2A231E]">
+          <div className="w-full md:max-w-[430px]">
+            <div className="relative min-h-[100dvh] overflow-hidden bg-[#111111] shadow-none md:min-h-0 md:rounded-[42px] md:border-[8px] md:border-[#2A231E] md:shadow-[0_40px_120px_rgba(0,0,0,0.55)]">
               {renderScreen()}
             </div>
           </div>
@@ -657,7 +657,7 @@ function QRLandingScreen({
   const [error, setError] = useState("");
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-[#111111]">
+    <div className="relative min-h-[100dvh] overflow-hidden bg-[#111111]">
       <div className="absolute inset-0">
         <img
           src="https://images.unsplash.com/photo-1506157786151-b8491531f063?w=900&h=1400&fit=crop&auto=format"
@@ -667,7 +667,7 @@ function QRLandingScreen({
         <div className="absolute inset-0 bg-gradient-to-b from-black/35 via-[#111111]/70 to-[#111111]" />
       </div>
 
-      <div className="relative z-10 flex min-h-screen flex-col justify-between px-6 pb-10 pt-12">
+      <div className="relative z-10 flex min-h-[100dvh] flex-col justify-between px-6 pb-10 pt-12">
         <div>
           <div className="inline-flex items-center gap-3 rounded-full border border-white/10 bg-white/10 px-4 py-2 backdrop-blur">
             <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-gradient-to-br from-[#FF5A5F] to-[#FF8C42]">
@@ -770,7 +770,7 @@ function WelcomeScreen({
   onUseDemo: () => void;
 }) {
   return (
-    <div className="relative min-h-screen overflow-hidden bg-[#111111]">
+    <div className="relative min-h-[100dvh] overflow-hidden bg-[#111111]">
       <div className="absolute inset-0">
         <img
           src="https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=900&h=1400&fit=crop&auto=format"
@@ -779,7 +779,7 @@ function WelcomeScreen({
         />
         <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-[#111111]/72 to-[#111111]" />
       </div>
-      <div className="relative z-10 flex min-h-screen flex-col px-6 pb-10 pt-14">
+      <div className="relative z-10 flex min-h-[100dvh] flex-col px-6 pb-10 pt-14">
         <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-3 py-1.5 text-xs font-medium text-white/75 backdrop-blur">
           <span className="h-2 w-2 rounded-full bg-[#FF5A5F]" />
           {EVENT_INFO.name} · en vivo ahora
@@ -1228,7 +1228,7 @@ function SwipeHomeScreen({
       </div>
 
       <div className="relative flex-1 px-4">
-        <div className="relative mx-auto h-full max-h-[520px]">
+        <div className="relative mx-auto h-[min(56vh,520px)] min-h-[380px] w-full max-h-[520px]">
           {topCandidate ? (
             <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-full border border-white/70 bg-white/90 px-4 py-2 text-center shadow-lg backdrop-blur">
               <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-[#FF5A5F]">
