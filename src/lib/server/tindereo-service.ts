@@ -1,5 +1,11 @@
 import { hydratePersistedState, stripSession } from "@/lib/tindereo-session";
-import { readAppDataset, replaceAppDataset, resetAppDataset } from "@/lib/server/tindereo-database";
+import {
+  getDatasetRevision,
+  readAppDataset,
+  replaceAppDataset,
+  resetAppDataset
+} from "@/lib/server/tindereo-database";
+import { publishPlatformUpdate } from "@/lib/server/tindereo-realtime";
 import type {
   AppDataset,
   CreateEventInput,
@@ -11,12 +17,28 @@ import {
   createEvent,
   leaveEvent,
   postEventMessage,
+  registerUser,
   requestEventAccess,
   respondToEventAccess,
   respondToPrivateChatRequest,
   sendPrivateChatRequest,
   sendPrivateMessage
 } from "@/lib/tindereo-utils";
+
+function buildPlatformEnvelope(
+  data: AppDataset,
+  meta?: PlatformDataEnvelope["meta"]
+): PlatformDataEnvelope {
+  const revision = getDatasetRevision();
+
+  return {
+    data,
+    meta: {
+      revision,
+      ...(meta ?? {})
+    }
+  };
+}
 
 function runStateMutation(
   actorId: string,
@@ -27,21 +49,24 @@ function runStateMutation(
   const nextState = mutation(hydratePersistedState(currentData, { currentUserId: actorId }));
   const nextData = stripSession(nextState);
   replaceAppDataset(nextData);
-
-  return {
-    data: nextData,
-    ...(metaBuilder ? { meta: metaBuilder(nextState) } : {})
-  };
+  const payload = buildPlatformEnvelope(nextData, metaBuilder?.(nextState));
+  publishPlatformUpdate(payload);
+  return payload;
 }
 
 export function getPlatformData(): AppDataset {
   return readAppDataset();
 }
 
+export function getPlatformEnvelope(): PlatformDataEnvelope {
+  return buildPlatformEnvelope(readAppDataset());
+}
+
 export function resetPlatformData(): PlatformDataEnvelope {
-  return {
-    data: resetAppDataset()
-  };
+  const data = resetAppDataset();
+  const payload = buildPlatformEnvelope(data);
+  publishPlatformUpdate(payload);
+  return payload;
 }
 
 export function createEventRecord(actorId: string, input: CreateEventInput): PlatformDataEnvelope {
@@ -56,6 +81,21 @@ export function createEventRecord(actorId: string, input: CreateEventInput): Pla
 
 export function runPlatformAction(action: PlatformAction): PlatformDataEnvelope {
   switch (action.type) {
+    case "register-user": {
+      const currentData = readAppDataset();
+      const nextState = registerUser(hydratePersistedState(currentData), action.input);
+      const createdUser = nextState.users[0];
+      if (!createdUser) {
+        throw new Error("No se pudo crear el perfil.");
+      }
+      const nextData = stripSession(nextState);
+      replaceAppDataset(nextData);
+      const payload = buildPlatformEnvelope(nextData, {
+        currentUserId: createdUser.id
+      });
+      publishPlatformUpdate(payload);
+      return payload;
+    }
     case "create-event":
       return createEventRecord(action.actorId, action.input);
     case "request-event-access":

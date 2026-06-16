@@ -14,6 +14,7 @@ import type {
   EventMembership,
   PersistedState,
   PlatformUser,
+  RegisterUserInput,
   PrivateChat,
   PrivateChatRequest,
   PrivateMessage
@@ -43,6 +44,130 @@ function slugify(value: string) {
     .trim()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+function hashString(value: string) {
+  return value.split("").reduce((total, character) => total + character.charCodeAt(0), 0);
+}
+
+function buildSvgDataUrl(svg: string) {
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+}
+
+function ensureUniqueValue(baseValue: string, existingValues: string[]) {
+  if (!existingValues.includes(baseValue)) {
+    return baseValue;
+  }
+
+  let attempt = 2;
+  let nextValue = `${baseValue}-${attempt}`;
+
+  while (existingValues.includes(nextValue)) {
+    attempt += 1;
+    nextValue = `${baseValue}-${attempt}`;
+  }
+
+  return nextValue;
+}
+
+function createProfilePalette(seed: string) {
+  const palettes = [
+    {
+      avatarFrom: "#FF6B57",
+      avatarTo: "#F08A24",
+      coverFrom: "#1D160F",
+      coverTo: "#FF8D66",
+      accent: "#FFD4C5"
+    },
+    {
+      avatarFrom: "#2AA876",
+      avatarTo: "#7DD3A6",
+      coverFrom: "#10261F",
+      coverTo: "#2AA876",
+      accent: "#D8F7E8"
+    },
+    {
+      avatarFrom: "#8A5CF6",
+      avatarTo: "#C18BFF",
+      coverFrom: "#1F1736",
+      coverTo: "#8A5CF6",
+      accent: "#E6D9FF"
+    },
+    {
+      avatarFrom: "#C7702E",
+      avatarTo: "#F3B16B",
+      coverFrom: "#2D1708",
+      coverTo: "#C7702E",
+      accent: "#FFE0C1"
+    }
+  ] as const;
+
+  return palettes[hashString(seed) % palettes.length];
+}
+
+function buildAvatarDataUrl(name: string, from: string, to: string) {
+  const initials = getInitials(name);
+  return buildSvgDataUrl(`
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240">
+      <defs>
+        <linearGradient id="avatarGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="${from}" />
+          <stop offset="100%" stop-color="${to}" />
+        </linearGradient>
+      </defs>
+      <rect width="240" height="240" rx="72" fill="url(#avatarGradient)" />
+      <circle cx="58" cy="56" r="34" fill="rgba(255,255,255,0.16)" />
+      <circle cx="190" cy="186" r="42" fill="rgba(255,255,255,0.1)" />
+      <text
+        x="120"
+        y="136"
+        text-anchor="middle"
+        font-size="84"
+        font-family="Arial, sans-serif"
+        font-weight="700"
+        fill="#FFFFFF"
+      >
+        ${initials}
+      </text>
+    </svg>
+  `);
+}
+
+function buildCoverDataUrl(name: string, city: string, colors: ReturnType<typeof createProfilePalette>) {
+  return buildSvgDataUrl(`
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 520">
+      <defs>
+        <linearGradient id="coverGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="${colors.coverFrom}" />
+          <stop offset="100%" stop-color="${colors.coverTo}" />
+        </linearGradient>
+      </defs>
+      <rect width="1200" height="520" fill="url(#coverGradient)" />
+      <circle cx="180" cy="110" r="110" fill="rgba(255,255,255,0.09)" />
+      <circle cx="980" cy="420" r="180" fill="rgba(255,255,255,0.08)" />
+      <circle cx="760" cy="80" r="70" fill="${colors.accent}" fill-opacity="0.36" />
+      <text
+        x="72"
+        y="336"
+        font-size="88"
+        font-family="Arial, sans-serif"
+        font-weight="700"
+        fill="#FFFFFF"
+      >
+        ${name}
+      </text>
+      <text
+        x="76"
+        y="396"
+        font-size="30"
+        font-family="Arial, sans-serif"
+        letter-spacing="7"
+        fill="rgba(255,255,255,0.72)"
+      >
+        ${city.toUpperCase()} · EVENTOS · COMUNIDAD
+      </text>
+    </svg>
+  `);
 }
 
 function isPersistedState(value: unknown): value is PersistedState {
@@ -765,6 +890,44 @@ export function sendPrivateMessage(
 export function getChatPartner(state: PersistedState, chat: PrivateChat, userId: string) {
   const partnerId = chat.participantIds.find((participantId) => participantId !== userId) ?? userId;
   return getUserById(state, partnerId);
+}
+
+export function registerUser(state: PersistedState, input: RegisterUserInput) {
+  const name = input.name.trim();
+  const city = input.city.trim() || "Madrid";
+  const bio = input.bio.trim();
+
+  if (!name || !bio) {
+    throw new Error("Completa al menos nombre y bio para crear tu perfil.");
+  }
+
+  const requestedHandle = input.handle.trim().replace(/^@+/, "");
+  const baseHandle = slugify(requestedHandle || name) || buildId("user");
+  const normalizedHandles = state.users.map((user) => user.handle.replace(/^@+/, "").toLowerCase());
+  const normalizedIds = state.users.map((user) => user.id.toLowerCase());
+  const uniqueHandle = ensureUniqueValue(baseHandle, normalizedHandles);
+  const uniqueId = ensureUniqueValue(baseHandle, normalizedIds);
+  const palette = createProfilePalette(`${name}-${city}-${uniqueHandle}`);
+  const firstName = name.split(" ")[0] || name;
+
+  const nextUser: PlatformUser = {
+    id: uniqueId,
+    name,
+    handle: `@${uniqueHandle}`,
+    city,
+    title: "Miembro de la comunidad",
+    bio,
+    tagline: `${firstName} ya esta montando su circulo para los proximos planes en ${city}.`,
+    avatar: buildAvatarDataUrl(name, palette.avatarFrom, palette.avatarTo),
+    coverImage: buildCoverDataUrl(name, city, palette),
+    interests: ["Eventos", "Comunidad", "Planes", "Social", city],
+    verified: false
+  };
+
+  return {
+    ...state,
+    users: [nextUser, ...state.users]
+  };
 }
 
 export function createEvent(state: PersistedState, userId: string, input: CreateEventInput) {

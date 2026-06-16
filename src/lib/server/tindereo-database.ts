@@ -17,6 +17,11 @@ import type {
 const DATABASE_PATH = path.join(process.cwd(), "storage", "tindereo.sqlite");
 
 const SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS app_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -155,6 +160,9 @@ function getOrCreateDatabase() {
   database.exec("PRAGMA foreign_keys = ON;");
   database.exec("PRAGMA journal_mode = WAL;");
   database.exec(SCHEMA_SQL);
+  database
+    .prepare("INSERT OR IGNORE INTO app_meta (key, value) VALUES ('dataset_revision', '0')")
+    .run();
   globalThis.__tindereoDatabase__ = database;
 
   const userCountRow = database.prepare("SELECT COUNT(*) AS count FROM users").get() as {
@@ -165,6 +173,29 @@ function getOrCreateDatabase() {
   }
 
   return database;
+}
+
+function getMetaInteger(database: DatabaseSync, key: string) {
+  const row = database
+    .prepare("SELECT value FROM app_meta WHERE key = ? LIMIT 1")
+    .get(key) as { value?: string | number | bigint } | undefined;
+
+  return readCount(row?.value);
+}
+
+function bumpDatasetRevision(database: DatabaseSync) {
+  database
+    .prepare(
+      "UPDATE app_meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'dataset_revision'"
+    )
+    .run();
+
+  return getMetaInteger(database, "dataset_revision");
+}
+
+export function getDatasetRevision() {
+  const database = getOrCreateDatabase();
+  return getMetaInteger(database, "dataset_revision");
 }
 
 export function readAppDataset(): AppDataset {
@@ -520,6 +551,7 @@ export function replaceAppDataset(data: AppDataset) {
       );
     }
 
+    bumpDatasetRevision(database);
     database.exec("COMMIT;");
     return data;
   } catch (error) {

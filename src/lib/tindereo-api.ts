@@ -56,3 +56,48 @@ export async function executePlatformAction(action: PlatformAction) {
 export function extractPlatformData(payload: PlatformDataEnvelope): AppDataset {
   return payload.data;
 }
+
+export function subscribeToPlatformStream({
+  onError,
+  onMessage,
+  onOpen
+}: {
+  onError?: () => void;
+  onMessage: (payload: PlatformDataEnvelope) => void;
+  onOpen?: () => void;
+}) {
+  if (typeof window === "undefined" || typeof EventSource === "undefined") {
+    return () => {};
+  }
+
+  const eventSource = new EventSource("/api/platform/stream");
+
+  const handlePlatformMessage = (event: MessageEvent<string>) => {
+    try {
+      const payload = JSON.parse(event.data) as PlatformDataEnvelope;
+      if (payload && "data" in payload) {
+        onMessage(payload);
+      }
+    } catch {
+      // Ignore malformed realtime payloads and keep the stream alive.
+    }
+  };
+
+  const handleOpen = () => {
+    onOpen?.();
+  };
+
+  const handleError = () => {
+    onError?.();
+  };
+
+  eventSource.addEventListener("platform", handlePlatformMessage as EventListener);
+  eventSource.addEventListener("open", handleOpen as EventListener);
+  eventSource.onerror = handleError;
+
+  return () => {
+    eventSource.removeEventListener("platform", handlePlatformMessage as EventListener);
+    eventSource.removeEventListener("open", handleOpen as EventListener);
+    eventSource.close();
+  };
+}

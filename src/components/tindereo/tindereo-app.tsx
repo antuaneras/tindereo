@@ -1,15 +1,13 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
-  BadgeCheck,
   CalendarDays,
   Camera,
   Check,
   ChevronRight,
-  Clock3,
   Compass,
   Copy,
   Inbox,
@@ -23,15 +21,15 @@ import {
   Sparkles,
   Ticket,
   User,
-  Users,
-  X
+  Users
 } from "lucide-react";
 import { OrganizerDashboard } from "@/components/tindereo/organizer-dashboard";
 import {
   executePlatformAction,
   extractPlatformData,
   fetchPlatformData,
-  resetPlatformData
+  resetPlatformData,
+  subscribeToPlatformStream
 } from "@/lib/tindereo-api";
 import { APP_NAME, APP_TAGLINE, EVENT_CATEGORY_OPTIONS } from "@/lib/tindereo-data";
 import {
@@ -48,7 +46,8 @@ import type {
   PlatformAction,
   PlatformDataEnvelope,
   PersistedState,
-  PlatformUser
+  PlatformUser,
+  RegisterUserInput
 } from "@/lib/tindereo-types";
 import {
   formatEventDateRange,
@@ -72,7 +71,6 @@ import {
   getEventRequirementSummary,
   getHostPendingRequests,
   getHostedEvents,
-  getIncomingPendingRequests,
   getInitials,
   getJoinedEvents,
   getLatestPrivateMessage,
@@ -81,7 +79,6 @@ import {
   getPrivateRequestsForUser,
   getUserById,
   hasEventAccess,
-  isEventHost,
   normalizeState
 } from "@/lib/tindereo-utils";
 
@@ -143,6 +140,13 @@ function mergeEventIntoCollection(collection: EventItem[], event: EventItem | nu
   return [event, ...collection];
 }
 
+const INITIAL_REGISTER_FORM: RegisterUserInput = {
+  name: "",
+  handle: "",
+  city: "Madrid",
+  bio: ""
+};
+
 export function TindereoApp() {
   const [state, setState] = useState<PersistedState | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
@@ -151,8 +155,18 @@ export function TindereoApp() {
   const [requestDrafts, setRequestDrafts] = useState<Record<string, string>>({});
   const [selectedAttendeeByEvent, setSelectedAttendeeByEvent] = useState<Record<string, string>>({});
   const [privateDraft, setPrivateDraft] = useState("");
+  const [registerForm, setRegisterForm] = useState<RegisterUserInput>(INITIAL_REGISTER_FORM);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isRealtimeConnected, setIsRealtimeConnected] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const latestRevisionRef = useRef(0);
+  const applyPlatformPayloadRef = useRef<
+    | ((
+        payload: PlatformDataEnvelope,
+        sessionPatch?: Partial<PersistedState["session"]>
+      ) => void)
+    | null
+  >(null);
 
   const getStoredSession = () => {
     if (typeof window === "undefined") {
@@ -166,19 +180,40 @@ export function TindereoApp() {
     payload: PlatformDataEnvelope,
     sessionPatch?: Partial<PersistedState["session"]>
   ) => {
+    const revision = payload.meta?.revision ?? 0;
+    if (revision > 0 && revision <= latestRevisionRef.current) {
+      return;
+    }
+
+    if (revision > latestRevisionRef.current) {
+      latestRevisionRef.current = revision;
+    }
+
     const data = extractPlatformData(payload);
     const sharedEventId = data.events.find((event) => event.slug === readSharedEventSlug())?.id;
+    const metaSessionPatch: Partial<PersistedState["session"]> = {};
+
+    if (payload.meta?.currentUserId) {
+      metaSessionPatch.currentUserId = payload.meta.currentUserId;
+    }
+
+    if (payload.meta && "selectedEventId" in payload.meta) {
+      metaSessionPatch.selectedEventId = payload.meta.selectedEventId ?? null;
+    }
 
     setState((current) =>
       normalizeState(
         hydratePersistedState(data, {
           ...(current?.session ?? getStoredSession()),
+          ...metaSessionPatch,
           ...(sharedEventId ? { selectedEventId: sharedEventId } : {}),
           ...sessionPatch
         })
       )
     );
   };
+
+  applyPlatformPayloadRef.current = applyPlatformPayload;
 
   const loadPlatform = async (sessionPatch?: Partial<PersistedState["session"]>) => {
     setSyncError(null);
@@ -222,6 +257,21 @@ export function TindereoApp() {
   }, []);
 
   useEffect(() => {
+    const unsubscribe = subscribeToPlatformStream({
+      onError: () => setIsRealtimeConnected(false),
+      onMessage: (payload) => {
+        setIsRealtimeConnected(true);
+        applyPlatformPayloadRef.current?.(payload);
+      },
+      onOpen: () => setIsRealtimeConnected(true)
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!state || typeof window === "undefined") {
       return;
     }
@@ -234,6 +284,63 @@ export function TindereoApp() {
 
   if (!state) {
     return <LoadingScreen error={syncError} onRetry={() => void loadPlatform()} />;
+  }
+
+  const handleLogin = (userId: string) => {
+    setSyncError(null);
+    setState((current) =>
+      current
+        ? normalizeState({
+            ...current,
+            session: {
+              ...current.session,
+              isAuthenticated: true,
+              currentUserId: userId,
+              activeTab: "discover",
+              selectedEventView: "overview",
+              selectedPrivateChatId: null
+            }
+          })
+        : current
+    );
+  };
+
+  const handleRegister = async () => {
+    const payload = await runPlatformMutation(
+      {
+        type: "register-user",
+        input: registerForm
+      },
+      {
+        isAuthenticated: true,
+        activeTab: "discover",
+        selectedEventView: "overview",
+        selectedPrivateChatId: null
+      }
+    );
+
+    if (payload) {
+      setRegisterForm(INITIAL_REGISTER_FORM);
+    }
+  };
+
+  if (!state.session.isAuthenticated) {
+    return (
+      <AuthScreen
+        error={syncError}
+        form={registerForm}
+        isSubmitting={isSyncing}
+        onChangeForm={(patch) =>
+          setRegisterForm((current) => ({
+            ...current,
+            ...patch
+          }))
+        }
+        onLogin={handleLogin}
+        onRegister={() => void handleRegister()}
+        users={state.users}
+      />
+    );
   }
 
   const currentUser = getCurrentUser(state);
@@ -264,7 +371,6 @@ export function TindereoApp() {
     discoverSelection
   );
   const agendaSelection = pickEvent(joinedEvents, state.session.selectedEventId) ?? joinedEvents[0] ?? null;
-  const incomingPrivateRequests = getIncomingPendingRequests(state, currentUser.id);
   const privateChats = getPrivateChatsForUser(state, currentUser.id);
   const selectedPrivateChat =
     privateChats.find((chat) => chat.id === state.session.selectedPrivateChatId) ??
@@ -273,7 +379,6 @@ export function TindereoApp() {
   const joinedCount = joinedEvents.length;
   const hostedCount = hostedEvents.length;
   const pendingApprovalsCount = hostPendingRequests.length;
-  const privateRequestCount = incomingPrivateRequests.length;
 
   const updateSession = (patch: Partial<PersistedState["session"]>) => {
     setState((current) =>
@@ -289,11 +394,33 @@ export function TindereoApp() {
     );
   };
 
-  const openEvent = (eventId: string, tab?: AppTab) => {
+  const navigateToTab = (tab: AppTab) => {
+    if (tab === "agenda") {
+      updateSession({
+        activeTab: "agenda",
+        selectedEventId: agendaSelection?.id ?? null,
+        selectedEventView: agendaSelection ? "chat" : "overview"
+      });
+      return;
+    }
+
+    if (tab === "discover") {
+      updateSession({
+        activeTab: "discover",
+        selectedEventId: discoverSelection?.id ?? null,
+        selectedEventView: "overview"
+      });
+      return;
+    }
+
+    updateSession({ activeTab: tab });
+  };
+
+  const openEvent = (eventId: string, tab: AppTab = state.session.activeTab) => {
     updateSession({
       selectedEventId: eventId,
-      selectedEventView: "overview",
-      ...(tab ? { activeTab: tab } : {})
+      selectedEventView: tab === "agenda" ? "chat" : "overview",
+      activeTab: tab
     });
   };
 
@@ -337,7 +464,7 @@ export function TindereoApp() {
       {
         activeTab: nextTab,
         selectedEventId: null,
-        selectedEventView: "overview"
+        selectedEventView: nextTab === "agenda" ? "chat" : "overview"
       }
     );
   };
@@ -420,6 +547,7 @@ export function TindereoApp() {
             ...current,
             session: {
               ...current.session,
+              isAuthenticated: true,
               currentUserId: userId,
               selectedEventId: null,
               selectedPrivateChatId: null
@@ -427,6 +555,15 @@ export function TindereoApp() {
           })
         : current
     );
+  };
+
+  const handleLogout = () => {
+    updateSession({
+      isAuthenticated: false,
+      activeTab: "discover",
+      selectedEventView: "overview",
+      selectedPrivateChatId: null
+    });
   };
 
   const handleCreateEvent = async (input: CreateEventInput) => {
@@ -452,6 +589,7 @@ export function TindereoApp() {
     try {
       const payload = await resetPlatformData();
       applyPlatformPayload(payload, {
+        isAuthenticated: state.session.isAuthenticated,
         currentUserId: state.session.currentUserId,
         activeTab: "discover",
         selectedEventId: null,
@@ -478,10 +616,28 @@ export function TindereoApp() {
       <main className="mx-auto max-w-[1240px] px-4 pb-32 pt-5 md:px-6 md:pb-10 md:pt-6">
         <header className="flex flex-wrap items-center justify-between gap-4">
           <BrandMark />
+          {/*
           <div className="flex items-center gap-2">
-            <div className="hidden rounded-full border border-[#eadfd3] bg-white/88 px-4 py-2 text-sm text-[#6d5749] md:flex md:items-center md:gap-3">
-              <AvatarChip user={currentUser} />
+            <div className="hidden rounded-full border border-[#eadfd3] bg-white/88 px-4 py-2 text-sm text-[#6d5749] md:block">
+              <span>
+                {joinedCount} grupos - {hostedCount} creados - {pendingApprovalsCount} por revisar
               <span>{hostedCount} creados · {pendingApprovalsCount} por revisar</span>
+            </div>
+            <button
+              className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-white/88 px-4 py-2 text-sm font-semibold text-[#5f4b3f] shadow-[0_10px_24px_rgba(52,34,22,0.06)]"
+              onClick={() => void handleResetDemo()}
+              type="button"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Reiniciar demo
+            </button>
+          </div>
+          */}
+          <div className="flex items-center gap-2">
+            <div className="hidden rounded-full border border-[#eadfd3] bg-white/88 px-4 py-2 text-sm text-[#6d5749] md:block">
+              <span>
+                {joinedCount} grupos - {hostedCount} creados - {pendingApprovalsCount} por revisar
+              </span>
             </div>
             <button
               className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-white/88 px-4 py-2 text-sm font-semibold text-[#5f4b3f] shadow-[0_10px_24px_rgba(52,34,22,0.06)]"
@@ -494,17 +650,13 @@ export function TindereoApp() {
           </div>
         </header>
 
-        <DesktopNavigation activeTab={state.session.activeTab} onChange={updateSession} />
+        <DesktopNavigation activeTab={state.session.activeTab} onChange={navigateToTab} />
 
-        <SummaryBanner
-          currentUser={currentUser}
-          hostedCount={hostedCount}
-          joinedCount={joinedCount}
-          pendingApprovalsCount={pendingApprovalsCount}
-          privateRequestCount={privateRequestCount}
+        <SyncStatus
+          error={syncError}
+          isRealtimeConnected={isRealtimeConnected}
+          isSyncing={isSyncing}
         />
-
-        <SyncStatus error={syncError} isSyncing={isSyncing} />
 
         {state.session.activeTab === "discover" ? (
           <div className="space-y-5">
@@ -614,59 +766,67 @@ export function TindereoApp() {
           <div className="space-y-5">
             <section className="rounded-[30px] border border-[#eadfd3] bg-white/88 p-4 shadow-[0_24px_60px_rgba(52,34,22,0.08)] md:p-5">
               <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">
-                Mi agenda
+                Tus grupos
               </p>
               <h1 className="mt-1 text-2xl font-black tracking-tight md:text-3xl">
-                Tus eventos aprobados y los que has creado
+                Eventos en los que ya estas dentro
               </h1>
               <p className="mt-2 text-sm text-[#6d5749]">
-                Aqui entran los eventos donde ya tienes acceso confirmado y tambien los que tu
-                mismo organizas.
+                Entra en cada evento como si fuera un grupo: lista de miembros, chat general y
+                acceso rapido al privado si conectas con alguien.
               </p>
             </section>
 
             {agendaSelection ? (
-              <EventWorkspace
-                collection={joinedEvents}
-                currentUser={currentUser}
-                currentView={state.session.selectedEventView}
-                event={agendaSelection}
-                groupDraft={groupDrafts[agendaSelection.id] ?? ""}
-                mode="agenda"
-                onChangeEvent={(eventId) => openEvent(eventId, "agenda")}
-                onChangeGroupDraft={(value) =>
-                  setGroupDrafts((current) => ({ ...current, [agendaSelection.id]: value }))
-                }
-                onChangeRequestDraft={(targetUserId, value) =>
-                  setRequestDrafts((current) => ({
-                    ...current,
-                    [`${agendaSelection.id}:${targetUserId}`]: value
-                  }))
-                }
-                onChangeView={(view) => updateSession({ selectedEventView: view })}
-                onLeaveEvent={handleLeaveEvent}
-                onOpenPrivateChat={openPrivateChat}
-                onRequestEventAccess={handleRequestEventAccess}
-                onRespondEventAccess={handleRespondEventAccess}
-                onRespondPrivateRequest={handleRespondPrivateRequest}
-                onSelectAttendee={(userId) =>
-                  setSelectedAttendeeByEvent((current) => ({
-                    ...current,
-                    [agendaSelection.id]: userId
-                  }))
-                }
-                onSendGroupMessage={() => handleSendGroupMessage(agendaSelection.id)}
-                onSendPrivateRequest={(targetUserId) =>
-                  handleSendPrivateRequest(agendaSelection.id, targetUserId)
-                }
-                requestDraft={
-                  requestDrafts[
-                    `${agendaSelection.id}:${selectedAttendeeByEvent[agendaSelection.id] ?? ""}`
-                  ] ?? ""
-                }
-                selectedAttendeeId={selectedAttendeeByEvent[agendaSelection.id] ?? null}
-                state={state}
-              />
+              <>
+                <JoinedGroupsList
+                  events={joinedEvents}
+                  onOpenEvent={(eventId) => openEvent(eventId, "agenda")}
+                  selectedEventId={agendaSelection.id}
+                  state={state}
+                />
+                <EventWorkspace
+                  collection={joinedEvents}
+                  currentUser={currentUser}
+                  currentView={state.session.selectedEventView}
+                  event={agendaSelection}
+                  groupDraft={groupDrafts[agendaSelection.id] ?? ""}
+                  mode="agenda"
+                  onChangeEvent={(eventId) => openEvent(eventId, "agenda")}
+                  onChangeGroupDraft={(value) =>
+                    setGroupDrafts((current) => ({ ...current, [agendaSelection.id]: value }))
+                  }
+                  onChangeRequestDraft={(targetUserId, value) =>
+                    setRequestDrafts((current) => ({
+                      ...current,
+                      [`${agendaSelection.id}:${targetUserId}`]: value
+                    }))
+                  }
+                  onChangeView={(view) => updateSession({ selectedEventView: view })}
+                  onLeaveEvent={handleLeaveEvent}
+                  onOpenPrivateChat={openPrivateChat}
+                  onRequestEventAccess={handleRequestEventAccess}
+                  onRespondEventAccess={handleRespondEventAccess}
+                  onRespondPrivateRequest={handleRespondPrivateRequest}
+                  onSelectAttendee={(userId) =>
+                    setSelectedAttendeeByEvent((current) => ({
+                      ...current,
+                      [agendaSelection.id]: userId
+                    }))
+                  }
+                  onSendGroupMessage={() => handleSendGroupMessage(agendaSelection.id)}
+                  onSendPrivateRequest={(targetUserId) =>
+                    handleSendPrivateRequest(agendaSelection.id, targetUserId)
+                  }
+                  requestDraft={
+                    requestDrafts[
+                      `${agendaSelection.id}:${selectedAttendeeByEvent[agendaSelection.id] ?? ""}`
+                    ] ?? ""
+                  }
+                  selectedAttendeeId={selectedAttendeeByEvent[agendaSelection.id] ?? null}
+                  state={state}
+                />
+              </>
             ) : (
               <EmptyState
                 title="Todavia no tienes eventos en agenda"
@@ -674,7 +834,7 @@ export function TindereoApp() {
                 action={
                   <button
                     className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] px-5 py-3 text-sm font-semibold text-white"
-                    onClick={() => updateSession({ activeTab: "discover" })}
+                    onClick={() => navigateToTab("discover")}
                     type="button"
                   >
                     Ver eventos
@@ -706,6 +866,7 @@ export function TindereoApp() {
             hostedCount={hostedCount}
             joinedCount={joinedCount}
             pendingApprovalsCount={pendingApprovalsCount}
+            onLogout={handleLogout}
             onResetDemo={handleResetDemo}
             onSwitchUser={handleSwitchUser}
             state={state}
@@ -723,8 +884,232 @@ export function TindereoApp() {
         ) : null}
       </main>
 
-      <MobileNavigation activeTab={state.session.activeTab} onChange={updateSession} />
+      <MobileNavigation activeTab={state.session.activeTab} onChange={navigateToTab} />
     </div>
+  );
+}
+
+function AuthScreen({
+  error,
+  form,
+  isSubmitting,
+  onChangeForm,
+  onLogin,
+  onRegister,
+  users
+}: {
+  error: string | null;
+  form: RegisterUserInput;
+  isSubmitting: boolean;
+  onChangeForm: (patch: Partial<RegisterUserInput>) => void;
+  onLogin: (userId: string) => void;
+  onRegister: () => void;
+  users: PlatformUser[];
+}) {
+  return (
+    <div className="min-h-screen bg-[#f6efe7] px-4 py-5 text-[#1d160f] md:px-6 md:py-8">
+      <main className="mx-auto max-w-[1120px] space-y-5">
+        <BrandMark />
+
+        <div className="grid gap-5 xl:grid-cols-[1.02fr_0.98fr]">
+          <section className="overflow-hidden rounded-[34px] border border-[#eadfd3] bg-white/88 shadow-[0_24px_60px_rgba(52,34,22,0.08)]">
+            <div className="bg-[radial-gradient(circle_at_top_left,#ffd8c7,transparent_38%),linear-gradient(135deg,#1d160f,#463126_52%,#ff8d66_140%)] px-5 py-6 text-white md:px-7 md:py-8">
+              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-white/70">
+                Acceso
+              </p>
+              <h1 className="mt-3 max-w-xl text-3xl font-black tracking-tight md:text-5xl">
+                Descubre eventos y entra a su grupo antes de llegar.
+              </h1>
+              <p className="mt-4 max-w-2xl text-sm leading-6 text-white/76 md:text-base">
+                Esta demo ya entra con la nueva idea del producto: te apuntas a un evento, accedes
+                al chat general y desde ahi decides con quien abrir privado.
+              </p>
+              <div className="mt-6 grid gap-3 sm:grid-cols-3">
+                <InfoChip icon={<Ticket className="h-4 w-4" />} value="Eventos publicos o privados" />
+                <InfoChip icon={<MessageCircle className="h-4 w-4" />} value="Chats de grupo por evento" />
+                <InfoChip icon={<Users className="h-4 w-4" />} value="Privados solo si aceptan" />
+              </div>
+            </div>
+
+            <div className="grid gap-3 px-5 py-5 md:grid-cols-3 md:px-7">
+              <MetricTile label="Perfiles demo" value={String(users.length)} />
+              <MetricTile label="Sin password" value="Demo" />
+              <MetricTile label="Registro" value="Local" />
+            </div>
+          </section>
+
+          <div className="space-y-5">
+            <SectionCard>
+              <SectionLabel>Entrar con un perfil demo</SectionLabel>
+              <p className="mt-3 text-sm text-[#5f4b3f]">
+                Elige un usuario para revisar el producto desde dentro al instante.
+              </p>
+              <div className="mt-4 grid gap-3">
+                {users.map((user) => (
+                  <button
+                    key={user.id}
+                    className="flex items-center gap-3 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4 text-left transition hover:border-[#ffb493] hover:bg-[#fff0e8]"
+                    onClick={() => onLogin(user.id)}
+                    type="button"
+                  >
+                    <AvatarChip user={user} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-semibold text-[#1d160f]">{user.name}</p>
+                      <p className="truncate text-sm text-[#6d5749]">
+                        {user.title} - {user.city}
+                      </p>
+                      <p className="mt-1 truncate text-xs text-[#8f6f59]">{user.handle}</p>
+                    </div>
+                    <ArrowRight className="h-4 w-4 text-[#8f6f59]" />
+                  </button>
+                ))}
+              </div>
+            </SectionCard>
+
+            <SectionCard>
+              <SectionLabel>Crear cuenta para la demo</SectionLabel>
+              <p className="mt-3 text-sm text-[#5f4b3f]">
+                De momento el acceso va sin password. Creamos tu perfil local y entras directamente.
+              </p>
+
+              {error ? (
+                <div className="mt-4 rounded-[22px] border border-[#ffcfbb] bg-[#fff4ed] px-4 py-3 text-sm text-[#b14a20]">
+                  {error}
+                </div>
+              ) : null}
+
+              <div className="mt-4 grid gap-3">
+                <label className="grid gap-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                    Nombre
+                  </span>
+                  <input
+                    className="rounded-[18px] border border-[#e7d8cb] bg-[#fffaf6] px-4 py-3 text-sm text-[#1d160f] outline-none focus:border-[#ff8d66] focus:ring-2 focus:ring-[#ffd4c5]"
+                    onChange={(event) => onChangeForm({ name: event.target.value })}
+                    placeholder="Ana Torres"
+                    value={form.name}
+                  />
+                </label>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="grid gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                      Handle
+                    </span>
+                    <input
+                      className="rounded-[18px] border border-[#e7d8cb] bg-[#fffaf6] px-4 py-3 text-sm text-[#1d160f] outline-none focus:border-[#ff8d66] focus:ring-2 focus:ring-[#ffd4c5]"
+                      onChange={(event) => onChangeForm({ handle: event.target.value })}
+                      placeholder="@anagoesout"
+                      value={form.handle}
+                    />
+                  </label>
+
+                  <label className="grid gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                      Ciudad
+                    </span>
+                    <input
+                      className="rounded-[18px] border border-[#e7d8cb] bg-[#fffaf6] px-4 py-3 text-sm text-[#1d160f] outline-none focus:border-[#ff8d66] focus:ring-2 focus:ring-[#ffd4c5]"
+                      onChange={(event) => onChangeForm({ city: event.target.value })}
+                      placeholder="Madrid"
+                      value={form.city}
+                    />
+                  </label>
+                </div>
+
+                <label className="grid gap-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                    Bio corta
+                  </span>
+                  <textarea
+                    className="min-h-[120px] resize-none rounded-[18px] border border-[#e7d8cb] bg-[#fffaf6] px-4 py-3 text-sm text-[#1d160f] outline-none focus:border-[#ff8d66] focus:ring-2 focus:ring-[#ffd4c5]"
+                    onChange={(event) => onChangeForm({ bio: event.target.value })}
+                    placeholder="Que tipo de eventos te gusta descubrir y con quien conectarias antes de ir."
+                    value={form.bio}
+                  />
+                </label>
+              </div>
+
+              <div className="mt-4 flex justify-end">
+                <button
+                  className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] px-5 py-3 text-sm font-semibold text-white shadow-[0_18px_35px_rgba(240,138,36,0.28)] disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={isSubmitting}
+                  onClick={onRegister}
+                  type="button"
+                >
+                  {isSubmitting ? "Creando perfil..." : "Crear cuenta y entrar"}
+                </button>
+              </div>
+            </SectionCard>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+function JoinedGroupsList({
+  events,
+  onOpenEvent,
+  selectedEventId,
+  state
+}: {
+  events: EventItem[];
+  onOpenEvent: (eventId: string) => void;
+  selectedEventId: string;
+  state: PersistedState;
+}) {
+  return (
+    <SectionCard>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <SectionLabel>Lista de grupos</SectionLabel>
+          <p className="mt-2 text-sm text-[#6d5749]">
+            Abre el grupo del evento que quieras revisar o donde quieras escribir ahora.
+          </p>
+        </div>
+        <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-2 text-sm text-[#6d5749]">
+          {events.length} activos
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
+        {events.map((event) => {
+          const lastMessage = getEventMessages(state, event.id).slice(-1)[0] ?? null;
+          const members = getEventMembers(state, event.id).length;
+          const active = event.id === selectedEventId;
+
+          return (
+            <button
+              key={event.id}
+              className={`flex items-center gap-3 rounded-[26px] border p-4 text-left transition ${
+                active ? "border-[#ffb493] bg-[#fff0e8]" : "border-[#eadfd3] bg-[#fffaf6]"
+              }`}
+              onClick={() => onOpenEvent(event.id)}
+              type="button"
+            >
+              <div className="h-16 w-16 overflow-hidden rounded-[20px] border border-[#eadfd3] bg-[#f4e3d8]">
+                <img alt={event.title} className="h-full w-full object-cover" src={event.coverImage} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="truncate font-semibold text-[#1d160f]">{event.title}</p>
+                  <span className="text-[11px] text-[#8f6f59]">
+                    {formatTime(lastMessage?.createdAt ?? event.startsAt)}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-[#8f6f59]">
+                  {members} miembros - {event.city}
+                </p>
+                <p className="mt-2 line-clamp-2 text-sm text-[#5f4b3f]">
+                  {lastMessage?.text ?? event.summary}
+                </p>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </SectionCard>
   );
 }
 
@@ -733,7 +1118,7 @@ function DesktopNavigation({
   onChange
 }: {
   activeTab: AppTab;
-  onChange: (patch: Partial<PersistedState["session"]>) => void;
+  onChange: (tab: AppTab) => void;
 }) {
   const items = buildNavItems();
 
@@ -749,7 +1134,7 @@ function DesktopNavigation({
                 ? "bg-[#1d160f] text-white shadow-[0_16px_30px_rgba(29,22,15,0.18)]"
                 : "border border-[#eadfd3] bg-white/88 text-[#6d5749]"
             }`}
-            onClick={() => onChange({ activeTab: item.id })}
+            onClick={() => onChange(item.id)}
             type="button"
           >
             {item.icon}
@@ -766,7 +1151,7 @@ function MobileNavigation({
   onChange
 }: {
   activeTab: AppTab;
-  onChange: (patch: Partial<PersistedState["session"]>) => void;
+  onChange: (tab: AppTab) => void;
 }) {
   const items = buildNavItems();
 
@@ -783,7 +1168,7 @@ function MobileNavigation({
                 className={`flex min-w-0 flex-1 flex-col items-center gap-1 px-1 text-[11px] font-semibold ${
                   active ? "text-[#ff6b57]" : "text-[#7a6455]"
                 }`}
-                onClick={() => onChange({ activeTab: item.id })}
+                onClick={() => onChange(item.id)}
                 type="button"
               >
                 <span
@@ -803,6 +1188,7 @@ function MobileNavigation({
   );
 }
 
+/*
 function SummaryBanner({
   currentUser,
   hostedCount,
@@ -850,6 +1236,7 @@ function SummaryBanner({
     </section>
   );
 }
+*/
 
 function EventWorkspace({
   collection,
@@ -921,6 +1308,18 @@ function EventWorkspace({
       : null;
   const shareUrl = buildEventShareUrl(event.slug);
   const shareCopy = buildEventShareCopy(event, shareUrl);
+  const eventTabs =
+    mode === "agenda"
+      ? [
+          { id: "chat" as const, label: "Chat" },
+          { id: "people" as const, label: "Miembros" },
+          { id: "overview" as const, label: "Info" }
+        ]
+      : [
+          { id: "overview" as const, label: "Resumen" },
+          { id: "chat" as const, label: "Chat general" },
+          { id: "people" as const, label: "Asistentes" }
+        ];
 
   useEffect(() => {
     if (!shareNotice || typeof window === "undefined") {
@@ -995,113 +1394,177 @@ function EventWorkspace({
 
   return (
     <div className="space-y-5">
-      <section className="relative overflow-hidden rounded-[38px] border border-[#eadfd3] text-white shadow-[0_34px_90px_rgba(20,17,16,0.18)]">
-        <img alt={event.title} className="absolute inset-0 h-full w-full object-cover" src={event.coverImage} />
-        <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(16,12,9,0.28),rgba(16,12,9,0.86))]" />
-        <div className="relative p-5 md:p-7">
-          <div className="flex flex-wrap gap-2">
-            <Pill tone="dark">{categoryMeta.label}</Pill>
-            <Pill tone="dark">{event.visibility === "public" ? "Publico" : "Privado"}</Pill>
-            <Pill tone="dark">{guestCount} confirmados</Pill>
-            <Pill tone="dark">{event.priceLabel}</Pill>
-          </div>
-          <h2 className="mt-4 max-w-3xl text-3xl font-black tracking-tight md:text-5xl">
-            {event.title}
-          </h2>
-          <p className="mt-3 max-w-2xl text-sm text-white/76 md:text-base">{event.summary}</p>
-          <div className="mt-5 grid gap-3 md:grid-cols-3">
-            <InfoChip icon={<CalendarDays className="h-4 w-4" />} value={formatEventDateRange(event)} />
-            <InfoChip icon={<MapPin className="h-4 w-4" />} value={`${event.venue}, ${event.city}`} />
-            <InfoChip icon={<Users className="h-4 w-4" />} value={`${guestCount} de ${event.capacity} plazas`} />
-          </div>
-          <div className="mt-5 flex flex-wrap items-center gap-3">
-            {isHost ? (
-              <>
-                <button
-                  className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] px-5 py-3 text-sm font-semibold text-white shadow-[0_18px_35px_rgba(240,138,36,0.28)]"
-                  onClick={() => onChangeView("people")}
-                  type="button"
-                >
-                  Gestionar accesos
-                  <ArrowRight className="h-4 w-4" />
-                </button>
-                <button
-                  className="inline-flex items-center gap-2 rounded-full border border-white/18 bg-white/10 px-5 py-3 text-sm font-semibold text-white"
-                  onClick={() => onChangeView("chat")}
-                  type="button"
-                >
-                  Abrir chat general
-                </button>
-              </>
-            ) : null}
+      {mode === "agenda" ? (
+        <SectionCard>
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="flex gap-4">
+              <div className="h-20 w-20 overflow-hidden rounded-[24px] border border-[#eadfd3] bg-[#f4e3d8] shadow-[0_16px_30px_rgba(29,22,15,0.08)]">
+                <img alt={event.title} className="h-full w-full object-cover" src={event.coverImage} />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">
+                  Grupo del evento
+                </p>
+                <h2 className="mt-2 text-3xl font-black tracking-tight text-[#1d160f] md:text-4xl">
+                  {event.title}
+                </h2>
+                <p className="mt-2 max-w-2xl text-sm text-[#5f4b3f]">{event.summary}</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Pill tone="light">{categoryMeta.label}</Pill>
+                  <Pill tone="light">{guestCount} miembros</Pill>
+                  <Pill tone="light">{event.visibility === "public" ? "Publico" : "Privado"}</Pill>
+                </div>
+              </div>
+            </div>
 
-            {accessState.kind === "approved" ? (
-              <>
-                <button
-                  className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] px-5 py-3 text-sm font-semibold text-white shadow-[0_18px_35px_rgba(240,138,36,0.28)]"
-                  onClick={() => onChangeView("chat")}
-                  type="button"
-                >
-                  Entrar al chat general
-                  <ArrowRight className="h-4 w-4" />
-                </button>
-                <button
-                  className="inline-flex items-center gap-2 rounded-full border border-white/18 bg-white/10 px-5 py-3 text-sm font-semibold text-white"
-                  onClick={() => onLeaveEvent(event.id)}
-                  type="button"
-                >
-                  Salir del evento
-                </button>
-              </>
-            ) : null}
-
-            {accessState.kind === "available" ? (
+            <div className="flex flex-wrap gap-2">
               <button
-                className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] px-5 py-3 text-sm font-semibold text-white shadow-[0_18px_35px_rgba(240,138,36,0.28)]"
-                onClick={() => onRequestEventAccess(event.id)}
+                className="inline-flex items-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+                onClick={() => onChangeView("chat")}
                 type="button"
               >
-                Solicitar acceso
-                <ArrowRight className="h-4 w-4" />
+                Abrir chat
               </button>
-            ) : null}
-
-            {accessState.kind === "pending" ? (
-              <div className="rounded-full border border-white/18 bg-white/10 px-5 py-3 text-sm font-semibold text-white">
-                Solicitud pendiente de revision
-              </div>
-            ) : null}
-
-            {accessState.kind === "rejected" ? (
-              <div className="rounded-full border border-white/18 bg-white/10 px-5 py-3 text-sm font-semibold text-white">
-                Solicitud rechazada
-              </div>
-            ) : null}
-
-            <button
-              className="inline-flex items-center gap-2 rounded-full border border-white/18 bg-white/10 px-5 py-3 text-sm font-semibold text-white"
-              onClick={() => void handleNativeShare()}
-              type="button"
-            >
-              <Share2 className="h-4 w-4" />
-              Compartir evento
-            </button>
-
-            <div className="rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm text-white/72">
-              Crea {host.name}
+              <button
+                className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm font-semibold text-[#5f4b3f]"
+                onClick={() => onChangeView("people")}
+                type="button"
+              >
+                Ver miembros
+              </button>
+              <button
+                className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm font-semibold text-[#5f4b3f]"
+                onClick={() => void handleNativeShare()}
+                type="button"
+              >
+                <Share2 className="h-4 w-4" />
+                Compartir
+              </button>
             </div>
           </div>
-        </div>
-      </section>
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            <div className="rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">Fecha</p>
+              <p className="mt-2 text-sm font-semibold text-[#1d160f]">{formatEventDateRange(event)}</p>
+            </div>
+            <div className="rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">Lugar</p>
+              <p className="mt-2 text-sm font-semibold text-[#1d160f]">
+                {event.venue}, {event.city}
+              </p>
+            </div>
+            <div className="rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">Creador</p>
+              <p className="mt-2 text-sm font-semibold text-[#1d160f]">{host.name}</p>
+            </div>
+          </div>
+        </SectionCard>
+      ) : (
+        <section className="relative overflow-hidden rounded-[38px] border border-[#eadfd3] text-white shadow-[0_34px_90px_rgba(20,17,16,0.18)]">
+          <img alt={event.title} className="absolute inset-0 h-full w-full object-cover" src={event.coverImage} />
+          <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(16,12,9,0.28),rgba(16,12,9,0.86))]" />
+          <div className="relative p-5 md:p-7">
+            <div className="flex flex-wrap gap-2">
+              <Pill tone="dark">{categoryMeta.label}</Pill>
+              <Pill tone="dark">{event.visibility === "public" ? "Publico" : "Privado"}</Pill>
+              <Pill tone="dark">{guestCount} confirmados</Pill>
+              <Pill tone="dark">{event.priceLabel}</Pill>
+            </div>
+            <h2 className="mt-4 max-w-3xl text-3xl font-black tracking-tight md:text-5xl">
+              {event.title}
+            </h2>
+            <p className="mt-3 max-w-2xl text-sm text-white/76 md:text-base">{event.summary}</p>
+            <div className="mt-5 grid gap-3 md:grid-cols-3">
+              <InfoChip icon={<CalendarDays className="h-4 w-4" />} value={formatEventDateRange(event)} />
+              <InfoChip icon={<MapPin className="h-4 w-4" />} value={`${event.venue}, ${event.city}`} />
+              <InfoChip icon={<Users className="h-4 w-4" />} value={`${guestCount} de ${event.capacity} plazas`} />
+            </div>
+            <div className="mt-5 flex flex-wrap items-center gap-3">
+              {isHost ? (
+                <>
+                  <button
+                    className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] px-5 py-3 text-sm font-semibold text-white shadow-[0_18px_35px_rgba(240,138,36,0.28)]"
+                    onClick={() => onChangeView("people")}
+                    type="button"
+                  >
+                    Gestionar accesos
+                    <ArrowRight className="h-4 w-4" />
+                  </button>
+                  <button
+                    className="inline-flex items-center gap-2 rounded-full border border-white/18 bg-white/10 px-5 py-3 text-sm font-semibold text-white"
+                    onClick={() => onChangeView("chat")}
+                    type="button"
+                  >
+                    Abrir chat general
+                  </button>
+                </>
+              ) : null}
+
+              {accessState.kind === "approved" ? (
+                <>
+                  <button
+                    className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] px-5 py-3 text-sm font-semibold text-white shadow-[0_18px_35px_rgba(240,138,36,0.28)]"
+                    onClick={() => onChangeView("chat")}
+                    type="button"
+                  >
+                    Entrar al chat general
+                    <ArrowRight className="h-4 w-4" />
+                  </button>
+                  <button
+                    className="inline-flex items-center gap-2 rounded-full border border-white/18 bg-white/10 px-5 py-3 text-sm font-semibold text-white"
+                    onClick={() => onLeaveEvent(event.id)}
+                    type="button"
+                  >
+                    Salir del evento
+                  </button>
+                </>
+              ) : null}
+
+              {accessState.kind === "available" ? (
+                <button
+                  className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] px-5 py-3 text-sm font-semibold text-white shadow-[0_18px_35px_rgba(240,138,36,0.28)]"
+                  onClick={() => onRequestEventAccess(event.id)}
+                  type="button"
+                >
+                  Solicitar acceso
+                  <ArrowRight className="h-4 w-4" />
+                </button>
+              ) : null}
+
+              {accessState.kind === "pending" ? (
+                <div className="rounded-full border border-white/18 bg-white/10 px-5 py-3 text-sm font-semibold text-white">
+                  Solicitud pendiente de revision
+                </div>
+              ) : null}
+
+              {accessState.kind === "rejected" ? (
+                <div className="rounded-full border border-white/18 bg-white/10 px-5 py-3 text-sm font-semibold text-white">
+                  Solicitud rechazada
+                </div>
+              ) : null}
+
+              <button
+                className="inline-flex items-center gap-2 rounded-full border border-white/18 bg-white/10 px-5 py-3 text-sm font-semibold text-white"
+                onClick={() => void handleNativeShare()}
+                type="button"
+              >
+                <Share2 className="h-4 w-4" />
+                Compartir evento
+              </button>
+
+              <div className="rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm text-white/72">
+                Crea {host.name}
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
+      <div className={mode === "agenda" ? "space-y-4" : "grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]"}>
         <div className="space-y-4">
           <div className="flex flex-wrap gap-2">
-            {[
-              { id: "overview", label: "Resumen" },
-              { id: "chat", label: "Chat general" },
-              { id: "people", label: "Asistentes" }
-            ].map((item) => {
+            {eventTabs.map((item) => {
               const active = currentView === item.id;
               return (
                 <button
@@ -1229,8 +1692,9 @@ function EventWorkspace({
                   <div>
                     <SectionLabel>Chat general del evento</SectionLabel>
                     <p className="mt-2 text-sm text-[#6d5749]">
-                      Solo los confirmados y el creador pueden escribir aqui. La idea es llegar con
-                      la comunidad ya calentada.
+                      {mode === "agenda"
+                        ? "Este es el grupo principal del evento. Entra aqui para llegar ya con la conversacion empezada."
+                        : "Solo los confirmados y el creador pueden escribir aqui. La idea es llegar con la comunidad ya calentada."}
                     </p>
                   </div>
                   <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-2 text-sm text-[#6d5749]">
@@ -1238,32 +1702,47 @@ function EventWorkspace({
                   </div>
                 </div>
                 <div className="mt-4 space-y-3">
-                  {messages.map((message) =>
-                    message.authorId === "system" ? (
-                      <div
-                        key={message.id}
-                        className="rounded-[20px] border border-dashed border-[#f0d8ca] bg-[#fff3ec] px-4 py-3 text-sm text-[#c86730]"
-                      >
-                        {message.text}
-                      </div>
-                    ) : (
-                      <div
-                        key={message.id}
-                        className="flex gap-3 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4"
-                      >
-                        <AvatarChip user={getUserById(state, message.authorId)} />
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="truncate text-sm font-semibold text-[#1d160f]">
-                              {getUserById(state, message.authorId).name}
+                  {messages.map((message) => {
+                    if (message.authorId === "system") {
+                      return (
+                        <div
+                          key={message.id}
+                          className="rounded-[20px] border border-dashed border-[#f0d8ca] bg-[#fff3ec] px-4 py-3 text-sm text-[#c86730]"
+                        >
+                          {message.text}
+                        </div>
+                      );
+                    }
+
+                    const author = getUserById(state, message.authorId);
+                    const mine = message.authorId === currentUser.id;
+
+                    if (mine) {
+                      return (
+                        <div key={message.id} className="flex justify-end">
+                          <div className="max-w-[560px] rounded-[24px] bg-[#1d160f] px-4 py-3 text-sm text-white shadow-[0_18px_34px_rgba(29,22,15,0.14)]">
+                            <p>{message.text}</p>
+                            <p className="mt-2 text-[11px] text-white/64">
+                              {formatTime(message.createdAt)}
                             </p>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div key={message.id} className="flex gap-3">
+                        <AvatarChip user={author} />
+                        <div className="max-w-[620px] rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm text-[#5f4b3f]">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="truncate font-semibold text-[#1d160f]">{author.name}</p>
                             <span className="text-xs text-[#8f6f59]">{formatTime(message.createdAt)}</span>
                           </div>
-                          <p className="mt-1 text-sm text-[#5f4b3f]">{message.text}</p>
+                          <p className="mt-1">{message.text}</p>
                         </div>
                       </div>
-                    )
-                  )}
+                    );
+                  })}
                 </div>
                 <div className="mt-4 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
                   <label className="block">
@@ -1558,9 +2037,10 @@ function EventWorkspace({
           ) : null}
         </div>
 
+        {mode === "agenda" ? null : (
         <div className="space-y-4">
           <SectionCard>
-            <SectionLabel>{mode === "agenda" ? "Tu agenda" : "Mas eventos"}</SectionLabel>
+            <SectionLabel>Mas eventos</SectionLabel>
             <div className="mt-4 space-y-3">
               {collection.map((item) => {
                 const active = item.id === event.id;
@@ -1662,6 +2142,7 @@ function EventWorkspace({
             </div>
           </SectionCard>
         </div>
+        )}
       </div>
     </div>
   );
@@ -1920,6 +2401,7 @@ function ProfileSection({
   hostedCount,
   joinedCount,
   pendingApprovalsCount,
+  onLogout,
   onResetDemo,
   onSwitchUser,
   state
@@ -1928,6 +2410,7 @@ function ProfileSection({
   hostedCount: number;
   joinedCount: number;
   pendingApprovalsCount: number;
+  onLogout: () => void;
   onResetDemo: () => void;
   onSwitchUser: (userId: string) => void;
   state: PersistedState;
@@ -1983,12 +2466,19 @@ function ProfileSection({
 
       <section className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
         <SectionCard>
-          <SectionLabel>Modo demo</SectionLabel>
+          <SectionLabel>Cuenta y demo</SectionLabel>
           <p className="mt-3 text-sm text-[#5f4b3f]">
-            Cambia entre perfiles para probar creadores, asistentes, aprobaciones y rechazos desde
-            ambos lados del producto.
+            Puedes cerrar sesion o resetear los datos demo para volver al estado inicial cuando
+            quieras.
           </p>
           <div className="mt-4 flex flex-wrap gap-3">
+            <button
+              className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm font-semibold text-[#5f4b3f]"
+              onClick={onLogout}
+              type="button"
+            >
+              Cerrar sesion
+            </button>
             <button
               className="inline-flex items-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
               onClick={onResetDemo}
@@ -2001,7 +2491,11 @@ function ProfileSection({
         </SectionCard>
 
         <SectionCard>
-          <SectionLabel>Cambiar de perfil</SectionLabel>
+          <SectionLabel>Cambiar de perfil demo</SectionLabel>
+          <p className="mt-3 text-sm text-[#5f4b3f]">
+            Mantengo esto aqui para que podamos probar rapido aprobaciones, rechazos y privados
+            desde distintos lados del flujo.
+          </p>
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             {state.users.map((user) => {
               const active = user.id === currentUser.id;
@@ -2034,12 +2528,14 @@ function ProfileSection({
 
 function SyncStatus({
   error,
+  isRealtimeConnected,
   isSyncing
 }: {
   error: string | null;
+  isRealtimeConnected: boolean;
   isSyncing: boolean;
 }) {
-  if (!error && !isSyncing) {
+  if (!error && !isSyncing && isRealtimeConnected) {
     return null;
   }
 
@@ -2053,7 +2549,9 @@ function SyncStatus({
     >
       {error
         ? `Backend local: ${error}`
-        : "Backend local activo: cambios guardandose en SQLite."}
+        : `Backend local activo: cambios guardandose en SQLite. Chat en tiempo real ${
+            isRealtimeConnected ? "conectado" : "reconectando"
+          }.`}
     </section>
   );
 }
@@ -2209,7 +2707,7 @@ function buildNavItems() {
     },
     {
       id: "agenda" as const,
-      label: "Agenda",
+      label: "Grupos",
       icon: <Ticket className="h-4 w-4" />
     },
     {

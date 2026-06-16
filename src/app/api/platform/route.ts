@@ -1,14 +1,12 @@
 import { NextResponse } from "next/server";
-import { getPlatformData } from "@/lib/server/tindereo-service";
+import { getPlatformEnvelope } from "@/lib/server/tindereo-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export function GET() {
   try {
-    return NextResponse.json({
-      data: getPlatformData()
-    });
+    return NextResponse.json(getPlatformEnvelope());
   } catch (error) {
     return NextResponse.json(
       {

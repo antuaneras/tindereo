@@ -169,6 +169,7 @@ export interface PlatformDataEnvelope {
   data: AppDataset;
   meta?: {
     currentUserId?: string | null;
+    revision?: number;
     selectedEventId?: string | null;
   };
 }

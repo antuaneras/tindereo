@@ -167,6 +167,7 @@ export const DEMO_USERS: PlatformUser[] = [
 
 export const DEFAULT_STATE: PersistedState = {
   session: {
+    isAuthenticated: false,
     currentUserId: "lucia-serrano",
     activeTab: "discover",
     selectedEventId: "after-solar-2026",

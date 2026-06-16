@@ -10,7 +10,7 @@
     "build": "node ./scripts/build.mjs",
     "build:compile": "next build --experimental-build-mode compile",
     "build:full": "next build",
-    "start": "next start",
+    "start": "next start -H 0.0.0.0",
     "typecheck": "node ./node_modules/typescript/bin/tsc --noEmit"
   },
   "dependencies": {
