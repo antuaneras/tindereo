@@ -7,6 +7,7 @@ import {
   CalendarDays,
   Camera,
   Check,
+  ChevronLeft,
   ChevronRight,
   Clock3,
   Compass,
@@ -16,6 +17,7 @@ import {
   Image,
   MapPin,
   MessageCircle,
+  Plus,
   RefreshCw,
   Search,
   Send,
@@ -25,7 +27,8 @@ import {
   Ticket,
   User,
   UserPlus,
-  Users
+  Users,
+  X
 } from "lucide-react";
 import { OrganizerDashboard } from "@/components/tindereo/organizer-dashboard";
 import {
@@ -51,6 +54,7 @@ import type {
   PlatformAction,
   PlatformDataEnvelope,
   PersistedState,
+  PrivateChat,
   PlatformUser,
   RegisterUserInput,
   SocialPost,
@@ -172,10 +176,172 @@ type MediaDraft = {
   caption: string;
 };
 
+type ReplyTarget = {
+  authorLabel: string;
+  id: string;
+  snippet: string;
+};
+
+type MobileEventScreenState = {
+  originTab: "discover" | "agenda";
+};
+
+type StoryViewerState = {
+  activeStoryId: string;
+  storyIds: string[];
+};
+
+type ProfileDrilldown = "created" | "agenda" | "friends" | "private";
+
+type CameraComposerState = {
+  caption: string;
+  eventId: string | null;
+  imageUrl: string;
+  mode: "post" | "story";
+  taggedUserIds: string[];
+  target: "user" | "event";
+};
+
+const CAMERA_COMPOSER_INITIAL_STATE: CameraComposerState = {
+  caption: "",
+  eventId: null,
+  imageUrl: "",
+  mode: "story",
+  taggedUserIds: [],
+  target: "user"
+};
+
+const POST_LIKES_STORAGE_KEY = "tindereo-post-likes-v1";
+const REPLY_PREFIX = "[reply:";
+
+function buildReplyMessageText(text: string, replyTarget: ReplyTarget | null) {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  if (!replyTarget) {
+    return trimmed;
+  }
+
+  const encodedAuthor = encodeURIComponent(replyTarget.authorLabel);
+  const encodedSnippet = encodeURIComponent(replyTarget.snippet);
+  return `${REPLY_PREFIX}${replyTarget.id}|${encodedAuthor}|${encodedSnippet}] ${trimmed}`;
+}
+
+function parseReplyMessageText(text: string) {
+  if (!text.startsWith(REPLY_PREFIX)) {
+    return {
+      body: text,
+      reply: null as ReplyTarget | null
+    };
+  }
+
+  const closingIndex = text.indexOf("]");
+  if (closingIndex === -1) {
+    return {
+      body: text,
+      reply: null as ReplyTarget | null
+    };
+  }
+
+  const metadata = text.slice(REPLY_PREFIX.length, closingIndex).split("|");
+  if (metadata.length < 3) {
+    return {
+      body: text,
+      reply: null as ReplyTarget | null
+    };
+  }
+
+  return {
+    body: text.slice(closingIndex + 1).trim(),
+    reply: {
+      id: metadata[0] ?? "",
+      authorLabel: decodeURIComponent(metadata[1] ?? ""),
+      snippet: decodeURIComponent(metadata.slice(2).join("|"))
+    }
+  };
+}
+
+function buildReplyTarget(authorLabel: string, id: string, text: string): ReplyTarget {
+  const parsed = parseReplyMessageText(text);
+  return {
+    authorLabel,
+    id,
+    snippet: (parsed.body || text).slice(0, 92)
+  };
+}
+
+function buildPostLikeKey(userId: string, postId: string) {
+  return `${userId}:${postId}`;
+}
+
+function readStoredPostLikes() {
+  if (typeof window === "undefined") {
+    return [] as string[];
+  }
+
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(POST_LIKES_STORAGE_KEY) ?? "[]"
+    ) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function appendTaggedHandles(caption: string, taggedUsers: PlatformUser[]) {
+  const trimmedCaption = caption.trim();
+  if (taggedUsers.length === 0) {
+    return trimmedCaption;
+  }
+
+  const mentions = taggedUsers.map((user) => user.handle).join(" ");
+  return `${trimmedCaption}${trimmedCaption ? "\n\n" : ""}${mentions}`;
+}
+
+function buildStorySequence(stories: StoryItem[], activeStoryId: string) {
+  const orderedStories = stories
+    .slice()
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  const activeIndex = orderedStories.findIndex((story) => story.id === activeStoryId);
+
+  if (activeIndex <= 0) {
+    return orderedStories.map((story) => story.id);
+  }
+
+  return [
+    ...orderedStories.slice(activeIndex).map((story) => story.id),
+    ...orderedStories.slice(0, activeIndex).map((story) => story.id)
+  ];
+}
+
+async function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
 export function TindereoApp() {
   const [state, setState] = useState<PersistedState | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<EventCategory | "all">("all");
+  const [likedPostKeys, setLikedPostKeys] = useState<string[]>([]);
+  const [storyViewer, setStoryViewer] = useState<StoryViewerState | null>(null);
+  const [storyReplyDraft, setStoryReplyDraft] = useState("");
+  const [cameraComposer, setCameraComposer] = useState<CameraComposerState | null>(null);
+  const [uiNotice, setUiNotice] = useState<string | null>(null);
+  const [mobileEventScreen, setMobileEventScreen] = useState<MobileEventScreenState | null>(null);
+  const [mobilePrivateChatOpen, setMobilePrivateChatOpen] = useState(false);
+  const [profileDrilldown, setProfileDrilldown] = useState<ProfileDrilldown | null>(null);
+  const [profileFocusUserId, setProfileFocusUserId] = useState<string | null>(null);
+  const [eventListMode, setEventListMode] = useState<"joined" | "discover">("joined");
+  const [groupReplyTargets, setGroupReplyTargets] = useState<Record<string, ReplyTarget | null>>({});
+  const [privateReplyTarget, setPrivateReplyTarget] = useState<ReplyTarget | null>(null);
   const [groupDrafts, setGroupDrafts] = useState<Record<string, string>>({});
   const [requestDrafts, setRequestDrafts] = useState<Record<string, string>>({});
   const [selectedAttendeeByEvent, setSelectedAttendeeByEvent] = useState<Record<string, string>>({});
@@ -244,6 +410,27 @@ export function TindereoApp() {
   };
 
   applyPlatformPayloadRef.current = applyPlatformPayload;
+
+  useEffect(() => {
+    setLikedPostKeys(readStoredPostLikes());
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(POST_LIKES_STORAGE_KEY, JSON.stringify(likedPostKeys));
+  }, [likedPostKeys]);
+
+  useEffect(() => {
+    if (!uiNotice || typeof window === "undefined") {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => setUiNotice(null), 2600);
+    return () => window.clearTimeout(timeoutId);
+  }, [uiNotice]);
 
   const loadPlatform = async (sessionPatch?: Partial<PersistedState["session"]>) => {
     setSyncError(null);
@@ -430,6 +617,11 @@ export function TindereoApp() {
   };
 
   const navigateToTab = (tab: AppTab) => {
+    setMobileEventScreen(null);
+    setMobilePrivateChatOpen(false);
+    setProfileDrilldown(null);
+    setProfileFocusUserId(null);
+
     if (tab === "agenda") {
       updateSession({
         activeTab: "agenda",
@@ -459,6 +651,9 @@ export function TindereoApp() {
       selectedEventView: shouldOpenChat ? "chat" : "overview",
       activeTab: tab
     });
+    setMobileEventScreen({
+      originTab: tab === "agenda" ? "agenda" : "discover"
+    });
   };
 
   const openPrivateChat = (chatId: string) => {
@@ -466,6 +661,7 @@ export function TindereoApp() {
       activeTab: "inbox",
       selectedPrivateChatId: chatId
     });
+    setMobilePrivateChatOpen(true);
   };
 
   const handleRequestEventAccess = async (eventId: string) => {
@@ -526,6 +722,7 @@ export function TindereoApp() {
           selectedEventId: invite.eventId,
           selectedEventView: "chat"
         });
+        setMobileEventScreen({ originTab: "agenda" });
       }
     }
   };
@@ -553,7 +750,8 @@ export function TindereoApp() {
 
   const handleSendGroupMessage = async (eventId: string) => {
     const message = groupDrafts[eventId] ?? "";
-    if (!message.trim()) {
+    const nextText = buildReplyMessageText(message, groupReplyTargets[eventId] ?? null);
+    if (!nextText.trim()) {
       return;
     }
 
@@ -561,11 +759,12 @@ export function TindereoApp() {
       type: "send-group-message",
       actorId: state.session.currentUserId,
       eventId,
-      text: message
+      text: nextText
     });
 
     if (payload) {
       setGroupDrafts((current) => ({ ...current, [eventId]: "" }));
+      setGroupReplyTargets((current) => ({ ...current, [eventId]: null }));
     }
   };
 
@@ -610,54 +809,60 @@ export function TindereoApp() {
       return;
     }
 
+    const nextText = buildReplyMessageText(privateDraft, privateReplyTarget);
+
     const payload = await runPlatformMutation({
       type: "send-private-message",
       actorId: state.session.currentUserId,
       chatId: selectedPrivateChat.id,
-      text: privateDraft
+      text: nextText
     });
 
     if (payload) {
       setPrivateDraft("");
+      setPrivateReplyTarget(null);
     }
   };
 
-  const handleCreateUserPost = async () => {
-    if (!profileMediaDraft.imageUrl.trim()) {
+  const handleCreateUserPost = async (draft: MediaDraft = profileMediaDraft) => {
+    if (!draft.imageUrl.trim()) {
       return;
     }
 
     const payload = await runPlatformMutation({
       type: "create-user-post",
       actorId: state.session.currentUserId,
-      imageUrl: profileMediaDraft.imageUrl,
-      caption: profileMediaDraft.caption
+      imageUrl: draft.imageUrl,
+      caption: draft.caption
     });
 
-    if (payload) {
+    if (payload && draft === profileMediaDraft) {
       setProfileMediaDraft({ imageUrl: "", caption: "" });
     }
   };
 
-  const handleCreateUserStory = async () => {
-    if (!profileStoryDraft.imageUrl.trim()) {
+  const handleCreateUserStory = async (draft: MediaDraft = profileStoryDraft) => {
+    if (!draft.imageUrl.trim()) {
       return;
     }
 
     const payload = await runPlatformMutation({
       type: "create-user-story",
       actorId: state.session.currentUserId,
-      imageUrl: profileStoryDraft.imageUrl,
-      caption: profileStoryDraft.caption
+      imageUrl: draft.imageUrl,
+      caption: draft.caption
     });
 
-    if (payload) {
+    if (payload && draft === profileStoryDraft) {
       setProfileStoryDraft({ imageUrl: "", caption: "" });
     }
   };
 
-  const handleCreateEventPost = async (eventId: string) => {
-    const draft = eventMediaDrafts[eventId];
+  const handleCreateEventPost = async (
+    eventId: string,
+    draftOverride?: { imageUrl: string; caption: string }
+  ) => {
+    const draft = draftOverride ?? eventMediaDrafts[eventId];
     if (!draft?.imageUrl.trim()) {
       return;
     }
@@ -670,7 +875,7 @@ export function TindereoApp() {
       caption: draft.caption
     });
 
-    if (payload) {
+    if (payload && !draftOverride) {
       setEventMediaDrafts((current) => ({
         ...current,
         [eventId]: { imageUrl: "", caption: "" }
@@ -678,8 +883,11 @@ export function TindereoApp() {
     }
   };
 
-  const handleCreateEventStory = async (eventId: string) => {
-    const draft = eventMediaDrafts[eventId];
+  const handleCreateEventStory = async (
+    eventId: string,
+    draftOverride?: { imageUrl: string; caption: string }
+  ) => {
+    const draft = draftOverride ?? eventMediaDrafts[eventId];
     if (!draft?.imageUrl.trim()) {
       return;
     }
@@ -692,7 +900,7 @@ export function TindereoApp() {
       caption: draft.caption
     });
 
-    if (payload) {
+    if (payload && !draftOverride) {
       setEventMediaDrafts((current) => ({
         ...current,
         [eventId]: { imageUrl: "", caption: "" }
@@ -715,6 +923,13 @@ export function TindereoApp() {
           })
         : current
     );
+    setMobileEventScreen(null);
+    setMobilePrivateChatOpen(false);
+    setProfileDrilldown(null);
+    setProfileFocusUserId(null);
+    setStoryViewer(null);
+    setStoryReplyDraft("");
+    setPrivateReplyTarget(null);
   };
 
   const handleLogout = () => {
@@ -724,6 +939,11 @@ export function TindereoApp() {
       selectedEventView: "overview",
       selectedPrivateChatId: null
     });
+    setMobileEventScreen(null);
+    setMobilePrivateChatOpen(false);
+    setStoryViewer(null);
+    setProfileDrilldown(null);
+    setProfileFocusUserId(null);
   };
 
   const handleCreateEvent = async (input: CreateEventInput) => {
@@ -739,6 +959,7 @@ export function TindereoApp() {
         selectedEventId: payload.meta?.selectedEventId ?? null,
         selectedEventView: "chat"
       });
+      setMobileEventScreen({ originTab: "agenda" });
     }
   };
 
@@ -765,6 +986,16 @@ export function TindereoApp() {
       setProfileMediaDraft({ imageUrl: "", caption: "" });
       setProfileStoryDraft({ imageUrl: "", caption: "" });
       setEventMediaDrafts({});
+      setStoryViewer(null);
+      setStoryReplyDraft("");
+      setCameraComposer(null);
+      setMobileEventScreen(null);
+      setMobilePrivateChatOpen(false);
+      setProfileDrilldown(null);
+      setProfileFocusUserId(null);
+      setGroupReplyTargets({});
+      setPrivateReplyTarget(null);
+      setUiNotice("Demo reiniciada.");
     } catch (error) {
       setSyncError(
         error instanceof Error ? error.message : "No se pudo reiniciar la demo en backend."
@@ -774,10 +1005,318 @@ export function TindereoApp() {
     }
   };
 
+  const togglePostLike = (postId: string) => {
+    const likeKey = buildPostLikeKey(currentUser.id, postId);
+    setLikedPostKeys((current) =>
+      current.includes(likeKey)
+        ? current.filter((item) => item !== likeKey)
+        : [...current, likeKey]
+    );
+  };
+
+  const openStoryViewer = (storyId: string, sourceStories: StoryItem[]) => {
+    setStoryViewer({
+      activeStoryId: storyId,
+      storyIds: buildStorySequence(sourceStories, storyId)
+    });
+    setStoryReplyDraft("");
+  };
+
+  const closeStoryViewer = () => {
+    setStoryViewer(null);
+    setStoryReplyDraft("");
+  };
+
+  const moveStoryViewer = (direction: "next" | "prev") => {
+    setStoryViewer((current) => {
+      if (!current || current.storyIds.length <= 1) {
+        return current;
+      }
+
+      const currentIndex = current.storyIds.findIndex((storyId) => storyId === current.activeStoryId);
+      if (currentIndex === -1) {
+        return current;
+      }
+
+      const delta = direction === "next" ? 1 : -1;
+      const nextIndex = (currentIndex + delta + current.storyIds.length) % current.storyIds.length;
+
+      return {
+        ...current,
+        activeStoryId: current.storyIds[nextIndex] ?? current.activeStoryId
+      };
+    });
+  };
+
+  const openCameraComposer = (draft?: Partial<CameraComposerState>) => {
+    const selectedEventForCamera =
+      state.session.selectedEventId !== null
+        ? getEventById(state, state.session.selectedEventId)
+        : null;
+    const canPostAsSelectedEvent = Boolean(
+      selectedEventForCamera && selectedEventForCamera.hostId === currentUser.id
+    );
+
+    setCameraComposer({
+      ...CAMERA_COMPOSER_INITIAL_STATE,
+      target: canPostAsSelectedEvent ? "event" : "user",
+      eventId: canPostAsSelectedEvent ? selectedEventForCamera?.id ?? null : null,
+      ...draft
+    });
+  };
+
+  const closeCameraComposer = () => {
+    setCameraComposer(null);
+  };
+
+  const handleCameraFileChange = async (file: File | null) => {
+    if (!file) {
+      return;
+    }
+
+    try {
+      const imageUrl = await readFileAsDataUrl(file);
+      setCameraComposer((current) =>
+        current
+          ? {
+              ...current,
+              imageUrl
+            }
+          : current
+      );
+    } catch {
+      setUiNotice("No se pudo leer esa imagen.");
+    }
+  };
+
+  const submitCameraComposer = async () => {
+    if (!cameraComposer?.imageUrl) {
+      return;
+    }
+
+    const taggedUsers = state.users.filter((user) =>
+      cameraComposer.taggedUserIds.includes(user.id)
+    );
+    const caption = appendTaggedHandles(cameraComposer.caption, taggedUsers);
+    const mediaDraft = {
+      imageUrl: cameraComposer.imageUrl,
+      caption
+    };
+
+    if (cameraComposer.target === "event" && cameraComposer.eventId) {
+      if (cameraComposer.mode === "story") {
+        await handleCreateEventStory(cameraComposer.eventId, mediaDraft);
+      } else {
+        await handleCreateEventPost(cameraComposer.eventId, mediaDraft);
+      }
+    } else if (cameraComposer.mode === "story") {
+      await handleCreateUserStory(mediaDraft);
+    } else {
+      await handleCreateUserPost(mediaDraft);
+    }
+
+    setCameraComposer(null);
+    setUiNotice(cameraComposer.mode === "story" ? "Historia publicada." : "Publicacion subida.");
+  };
+
+  const closeMobileEventScreen = () => {
+    if (state.session.selectedEventView !== "chat") {
+      updateSession({ selectedEventView: "chat" });
+      return;
+    }
+
+    setMobileEventScreen(null);
+  };
+
+  const openProfileDrilldown = (detail: ProfileDrilldown) => {
+    setProfileDrilldown(detail);
+  };
+
+  const openProfileUser = (userId: string) => {
+    setProfileFocusUserId(userId);
+  };
+
+  const closeProfileFocus = () => {
+    setProfileFocusUserId(null);
+  };
+
+  const closeProfileDrilldown = () => {
+    setProfileDrilldown(null);
+  };
+
+  const handleStoryReply = async (message: string, reaction?: string) => {
+    if (!storyViewer) {
+      return;
+    }
+
+    const story = state.stories.find((item) => item.id === storyViewer.activeStoryId);
+    if (!story) {
+      return;
+    }
+
+    const replyText = [reaction, message.trim()].filter(Boolean).join(" ").trim();
+    if (!replyText) {
+      return;
+    }
+
+    if (story.authorType === "event") {
+      if (!hasEventAccess(state, story.authorId, currentUser.id)) {
+        setUiNotice("Entra al evento para responder a su historia.");
+        return;
+      }
+
+      await runPlatformMutation({
+        type: "send-group-message",
+        actorId: state.session.currentUserId,
+        eventId: story.authorId,
+        text: `Respondio a la historia: ${replyText}`
+      });
+      setStoryReplyDraft("");
+      setUiNotice("Respuesta enviada al chat del evento.");
+      return;
+    }
+
+    if (story.authorId === currentUser.id) {
+      return;
+    }
+
+    const existingChat =
+      state.privateChats.find(
+        (chat) =>
+          chat.participantIds.includes(currentUser.id) && chat.participantIds.includes(story.authorId)
+      ) ?? null;
+
+    if (existingChat) {
+      await runPlatformMutation({
+        type: "send-private-message",
+        actorId: state.session.currentUserId,
+        chatId: existingChat.id,
+        text: `Respondio a tu historia: ${replyText}`
+      });
+      setStoryReplyDraft("");
+      setUiNotice("Mensaje enviado por privado.");
+      return;
+    }
+
+    const sharedEvent = state.events.find(
+      (event) =>
+        hasEventAccess(state, event.id, currentUser.id) && hasEventAccess(state, event.id, story.authorId)
+    );
+
+    if (!sharedEvent) {
+      setUiNotice("Todavia no compartis evento para abrir privado.");
+      return;
+    }
+
+    await runPlatformMutation({
+      type: "send-private-request",
+      actorId: state.session.currentUserId,
+      eventId: sharedEvent.id,
+      targetUserId: story.authorId,
+      message: `Respondio a tu historia: ${replyText}`
+    });
+    setStoryReplyDraft("");
+    setUiNotice("Solicitud privada enviada desde la historia.");
+  };
+
+  const focusedProfileUser =
+    profileFocusUserId && profileFocusUserId !== currentUser.id
+      ? getUserById(state, profileFocusUserId)
+      : null;
+  const activeStory =
+    storyViewer &&
+    storyViewer.storyIds.length > 0
+      ? state.stories.find((story) => story.id === storyViewer.activeStoryId) ?? null
+      : null;
+  const shouldHideMobileNavigation = Boolean(
+    storyViewer ||
+      cameraComposer ||
+      mobileEventScreen ||
+      mobilePrivateChatOpen ||
+      profileDrilldown ||
+      focusedProfileUser
+  );
+
   return (
     <div className="min-h-screen bg-[#f6efe7] text-[#1d160f]">
-      <main className="mx-auto max-w-[1240px] px-4 pb-32 pt-5 md:px-6 md:pb-10 md:pt-6">
-        <header className="flex flex-wrap items-center justify-between gap-4">
+      <div className="md:hidden">
+        <MobileAppShell
+          activeStory={activeStory}
+          cameraComposer={cameraComposer}
+          closeCameraComposer={closeCameraComposer}
+          closeMobileEventScreen={closeMobileEventScreen}
+          closePrivateChat={() => setMobilePrivateChatOpen(false)}
+          closeProfileDrilldown={closeProfileDrilldown}
+          closeProfileFocus={closeProfileFocus}
+          closeStoryViewer={closeStoryViewer}
+          currentUser={currentUser}
+          eventListMode={eventListMode}
+          focusedProfileUser={focusedProfileUser}
+          friendSuggestions={friendSuggestions}
+          friends={friends}
+          groupDrafts={groupDrafts}
+          groupReplyTargets={groupReplyTargets}
+          hostedCount={hostedCount}
+          isSyncing={isSyncing}
+          joinedCount={joinedCount}
+          likedPostKeys={likedPostKeys}
+          mobileEventScreen={mobileEventScreen}
+          mobilePrivateChatOpen={mobilePrivateChatOpen}
+          onChangeEventListMode={setEventListMode}
+          onChangeEventView={(view) => updateSession({ selectedEventView: view })}
+          onChangeGroupDraft={(eventId, value) =>
+            setGroupDrafts((current) => ({ ...current, [eventId]: value }))
+          }
+          onChangePrivateDraft={setPrivateDraft}
+          onCreateEvent={(input) => void handleCreateEvent(input)}
+          onGoToCreate={() => navigateToTab("host")}
+          onOpenCamera={openCameraComposer}
+          onOpenEvent={(eventId, tab) => openEvent(eventId, tab)}
+          onOpenPrivateChat={openPrivateChat}
+          onOpenProfileDrilldown={openProfileDrilldown}
+          onOpenProfileUser={openProfileUser}
+          onOpenStory={openStoryViewer}
+          onMoveStory={moveStoryViewer}
+          onReplyGroupMessage={(eventId, replyTarget) =>
+            setGroupReplyTargets((current) => ({ ...current, [eventId]: replyTarget }))
+          }
+          onReplyPrivateMessage={setPrivateReplyTarget}
+          onRespondEventAccess={handleRespondEventAccess}
+          onRespondEventInvite={(inviteId, accept) => void handleRespondEventInvite(inviteId, accept)}
+          onRespondPrivateRequest={handleRespondPrivateRequest}
+          onRequestEventAccess={handleRequestEventAccess}
+          onResetDemo={() => void handleResetDemo()}
+          onSendGroupMessage={handleSendGroupMessage}
+          onSendPrivateMessage={() => void handleSendPrivateMessage()}
+          onSendPrivateRequest={handleSendPrivateRequest}
+          onSendStoryReply={(message, reaction) => void handleStoryReply(message, reaction)}
+          onSubmitCameraComposer={() => void submitCameraComposer()}
+          onSwitchUser={handleSwitchUser}
+          onToggleFriendship={(targetUserId) => void handleToggleFriendship(targetUserId)}
+          onTogglePostLike={togglePostLike}
+          onUpdateCameraComposer={setCameraComposer}
+          onUploadCameraFile={handleCameraFileChange}
+          pendingApprovalsCount={pendingApprovalsCount}
+          pendingEventInvites={pendingEventInvites}
+          privateChats={privateChats}
+          privateDraft={privateDraft}
+          privateReplyTarget={privateReplyTarget}
+          profileDrilldown={profileDrilldown}
+          searchTerm={searchTerm}
+          selectedChat={selectedPrivateChat}
+          selectedEvent={getEventById(state, state.session.selectedEventId)}
+          setSearchTerm={setSearchTerm}
+          setStoryReplyDraft={setStoryReplyDraft}
+          state={state}
+          storyReplyDraft={storyReplyDraft}
+          storyViewer={storyViewer}
+          uiNotice={uiNotice}
+        />
+      </div>
+
+      <div className="hidden md:block">
+        <main className="mx-auto max-w-[1240px] px-4 pb-16 pt-6 md:px-6">
+        <header className="hidden flex-wrap items-center justify-between gap-4">
           <BrandMark />
           {/*
           <div className="flex items-center gap-2">
@@ -1105,9 +1644,1740 @@ export function TindereoApp() {
             state={state}
           />
         ) : null}
-      </main>
+        </main>
+      </div>
 
-      <MobileNavigation activeTab={state.session.activeTab} onChange={navigateToTab} />
+      <MobileNavigation
+        activeTab={state.session.activeTab}
+        hidden={shouldHideMobileNavigation}
+        onChange={navigateToTab}
+        onOpenCamera={() => openCameraComposer()}
+      />
+    </div>
+  );
+}
+
+function MobileAppShell({
+  activeStory,
+  cameraComposer,
+  closeCameraComposer,
+  closeMobileEventScreen,
+  closePrivateChat,
+  closeProfileDrilldown,
+  closeProfileFocus,
+  closeStoryViewer,
+  currentUser,
+  eventListMode,
+  focusedProfileUser,
+  friendSuggestions,
+  friends,
+  groupDrafts,
+  groupReplyTargets,
+  hostedCount,
+  isSyncing,
+  joinedCount,
+  likedPostKeys,
+  mobileEventScreen,
+  mobilePrivateChatOpen,
+  onChangeEventListMode,
+  onChangeEventView,
+  onChangeGroupDraft,
+  onChangePrivateDraft,
+  onCreateEvent,
+  onGoToCreate,
+  onOpenCamera,
+  onOpenEvent,
+  onOpenPrivateChat,
+  onOpenProfileDrilldown,
+  onOpenProfileUser,
+  onOpenStory,
+  onMoveStory,
+  onReplyGroupMessage,
+  onReplyPrivateMessage,
+  onRespondEventAccess,
+  onRespondEventInvite,
+  onRespondPrivateRequest,
+  onRequestEventAccess,
+  onResetDemo,
+  onSendGroupMessage,
+  onSendPrivateMessage,
+  onSendPrivateRequest,
+  onSendStoryReply,
+  onSubmitCameraComposer,
+  onSwitchUser,
+  onToggleFriendship,
+  onTogglePostLike,
+  onUpdateCameraComposer,
+  onUploadCameraFile,
+  pendingApprovalsCount,
+  pendingEventInvites,
+  privateChats,
+  privateDraft,
+  privateReplyTarget,
+  profileDrilldown,
+  searchTerm,
+  selectedChat,
+  selectedEvent,
+  setSearchTerm,
+  setStoryReplyDraft,
+  state,
+  storyReplyDraft,
+  storyViewer,
+  uiNotice
+}: {
+  activeStory: StoryItem | null;
+  cameraComposer: CameraComposerState | null;
+  closeCameraComposer: () => void;
+  closeMobileEventScreen: () => void;
+  closePrivateChat: () => void;
+  closeProfileDrilldown: () => void;
+  closeProfileFocus: () => void;
+  closeStoryViewer: () => void;
+  currentUser: PlatformUser;
+  eventListMode: "joined" | "discover";
+  focusedProfileUser: PlatformUser | null;
+  friendSuggestions: PlatformUser[];
+  friends: PlatformUser[];
+  groupDrafts: Record<string, string>;
+  groupReplyTargets: Record<string, ReplyTarget | null>;
+  hostedCount: number;
+  isSyncing: boolean;
+  joinedCount: number;
+  likedPostKeys: string[];
+  mobileEventScreen: MobileEventScreenState | null;
+  mobilePrivateChatOpen: boolean;
+  onChangeEventListMode: Dispatch<SetStateAction<"joined" | "discover">>;
+  onChangeEventView: (view: EventDetailTab) => void;
+  onChangeGroupDraft: (eventId: string, value: string) => void;
+  onChangePrivateDraft: (value: string) => void;
+  onCreateEvent: (input: CreateEventInput) => void;
+  onGoToCreate: () => void;
+  onOpenCamera: (draft?: Partial<CameraComposerState>) => void;
+  onOpenEvent: (eventId: string, tab: AppTab) => void;
+  onOpenPrivateChat: (chatId: string) => void;
+  onOpenProfileDrilldown: (detail: ProfileDrilldown) => void;
+  onOpenProfileUser: (userId: string) => void;
+  onOpenStory: (storyId: string, stories: StoryItem[]) => void;
+  onMoveStory: (direction: "next" | "prev") => void;
+  onReplyGroupMessage: (eventId: string, replyTarget: ReplyTarget | null) => void;
+  onReplyPrivateMessage: (replyTarget: ReplyTarget | null) => void;
+  onRespondEventAccess: (membershipId: string, accept: boolean) => void;
+  onRespondEventInvite: (inviteId: string, accept: boolean) => void;
+  onRespondPrivateRequest: (requestId: string, accept: boolean) => void;
+  onRequestEventAccess: (eventId: string) => void;
+  onResetDemo: () => void;
+  onSendGroupMessage: (eventId: string) => void;
+  onSendPrivateMessage: () => void;
+  onSendPrivateRequest: (eventId: string, targetUserId: string) => void;
+  onSendStoryReply: (message: string, reaction?: string) => void;
+  onSubmitCameraComposer: () => void;
+  onSwitchUser: (userId: string) => void;
+  onToggleFriendship: (targetUserId: string) => void;
+  onTogglePostLike: (postId: string) => void;
+  onUpdateCameraComposer: Dispatch<SetStateAction<CameraComposerState | null>>;
+  onUploadCameraFile: (file: File | null) => void;
+  pendingApprovalsCount: number;
+  pendingEventInvites: EventInvite[];
+  privateChats: ReturnType<typeof getPrivateChatsForUser>;
+  privateDraft: string;
+  privateReplyTarget: ReplyTarget | null;
+  profileDrilldown: ProfileDrilldown | null;
+  searchTerm: string;
+  selectedChat: ReturnType<typeof getPrivateChatsForUser>[number] | null;
+  selectedEvent: EventItem | null;
+  setSearchTerm: Dispatch<SetStateAction<string>>;
+  setStoryReplyDraft: Dispatch<SetStateAction<string>>;
+  state: PersistedState;
+  storyReplyDraft: string;
+  storyViewer: StoryViewerState | null;
+  uiNotice: string | null;
+}) {
+  const activeStories = getActiveStories(state, currentUser.id);
+  const feedPosts = getFeedPosts(state, currentUser.id);
+  const joinedEvents = getJoinedEvents(state, currentUser.id);
+  const discoverEvents = getDiscoverFeedEvents(state, currentUser.id);
+  const hostedEvents = getHostedEvents(state, currentUser.id);
+  const profilePosts = getProfilePosts(state, currentUser.id);
+  const profileStories = getProfileStories(state, currentUser.id);
+  const privateRequests = getPrivateRequestsForUser(state, currentUser.id);
+  const incomingRequests = privateRequests.filter(
+    (request) => request.toUserId === currentUser.id && request.status === "pending"
+  );
+
+  if (cameraComposer) {
+    return (
+      <MobileCameraComposerScreen
+        composer={cameraComposer}
+        currentUser={currentUser}
+        onClose={closeCameraComposer}
+        onSubmit={onSubmitCameraComposer}
+        onUpdateComposer={onUpdateCameraComposer}
+        onUploadCameraFile={onUploadCameraFile}
+        state={state}
+      />
+    );
+  }
+
+  if (storyViewer && activeStory) {
+    return (
+        <StoryViewerOverlay
+          activeStory={activeStory}
+          onClose={closeStoryViewer}
+          onMove={onMoveStory}
+          onSendReply={onSendStoryReply}
+        replyDraft={storyReplyDraft}
+        setReplyDraft={setStoryReplyDraft}
+        state={state}
+      />
+    );
+  }
+
+  if (focusedProfileUser) {
+    return (
+      <MobileUserProfileScreen
+        currentUser={currentUser}
+        likedPostKeys={likedPostKeys}
+        onBack={closeProfileFocus}
+        onOpenStory={onOpenStory}
+        onToggleFriendship={onToggleFriendship}
+        onTogglePostLike={onTogglePostLike}
+        state={state}
+        user={focusedProfileUser}
+      />
+    );
+  }
+
+  if (profileDrilldown) {
+    return (
+      <MobileProfileCollectionScreen
+        currentUser={currentUser}
+        detail={profileDrilldown}
+        onBack={closeProfileDrilldown}
+        onOpenChat={(chatId) => {
+          onOpenPrivateChat(chatId);
+          closeProfileDrilldown();
+        }}
+        onOpenEvent={(eventId) => {
+          closeProfileDrilldown();
+          onOpenEvent(eventId, "agenda");
+        }}
+        onOpenProfileUser={(userId) => {
+          closeProfileDrilldown();
+          onOpenProfileUser(userId);
+        }}
+        privateChats={privateChats}
+        state={state}
+      />
+    );
+  }
+
+  if (mobileEventScreen && selectedEvent) {
+    return (
+      <MobileEventScreen
+        currentUser={currentUser}
+        draft={groupDrafts[selectedEvent.id] ?? ""}
+        event={selectedEvent}
+        onBack={closeMobileEventScreen}
+        onChangeDraft={(value) => onChangeGroupDraft(selectedEvent.id, value)}
+        onChangeView={onChangeEventView}
+        onOpenCamera={(draft) => onOpenCamera({ eventId: selectedEvent.id, target: "event", ...draft })}
+        onOpenPrivateChat={onOpenPrivateChat}
+        onOpenProfileUser={onOpenProfileUser}
+        onOpenStory={onOpenStory}
+        onQuickPrivateRequest={(targetUserId) => onSendPrivateRequest(selectedEvent.id, targetUserId)}
+        onReplyMessage={(replyTarget) => onReplyGroupMessage(selectedEvent.id, replyTarget)}
+        onRequestAccess={() => onRequestEventAccess(selectedEvent.id)}
+        onRespondEventAccess={onRespondEventAccess}
+        onRespondPrivateRequest={onRespondPrivateRequest}
+        onSendMessage={() => onSendGroupMessage(selectedEvent.id)}
+        onToggleFriendship={onToggleFriendship}
+        replyTarget={groupReplyTargets[selectedEvent.id] ?? null}
+        state={state}
+        view={state.session.selectedEventView}
+      />
+    );
+  }
+
+  if (state.session.activeTab === "inbox" && mobilePrivateChatOpen && selectedChat) {
+    return (
+      <MobilePrivateChatScreen
+        chat={selectedChat}
+        currentUser={currentUser}
+        draft={privateDraft}
+        onBack={closePrivateChat}
+        onChangeDraft={onChangePrivateDraft}
+        onOpenProfileUser={onOpenProfileUser}
+        onReplyMessage={onReplyPrivateMessage}
+        onSendMessage={onSendPrivateMessage}
+        replyTarget={privateReplyTarget}
+        state={state}
+      />
+    );
+  }
+
+  return (
+    <div className="min-h-screen px-3 pb-28 pt-3">
+      {uiNotice ? (
+        <div className="mb-3 rounded-[22px] border border-[#eadfd3] bg-white/90 px-4 py-3 text-sm text-[#5f4b3f] shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+          {uiNotice}
+        </div>
+      ) : null}
+
+      {state.session.activeTab === "discover" ? (
+        <MobileHomeScreen
+          currentUser={currentUser}
+          likedPostKeys={likedPostKeys}
+          onOpenEvent={(eventId) => onOpenEvent(eventId, "discover")}
+          onOpenProfileUser={onOpenProfileUser}
+          onOpenStory={onOpenStory}
+          onRespondEventInvite={onRespondEventInvite}
+          onTogglePostLike={onTogglePostLike}
+          pendingEventInvites={pendingEventInvites}
+          posts={feedPosts}
+          state={state}
+          stories={activeStories}
+        />
+      ) : null}
+
+      {state.session.activeTab === "agenda" ? (
+        <MobileEventsScreen
+          currentUser={currentUser}
+          discoverEvents={discoverEvents}
+          eventListMode={eventListMode}
+          joinedEvents={joinedEvents}
+          onChangeEventListMode={onChangeEventListMode}
+          onCreateEvent={onGoToCreate}
+          onOpenEvent={(eventId) => onOpenEvent(eventId, eventListMode === "joined" ? "agenda" : "discover")}
+          searchTerm={searchTerm}
+          setSearchTerm={setSearchTerm}
+          state={state}
+        />
+      ) : null}
+
+      {state.session.activeTab === "inbox" ? (
+        <MobileInboxScreen
+          currentUser={currentUser}
+          incomingRequests={incomingRequests}
+          onOpenChat={onOpenPrivateChat}
+          onOpenProfileUser={onOpenProfileUser}
+          onRespondPrivateRequest={onRespondPrivateRequest}
+          privateChats={privateChats}
+          state={state}
+        />
+      ) : null}
+
+      {state.session.activeTab === "profile" ? (
+        <MobileProfileScreen
+          currentUser={currentUser}
+          friendSuggestions={friendSuggestions}
+          friends={friends}
+          hostedCount={hostedCount}
+          joinedCount={joinedCount}
+          onOpenCreateEvent={onGoToCreate}
+          onOpenDetail={onOpenProfileDrilldown}
+          onOpenProfileUser={onOpenProfileUser}
+          onOpenStory={onOpenStory}
+          onResetDemo={onResetDemo}
+          onSwitchUser={onSwitchUser}
+          onToggleFriendship={onToggleFriendship}
+          pendingApprovalsCount={pendingApprovalsCount}
+          pendingEventInvites={pendingEventInvites}
+          profilePosts={profilePosts}
+          profileStories={profileStories}
+          state={state}
+        />
+      ) : null}
+
+      {state.session.activeTab === "host" ? (
+        <div className="space-y-4">
+          <div className="rounded-[28px] border border-[#eadfd3] bg-white/90 px-4 py-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">
+              Crear evento
+            </p>
+            <p className="mt-2 text-sm text-[#5f4b3f]">
+              Esta vista sigue en modo admin/demo de momento. El flujo social nuevo vive arriba.
+            </p>
+          </div>
+          <OrganizerDashboard
+            currentUser={currentUser}
+            onCreateEvent={onCreateEvent}
+            onRespondToAccess={onRespondEventAccess}
+            onSelectEvent={(eventId) => onOpenEvent(eventId, "discover")}
+            state={state}
+          />
+        </div>
+      ) : null}
+
+      {isSyncing ? (
+        <div className="mt-4 text-center text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+          Sincronizando cambios...
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MobileHomeScreen({
+  currentUser,
+  likedPostKeys,
+  onOpenEvent,
+  onOpenProfileUser,
+  onOpenStory,
+  onRespondEventInvite,
+  onTogglePostLike,
+  pendingEventInvites,
+  posts,
+  state,
+  stories
+}: {
+  currentUser: PlatformUser;
+  likedPostKeys: string[];
+  onOpenEvent: (eventId: string) => void;
+  onOpenProfileUser: (userId: string) => void;
+  onOpenStory: (storyId: string, stories: StoryItem[]) => void;
+  onRespondEventInvite: (inviteId: string, accept: boolean) => void;
+  onTogglePostLike: (postId: string) => void;
+  pendingEventInvites: EventInvite[];
+  posts: SocialPost[];
+  state: PersistedState;
+  stories: StoryItem[];
+}) {
+  return (
+    <div className="space-y-4">
+      <MobileStoriesBar onOpenStory={onOpenStory} state={state} stories={stories} />
+
+      {pendingEventInvites.length > 0 ? (
+        <section className="space-y-3">
+          {pendingEventInvites.map((invite) => {
+            const event = getEventById(state, invite.eventId);
+            const sender = getUserById(state, invite.fromUserId);
+
+            if (!event) {
+              return null;
+            }
+
+            return (
+              <div
+                key={invite.id}
+                className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]"
+              >
+                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">
+                  Invitacion directa
+                </p>
+                <h2 className="mt-2 text-xl font-black tracking-tight text-[#1d160f]">
+                  {event.title}
+                </h2>
+                <p className="mt-2 text-sm text-[#5f4b3f]">{sender.name} te ha invitado personalmente.</p>
+                <div className="mt-4 flex gap-2">
+                  <button
+                    className="flex-1 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+                    onClick={() => onRespondEventInvite(invite.id, true)}
+                    type="button"
+                  >
+                    Entrar
+                  </button>
+                  <button
+                    className="rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#6d5749]"
+                    onClick={() => onRespondEventInvite(invite.id, false)}
+                    type="button"
+                  >
+                    Rechazar
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </section>
+      ) : null}
+
+      <section className="space-y-4">
+        {posts.map((post) => (
+          <MobileFeedPostCard
+            key={post.id}
+            currentUser={currentUser}
+            likedPostKeys={likedPostKeys}
+            onOpenEvent={onOpenEvent}
+            onOpenProfileUser={onOpenProfileUser}
+            onTogglePostLike={onTogglePostLike}
+            post={post}
+            state={state}
+          />
+        ))}
+      </section>
+    </div>
+  );
+}
+
+function MobileEventsScreen({
+  currentUser,
+  discoverEvents,
+  eventListMode,
+  joinedEvents,
+  onChangeEventListMode,
+  onCreateEvent,
+  onOpenEvent,
+  searchTerm,
+  setSearchTerm,
+  state
+}: {
+  currentUser: PlatformUser;
+  discoverEvents: EventItem[];
+  eventListMode: "joined" | "discover";
+  joinedEvents: EventItem[];
+  onChangeEventListMode: Dispatch<SetStateAction<"joined" | "discover">>;
+  onCreateEvent: () => void;
+  onOpenEvent: (eventId: string) => void;
+  searchTerm: string;
+  setSearchTerm: Dispatch<SetStateAction<string>>;
+  state: PersistedState;
+}) {
+  const collection = (eventListMode === "joined" ? joinedEvents : discoverEvents).filter((event) => {
+    const haystack = `${event.title} ${event.city} ${event.venue} ${event.tags.join(" ")}`.toLowerCase();
+    return searchTerm.trim() === "" || haystack.includes(searchTerm.toLowerCase());
+  });
+
+  return (
+    <div className="space-y-4">
+      <section className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">Eventos</p>
+            <h1 className="mt-2 text-2xl font-black tracking-tight text-[#1d160f]">
+              {eventListMode === "joined" ? "Tus chats de evento" : "Descubrir planes"}
+            </h1>
+          </div>
+          <button
+            className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-[#1d160f] text-white"
+            onClick={onCreateEvent}
+            type="button"
+          >
+            <Plus className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="mt-4 flex gap-2">
+          {[
+            { id: "joined" as const, label: "Mis eventos" },
+            { id: "discover" as const, label: "Descubrir" }
+          ].map((item) => (
+            <button
+              key={item.id}
+              className={`rounded-full px-4 py-3 text-sm font-semibold ${
+                eventListMode === item.id
+                  ? "bg-[#1d160f] text-white"
+                  : "border border-[#eadfd3] bg-[#fffaf6] text-[#6d5749]"
+              }`}
+              onClick={() => onChangeEventListMode(item.id)}
+              type="button"
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        <label className="mt-4 flex items-center gap-2 rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3">
+          <Search className="h-4 w-4 text-[#8f6f59]" />
+          <input
+            className="w-full border-none bg-transparent p-0 text-sm text-[#1d160f] outline-none"
+            onChange={(event) => setSearchTerm(event.target.value)}
+            placeholder={eventListMode === "joined" ? "Busca un grupo..." : "Madrid, brunch, live set..."}
+            value={searchTerm}
+          />
+        </label>
+      </section>
+
+      <section className="space-y-3">
+        {collection.map((event) => {
+          const lastMessage = getEventMessages(state, event.id).slice(-1)[0] ?? null;
+          const isJoined = hasEventAccess(state, event.id, currentUser.id);
+          return (
+            <button
+              key={event.id}
+              className="flex w-full items-center gap-3 rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 text-left shadow-[0_20px_40px_rgba(52,34,22,0.08)]"
+              onClick={() => onOpenEvent(event.id)}
+              type="button"
+            >
+              <div className="h-16 w-16 overflow-hidden rounded-[20px] border border-[#eadfd3] bg-[#f4e3d8]">
+                <img alt={event.title} className="h-full w-full object-cover" src={event.coverImage} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="truncate font-semibold text-[#1d160f]">{event.title}</p>
+                  <span className="text-[11px] text-[#8f6f59]">
+                    {formatTime(lastMessage?.createdAt ?? event.startsAt)}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-[#8f6f59]">
+                  {getEventGuestCount(state, event.id)} asistentes - {event.city}
+                </p>
+                <p className="mt-2 truncate text-sm text-[#5f4b3f]">
+                  {isJoined ? lastMessage?.text ?? event.summary : event.summary}
+                </p>
+              </div>
+            </button>
+          );
+        })}
+      </section>
+    </div>
+  );
+}
+
+function MobileInboxScreen({
+  currentUser,
+  incomingRequests,
+  onOpenChat,
+  onOpenProfileUser,
+  onRespondPrivateRequest,
+  privateChats,
+  state
+}: {
+  currentUser: PlatformUser;
+  incomingRequests: ReturnType<typeof getPrivateRequestsForUser>;
+  onOpenChat: (chatId: string) => void;
+  onOpenProfileUser: (userId: string) => void;
+  onRespondPrivateRequest: (requestId: string, accept: boolean) => void;
+  privateChats: ReturnType<typeof getPrivateChatsForUser>;
+  state: PersistedState;
+}) {
+  return (
+    <div className="space-y-4">
+      <section className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+        <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">Chats</p>
+        <h1 className="mt-2 text-2xl font-black tracking-tight text-[#1d160f]">
+          Conversaciones privadas
+        </h1>
+      </section>
+
+      {incomingRequests.length > 0 ? (
+        <section className="space-y-3">
+          {incomingRequests.map((request) => {
+            const sender = getUserById(state, request.fromUserId);
+            return (
+              <div
+                key={request.id}
+                className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]"
+              >
+                <button className="flex items-center gap-3" onClick={() => onOpenProfileUser(sender.id)} type="button">
+                  <AvatarChip user={sender} />
+                  <div className="text-left">
+                    <p className="font-semibold text-[#1d160f]">{sender.name}</p>
+                    <p className="text-sm text-[#8f6f59]">{sender.handle}</p>
+                  </div>
+                </button>
+                <p className="mt-3 text-sm text-[#5f4b3f]">{request.message}</p>
+                <div className="mt-4 flex gap-2">
+                  <button
+                    className="flex-1 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+                    onClick={() => onRespondPrivateRequest(request.id, true)}
+                    type="button"
+                  >
+                    Aceptar
+                  </button>
+                  <button
+                    className="rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#6d5749]"
+                    onClick={() => onRespondPrivateRequest(request.id, false)}
+                    type="button"
+                  >
+                    Rechazar
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </section>
+      ) : null}
+
+      <section className="space-y-3">
+        {privateChats.map((chat) => {
+          const partner = getChatPartner(state, chat, currentUser.id);
+          const lastMessage = getLatestPrivateMessage(state, chat.id);
+          return (
+            <button
+              key={chat.id}
+              className="flex w-full items-center gap-3 rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 text-left shadow-[0_20px_40px_rgba(52,34,22,0.08)]"
+              onClick={() => onOpenChat(chat.id)}
+              type="button"
+            >
+              <AvatarChip user={partner} />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="truncate font-semibold text-[#1d160f]">{partner.name}</p>
+                  <span className="text-[11px] text-[#8f6f59]">
+                    {lastMessage ? formatTime(lastMessage.createdAt) : ""}
+                  </span>
+                </div>
+                <p className="mt-1 truncate text-sm text-[#5f4b3f]">
+                  {lastMessage?.text ?? "Chat listo para empezar"}
+                </p>
+              </div>
+            </button>
+          );
+        })}
+      </section>
+    </div>
+  );
+}
+
+function MobileProfileScreen({
+  currentUser,
+  friendSuggestions,
+  friends,
+  hostedCount,
+  joinedCount,
+  onOpenCreateEvent,
+  onOpenDetail,
+  onOpenProfileUser,
+  onOpenStory,
+  onResetDemo,
+  onSwitchUser,
+  onToggleFriendship,
+  pendingApprovalsCount,
+  pendingEventInvites,
+  profilePosts,
+  profileStories,
+  state
+}: {
+  currentUser: PlatformUser;
+  friendSuggestions: PlatformUser[];
+  friends: PlatformUser[];
+  hostedCount: number;
+  joinedCount: number;
+  onOpenCreateEvent: () => void;
+  onOpenDetail: (detail: ProfileDrilldown) => void;
+  onOpenProfileUser: (userId: string) => void;
+  onOpenStory: (storyId: string, stories: StoryItem[]) => void;
+  onResetDemo: () => void;
+  onSwitchUser: (userId: string) => void;
+  onToggleFriendship: (targetUserId: string) => void;
+  pendingApprovalsCount: number;
+  pendingEventInvites: EventInvite[];
+  profilePosts: SocialPost[];
+  profileStories: StoryItem[];
+  state: PersistedState;
+}) {
+  const privateChats = getPrivateChatsForUser(state, currentUser.id);
+
+  return (
+    <div className="space-y-4">
+      <section className="overflow-hidden rounded-[32px] border border-[#eadfd3] bg-white/92 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+        <div className="h-32 bg-[#eadfd3]">
+          <img alt={currentUser.name} className="h-full w-full object-cover" src={currentUser.coverImage} />
+        </div>
+        <div className="px-4 pb-4">
+          <div className="-mt-10 flex items-end gap-3">
+            <div className="h-20 w-20 overflow-hidden rounded-[26px] border-4 border-[#f6efe7] bg-white">
+              <img alt={currentUser.name} className="h-full w-full object-cover" src={currentUser.avatar} />
+            </div>
+            <div className="pb-1">
+              <h1 className="text-2xl font-black tracking-tight text-[#1d160f]">{currentUser.name}</h1>
+              <p className="text-sm text-[#8f6f59]">{currentUser.title}</p>
+            </div>
+          </div>
+          <p className="mt-4 text-sm leading-6 text-[#5f4b3f]">{currentUser.bio}</p>
+          <div className="mt-4 grid grid-cols-4 gap-2">
+            <button className="rounded-[20px] border border-[#eadfd3] bg-[#fffaf6] px-3 py-4" onClick={() => onOpenDetail("created")} type="button">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">Creados</p>
+              <p className="mt-2 text-xl font-black text-[#1d160f]">{hostedCount}</p>
+            </button>
+            <button className="rounded-[20px] border border-[#eadfd3] bg-[#fffaf6] px-3 py-4" onClick={() => onOpenDetail("agenda")} type="button">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">Agenda</p>
+              <p className="mt-2 text-xl font-black text-[#1d160f]">{joinedCount}</p>
+            </button>
+            <button className="rounded-[20px] border border-[#eadfd3] bg-[#fffaf6] px-3 py-4" onClick={() => onOpenDetail("friends")} type="button">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">Amigos</p>
+              <p className="mt-2 text-xl font-black text-[#1d160f]">{friends.length}</p>
+            </button>
+            <button className="rounded-[20px] border border-[#eadfd3] bg-[#fffaf6] px-3 py-4" onClick={() => onOpenDetail("private")} type="button">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">Privado</p>
+              <p className="mt-2 text-xl font-black text-[#1d160f]">{privateChats.length}</p>
+            </button>
+          </div>
+          <div className="mt-4 flex gap-2">
+            <button className="flex-1 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white" onClick={onOpenCreateEvent} type="button">
+              Crear evento
+            </button>
+            <button className="rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#6d5749]" onClick={onResetDemo} type="button">
+              Refrescar
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {profileStories.length > 0 ? (
+        <section className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">Historias</p>
+          <div className="mt-3 flex gap-3 overflow-x-auto pb-1">
+            {profileStories.map((story) => (
+              <button key={story.id} className="w-[86px] flex-none text-left" onClick={() => onOpenStory(story.id, profileStories)} type="button">
+                <div className="rounded-[24px] bg-[linear-gradient(135deg,#ff6b57,#f08a24)] p-[2px]">
+                  <div className="h-[110px] overflow-hidden rounded-[22px] border border-white/70">
+                    <img alt={currentUser.name} className="h-full w-full object-cover" src={story.imageUrl} />
+                  </div>
+                </div>
+                <p className="mt-2 truncate text-xs font-semibold text-[#1d160f]">
+                  {story.caption || "Historia"}
+                </p>
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {profilePosts.length > 0 ? (
+        <section className="grid grid-cols-3 gap-2">
+          {profilePosts.map((post) => (
+            <div key={post.id} className="overflow-hidden rounded-[22px] border border-[#eadfd3] bg-white/92">
+              <img alt={currentUser.name} className="h-28 w-full object-cover" src={post.imageUrl} />
+            </div>
+          ))}
+        </section>
+      ) : null}
+
+      <section className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">Sugerencias</p>
+          <p className="text-xs text-[#8f6f59]">{pendingApprovalsCount} por revisar</p>
+        </div>
+        <div className="mt-3 space-y-3">
+          {friendSuggestions.slice(0, 3).map((user) => (
+            <div key={user.id} className="flex items-center gap-3 rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] p-3">
+              <button className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => onOpenProfileUser(user.id)} type="button">
+                <AvatarChip user={user} />
+                <div className="min-w-0">
+                  <p className="truncate font-semibold text-[#1d160f]">{user.name}</p>
+                  <p className="truncate text-sm text-[#8f6f59]">{user.handle}</p>
+                </div>
+              </button>
+              <button className="rounded-full bg-[#1d160f] px-4 py-2 text-sm font-semibold text-white" onClick={() => onToggleFriendship(user.id)} type="button">
+                Seguir
+              </button>
+            </div>
+          ))}
+        </div>
+        {pendingEventInvites.length > 0 ? (
+          <p className="mt-4 text-sm text-[#5f4b3f]">
+            Tienes {pendingEventInvites.length} invitaciones directas pendientes.
+          </p>
+        ) : null}
+        <div className="mt-4 flex gap-2 overflow-x-auto pb-1">
+          {state.users.map((user) => (
+            <button key={user.id} className={`rounded-full px-4 py-3 text-sm font-semibold ${user.id === currentUser.id ? "bg-[#1d160f] text-white" : "border border-[#eadfd3] bg-[#fffaf6] text-[#6d5749]"}`} onClick={() => onSwitchUser(user.id)} type="button">
+              {user.name.split(" ")[0]}
+            </button>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function MobileStoriesBar({
+  onOpenStory,
+  state,
+  stories
+}: {
+  onOpenStory: (storyId: string, stories: StoryItem[]) => void;
+  state: PersistedState;
+  stories: StoryItem[];
+}) {
+  const latestStories = Array.from(
+    stories.reduce((collection, story) => {
+      const key = `${story.authorType}:${story.authorId}`;
+      if (!collection.has(key)) {
+        collection.set(key, story);
+      }
+      return collection;
+    }, new Map<string, StoryItem>()).values()
+  );
+
+  return (
+    <section className="rounded-[28px] border border-[#eadfd3] bg-white/92 px-3 py-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+      <div className="flex gap-3 overflow-x-auto pb-1">
+        {latestStories.map((story) => {
+          const user = story.authorType === "user" ? getUserById(state, story.authorId) : null;
+          const event = story.authorType === "event" ? getEventById(state, story.authorId) : null;
+          const label = user?.name ?? event?.title ?? "Story";
+          return (
+            <button key={story.id} className="w-[78px] flex-none text-center" onClick={() => onOpenStory(story.id, stories)} type="button">
+              <div className="mx-auto w-fit rounded-full bg-[linear-gradient(135deg,#ff6b57,#f08a24)] p-[2px]">
+                <div className="h-[64px] w-[64px] overflow-hidden rounded-full border-2 border-white bg-[#f6efe7]">
+                  <img alt={label} className="h-full w-full object-cover" src={story.imageUrl} />
+                </div>
+              </div>
+              <p className="mt-2 line-clamp-2 text-[11px] font-semibold text-[#1d160f]">{label}</p>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function MobileFeedPostCard({
+  currentUser,
+  likedPostKeys,
+  onOpenEvent,
+  onOpenProfileUser,
+  onTogglePostLike,
+  post,
+  state
+}: {
+  currentUser: PlatformUser;
+  likedPostKeys: string[];
+  onOpenEvent: (eventId: string) => void;
+  onOpenProfileUser: (userId: string) => void;
+  onTogglePostLike: (postId: string) => void;
+  post: SocialPost;
+  state: PersistedState;
+}) {
+  const likeKey = buildPostLikeKey(currentUser.id, post.id);
+  const liked = likedPostKeys.includes(likeKey);
+
+  if (post.authorType === "event") {
+    const event = getEventById(state, post.authorId);
+    if (!event) {
+      return null;
+    }
+
+    return (
+      <article className="overflow-hidden rounded-[28px] border border-[#eadfd3] bg-white/92 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+        <button className="flex w-full items-center gap-3 p-4 text-left" onClick={() => onOpenEvent(event.id)} type="button">
+          <div className="h-12 w-12 overflow-hidden rounded-[18px] border border-[#eadfd3]">
+            <img alt={event.title} className="h-full w-full object-cover" src={event.coverImage} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="truncate font-semibold text-[#1d160f]">{event.title}</p>
+            <p className="text-sm text-[#8f6f59]">Evento</p>
+          </div>
+        </button>
+        <img alt={event.title} className="h-[320px] w-full object-cover" src={post.imageUrl} />
+        <div className="p-4">
+          <div className="flex items-center gap-3">
+            <button className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold ${liked ? "bg-[#fff0e8] text-[#ff6b57]" : "border border-[#eadfd3] bg-white text-[#6d5749]"}`} onClick={() => onTogglePostLike(post.id)} type="button">
+              <Heart className={`h-4 w-4 ${liked ? "fill-current" : ""}`} />
+              Like
+            </button>
+          </div>
+          <p className="mt-3 text-sm leading-6 text-[#5f4b3f]">{post.caption}</p>
+        </div>
+      </article>
+    );
+  }
+
+  const author = getUserById(state, post.authorId);
+
+  return (
+    <article className="overflow-hidden rounded-[28px] border border-[#eadfd3] bg-white/92 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+      <button className="flex w-full items-center gap-3 p-4 text-left" onClick={() => onOpenProfileUser(author.id)} type="button">
+        <AvatarChip user={author} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-semibold text-[#1d160f]">{author.name}</p>
+          <p className="text-sm text-[#8f6f59]">{author.handle}</p>
+        </div>
+      </button>
+      <img alt={author.name} className="h-[340px] w-full object-cover" src={post.imageUrl} />
+      <div className="p-4">
+        <button className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold ${liked ? "bg-[#fff0e8] text-[#ff6b57]" : "border border-[#eadfd3] bg-white text-[#6d5749]"}`} onClick={() => onTogglePostLike(post.id)} type="button">
+          <Heart className={`h-4 w-4 ${liked ? "fill-current" : ""}`} />
+          Like
+        </button>
+        <p className="mt-3 text-sm leading-6 text-[#5f4b3f]">{post.caption}</p>
+      </div>
+    </article>
+  );
+}
+
+function StoryViewerOverlay({
+  activeStory,
+  onClose,
+  onMove,
+  onSendReply,
+  replyDraft,
+  setReplyDraft,
+  state
+}: {
+  activeStory: StoryItem;
+  onClose: () => void;
+  onMove: (direction: "next" | "prev") => void;
+  onSendReply: (message: string, reaction?: string) => void;
+  replyDraft: string;
+  setReplyDraft: Dispatch<SetStateAction<string>>;
+  state: PersistedState;
+}) {
+  const authorName =
+    activeStory.authorType === "user"
+      ? getUserById(state, activeStory.authorId).name
+      : getEventById(state, activeStory.authorId)?.title ?? "Story";
+
+  return (
+    <div className="fixed inset-0 z-[70] bg-[#120d0a] text-white">
+      <div className="flex h-full flex-col">
+        <div className="flex items-center justify-between gap-3 px-4 pb-3 pt-[max(1rem,env(safe-area-inset-top))]">
+          <div>
+            <p className="font-semibold">{authorName}</p>
+            <p className="text-sm text-white/70">{formatRelativeTime(activeStory.createdAt)}</p>
+          </div>
+          <button className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10" onClick={onClose} type="button">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="relative flex-1 overflow-hidden">
+          <button className="absolute inset-y-0 left-0 z-10 w-1/3" onClick={() => onMove("prev")} type="button" />
+          <button className="absolute inset-y-0 right-0 z-10 w-1/3" onClick={() => onMove("next")} type="button" />
+          <img alt={authorName} className="h-full w-full object-cover" src={activeStory.imageUrl} />
+          <div className="absolute inset-x-0 bottom-0 bg-[linear-gradient(180deg,transparent,rgba(0,0,0,0.78))] px-4 pb-6 pt-16">
+            <p className="text-base font-semibold">{activeStory.caption}</p>
+          </div>
+        </div>
+        <div className="space-y-3 border-t border-white/10 bg-[#120d0a] px-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] pt-4">
+          <div className="flex gap-2">
+            {["❤️", "🔥", "👏", "😍"].map((reaction) => (
+              <button
+                key={reaction}
+                className="rounded-full bg-white/10 px-3 py-2 text-lg"
+                onClick={() => onSendReply("", reaction)}
+                type="button"
+              >
+                {reaction}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              className="min-w-0 flex-1 rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm text-white outline-none"
+              onChange={(event) => setReplyDraft(event.target.value)}
+              placeholder="Responder historia..."
+              value={replyDraft}
+            />
+            <button className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-white text-[#1d160f]" onClick={() => onSendReply(replyDraft)} type="button">
+              <Send className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MobilePrivateChatScreen({
+  chat,
+  currentUser,
+  draft,
+  onBack,
+  onChangeDraft,
+  onOpenProfileUser,
+  onReplyMessage,
+  onSendMessage,
+  replyTarget,
+  state
+}: {
+  chat: PrivateChat;
+  currentUser: PlatformUser;
+  draft: string;
+  onBack: () => void;
+  onChangeDraft: (value: string) => void;
+  onOpenProfileUser: (userId: string) => void;
+  onReplyMessage: (replyTarget: ReplyTarget | null) => void;
+  onSendMessage: () => void;
+  replyTarget: ReplyTarget | null;
+  state: PersistedState;
+}) {
+  const partner = getChatPartner(state, chat, currentUser.id);
+  const messages = getPrivateMessages(state, chat.id);
+
+  return (
+    <div className="fixed inset-0 z-[60] flex flex-col bg-[#efe8df]">
+      <div className="flex items-center gap-3 border-b border-[#eadfd3] bg-white/95 px-4 pb-3 pt-[max(1rem,env(safe-area-inset-top))]">
+        <button className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-[#fff0e8]" onClick={onBack} type="button">
+          <ChevronLeft className="h-5 w-5 text-[#1d160f]" />
+        </button>
+        <button className="flex min-w-0 items-center gap-3 text-left" onClick={() => onOpenProfileUser(partner.id)} type="button">
+          <AvatarChip user={partner} />
+          <div className="min-w-0">
+            <p className="truncate font-semibold text-[#1d160f]">{partner.name}</p>
+            <p className="truncate text-sm text-[#8f6f59]">{partner.handle}</p>
+          </div>
+        </button>
+      </div>
+      <div className="flex-1 space-y-3 overflow-y-auto bg-[radial-gradient(circle_at_top_left,rgba(255,107,87,0.08),transparent_24%),#efe8df] px-3 py-4">
+        {messages.map((message) => {
+          const mine = message.authorId === currentUser.id;
+          const parsed = parseReplyMessageText(message.text);
+          const author = mine ? currentUser.name : partner.name;
+          return (
+            <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
+              <button
+                className={`max-w-[82%] rounded-[22px] px-4 py-3 text-left text-sm ${
+                  mine ? "bg-[#d1f7c4] text-[#1d160f]" : "bg-white text-[#1d160f]"
+                }`}
+                onClick={() => onReplyMessage(buildReplyTarget(author, message.id, parsed.body))}
+                type="button"
+              >
+                {parsed.reply ? (
+                  <div className="mb-2 rounded-[16px] border-l-2 border-[#ff6b57] bg-black/5 px-3 py-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
+                      {parsed.reply.authorLabel}
+                    </p>
+                    <p className="mt-1 text-xs text-[#5f4b3f]">{parsed.reply.snippet}</p>
+                  </div>
+                ) : null}
+                <p>{parsed.body}</p>
+                <p className="mt-2 text-[11px] text-[#8f6f59]">{formatTime(message.createdAt)}</p>
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <div className="border-t border-[#eadfd3] bg-white/95 px-3 pb-[calc(env(safe-area-inset-bottom)+0.85rem)] pt-3">
+        {replyTarget ? (
+          <div className="mb-3 flex items-start justify-between gap-3 rounded-[18px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
+                Respondiendo a {replyTarget.authorLabel}
+              </p>
+              <p className="mt-1 text-sm text-[#5f4b3f]">{replyTarget.snippet}</p>
+            </div>
+            <button className="text-[#8f6f59]" onClick={() => onReplyMessage(null)} type="button">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        ) : null}
+        <div className="flex items-center gap-2">
+          <input
+            className="min-w-0 flex-1 rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm text-[#1d160f] outline-none"
+            onChange={(event) => onChangeDraft(event.target.value)}
+            placeholder={`Escribe a ${partner.name.split(" ")[0]}...`}
+            value={draft}
+          />
+          <button className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-[#1d160f] text-white" onClick={onSendMessage} type="button">
+            <Send className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MobileEventScreen({
+  currentUser,
+  draft,
+  event,
+  onBack,
+  onChangeDraft,
+  onChangeView,
+  onOpenCamera,
+  onOpenPrivateChat,
+  onOpenProfileUser,
+  onOpenStory,
+  onQuickPrivateRequest,
+  onReplyMessage,
+  onRequestAccess,
+  onRespondEventAccess,
+  onRespondPrivateRequest,
+  onSendMessage,
+  onToggleFriendship,
+  replyTarget,
+  state,
+  view
+}: {
+  currentUser: PlatformUser;
+  draft: string;
+  event: EventItem;
+  onBack: () => void;
+  onChangeDraft: (value: string) => void;
+  onChangeView: (view: EventDetailTab) => void;
+  onOpenCamera: (draft?: Partial<CameraComposerState>) => void;
+  onOpenPrivateChat: (chatId: string) => void;
+  onOpenProfileUser: (userId: string) => void;
+  onOpenStory: (storyId: string, stories: StoryItem[]) => void;
+  onQuickPrivateRequest: (targetUserId: string) => void;
+  onReplyMessage: (replyTarget: ReplyTarget | null) => void;
+  onRequestAccess: () => void;
+  onRespondEventAccess: (membershipId: string, accept: boolean) => void;
+  onRespondPrivateRequest: (requestId: string, accept: boolean) => void;
+  onSendMessage: () => void;
+  onToggleFriendship: (targetUserId: string) => void;
+  replyTarget: ReplyTarget | null;
+  state: PersistedState;
+  view: EventDetailTab;
+}) {
+  const host = getUserById(state, event.hostId);
+  const accessState = getEventAccessState(state, event.id, currentUser.id);
+  const canAccess = hasEventAccess(state, event.id, currentUser.id);
+  const messages = getEventMessages(state, event.id);
+  const eventStories = getEventStories(state, event.id);
+  const eventPosts = getEventPosts(state, event.id);
+  const members = getEventMembers(state, event.id);
+  const friendMembers = getEventFriendMembers(state, event.id, currentUser.id);
+  const pendingRequests = getEventPendingRequests(state, event.id);
+
+  return (
+    <div className="fixed inset-0 z-[60] flex flex-col bg-[#efe8df]">
+      <div className="flex items-center gap-3 border-b border-[#eadfd3] bg-white/95 px-4 pb-3 pt-[max(1rem,env(safe-area-inset-top))]">
+        <button className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-[#fff0e8]" onClick={onBack} type="button">
+          <ChevronLeft className="h-5 w-5 text-[#1d160f]" />
+        </button>
+        <button className="min-w-0 flex-1 text-left" onClick={() => onChangeView(view === "chat" ? "overview" : "chat")} type="button">
+          <p className="truncate font-semibold text-[#1d160f]">{event.title}</p>
+          <p className="truncate text-sm text-[#8f6f59]">
+            {view === "chat" ? "Toca para ver detalles y miembros" : "Volver al chat"}
+          </p>
+        </button>
+      </div>
+
+      {view === "chat" ? (
+        <>
+          <div className="flex-1 space-y-3 overflow-y-auto bg-[radial-gradient(circle_at_top_left,rgba(255,107,87,0.08),transparent_24%),#efe8df] px-3 py-4">
+            {!canAccess ? (
+              <div className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+                <img alt={event.title} className="h-44 w-full rounded-[22px] object-cover" src={event.coverImage} />
+                <h2 className="mt-4 text-2xl font-black tracking-tight text-[#1d160f]">{event.title}</h2>
+                <p className="mt-2 text-sm text-[#5f4b3f]">{event.summary}</p>
+                <button className="mt-4 w-full rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white" onClick={onRequestAccess} type="button">
+                  {accessState.kind === "pending" ? "Solicitud pendiente" : "Pedir acceso"}
+                </button>
+              </div>
+            ) : null}
+
+            {canAccess
+              ? messages.map((message) => {
+                  const mine = message.authorId === currentUser.id;
+                  const authorLabel =
+                    message.authorId === "system"
+                      ? "Sistema"
+                      : getUserById(state, message.authorId).name;
+                  const parsed = parseReplyMessageText(message.text);
+                  return (
+                    <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
+                      <button
+                        className={`max-w-[84%] rounded-[22px] px-4 py-3 text-left text-sm ${
+                          message.authorId === "system"
+                            ? "bg-white text-[#5f4b3f]"
+                            : mine
+                              ? "bg-[#d1f7c4] text-[#1d160f]"
+                              : "bg-white text-[#1d160f]"
+                        }`}
+                        onClick={() => onReplyMessage(buildReplyTarget(authorLabel, message.id, parsed.body))}
+                        type="button"
+                      >
+                        {message.authorId !== "system" ? (
+                          <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
+                            {authorLabel}
+                          </p>
+                        ) : null}
+                        {parsed.reply ? (
+                          <div className="mb-2 rounded-[16px] border-l-2 border-[#ff6b57] bg-black/5 px-3 py-2">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
+                              {parsed.reply.authorLabel}
+                            </p>
+                            <p className="mt-1 text-xs text-[#5f4b3f]">{parsed.reply.snippet}</p>
+                          </div>
+                        ) : null}
+                        <p>{parsed.body}</p>
+                        <p className="mt-2 text-[11px] text-[#8f6f59]">{formatTime(message.createdAt)}</p>
+                      </button>
+                    </div>
+                  );
+                })
+              : null}
+          </div>
+          {canAccess ? (
+            <div className="border-t border-[#eadfd3] bg-white/95 px-3 pb-[calc(env(safe-area-inset-bottom)+0.85rem)] pt-3">
+              {replyTarget ? (
+                <div className="mb-3 flex items-start justify-between gap-3 rounded-[18px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
+                      Respondiendo a {replyTarget.authorLabel}
+                    </p>
+                    <p className="mt-1 text-sm text-[#5f4b3f]">{replyTarget.snippet}</p>
+                  </div>
+                  <button className="text-[#8f6f59]" onClick={() => onReplyMessage(null)} type="button">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ) : null}
+              <div className="flex items-center gap-2">
+                <input
+                  className="min-w-0 flex-1 rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm text-[#1d160f] outline-none"
+                  onChange={(eventValue) => onChangeDraft(eventValue.target.value)}
+                  placeholder="Responder al grupo..."
+                  value={draft}
+                />
+                <button className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-[#1d160f] text-white" onClick={onSendMessage} type="button">
+                  <Send className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <div className="flex-1 overflow-y-auto px-3 py-4">
+          {view === "overview" ? (
+            <div className="space-y-4">
+              <section className="overflow-hidden rounded-[28px] border border-[#eadfd3] bg-white/92 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+                <img alt={event.title} className="h-48 w-full object-cover" src={event.coverImage} />
+                <div className="p-4">
+                  <h2 className="text-2xl font-black tracking-tight text-[#1d160f]">{event.title}</h2>
+                  <p className="mt-2 text-sm text-[#5f4b3f]">{event.description}</p>
+                  <div className="mt-4 grid gap-2">
+                    <div className="rounded-[18px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm text-[#5f4b3f]">
+                      {formatEventDateRange(event)}
+                    </div>
+                    <div className="rounded-[18px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm text-[#5f4b3f]">
+                      {event.venue}, {event.city}
+                    </div>
+                    <button className="rounded-[18px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-left text-sm text-[#5f4b3f]" onClick={() => onOpenProfileUser(host.id)} type="button">
+                      Creado por {host.name}
+                    </button>
+                  </div>
+                </div>
+              </section>
+
+              {eventStories.length > 0 ? (
+                <MobileStoriesBar onOpenStory={onOpenStory} state={state} stories={eventStories} />
+              ) : null}
+
+              {event.hostId === currentUser.id ? (
+                <button className="w-full rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white" onClick={() => onOpenCamera({ mode: "story" })} type="button">
+                  Subir foto o historia del evento
+                </button>
+              ) : null}
+
+              {eventPosts.map((post) => (
+                <div key={post.id} className="overflow-hidden rounded-[28px] border border-[#eadfd3] bg-white/92 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+                  <img alt={event.title} className="h-[280px] w-full object-cover" src={post.imageUrl} />
+                  <p className="p-4 text-sm text-[#5f4b3f]">{post.caption}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {accessState.kind === "host" && pendingRequests.length > 0 ? (
+                <section className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">Pendientes</p>
+                  <div className="mt-3 space-y-3">
+                    {pendingRequests.map((membership) => {
+                      const attendee = getUserById(state, membership.userId);
+                      return (
+                        <div key={membership.id} className="rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] p-3">
+                          <button className="flex items-center gap-3" onClick={() => onOpenProfileUser(attendee.id)} type="button">
+                            <AvatarChip user={attendee} />
+                            <div className="text-left">
+                              <p className="font-semibold text-[#1d160f]">{attendee.name}</p>
+                              <p className="text-sm text-[#8f6f59]">{attendee.handle}</p>
+                            </div>
+                          </button>
+                          <div className="mt-3 flex gap-2">
+                            <button className="flex-1 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white" onClick={() => onRespondEventAccess(membership.id, true)} type="button">
+                              Aceptar
+                            </button>
+                            <button className="rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#6d5749]" onClick={() => onRespondEventAccess(membership.id, false)} type="button">
+                              Rechazar
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              ) : null}
+
+              {(canAccess ? members : friendMembers).map((member) => {
+                const connectionState =
+                  canAccess && member.id !== currentUser.id
+                    ? getEventConnectionState(state, event.id, currentUser.id, member.id)
+                    : null;
+                return (
+                  <div key={member.id} className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+                    <div className="flex items-center gap-3">
+                      <button className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => onOpenProfileUser(member.id)} type="button">
+                        <AvatarChip user={member} />
+                        <div className="min-w-0">
+                          <p className="truncate font-semibold text-[#1d160f]">{member.name}</p>
+                          <p className="truncate text-sm text-[#8f6f59]">{member.handle}</p>
+                        </div>
+                      </button>
+                      {member.id !== currentUser.id ? (
+                        <button className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-3 py-2 text-sm font-semibold text-[#6d5749]" onClick={() => onToggleFriendship(member.id)} type="button">
+                          {areFriends(state, currentUser.id, member.id) ? "Amigos" : "Agregar"}
+                        </button>
+                      ) : null}
+                    </div>
+                    {canAccess && member.id !== currentUser.id && connectionState ? (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {connectionState.kind === "available" ? (
+                          <button className="rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white" onClick={() => onQuickPrivateRequest(member.id)} type="button">
+                            Solicitar privado
+                          </button>
+                        ) : null}
+                        {connectionState.kind === "chat" ? (
+                          <button className="rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white" onClick={() => onOpenPrivateChat(connectionState.chat.id)} type="button">
+                            Abrir chat
+                          </button>
+                        ) : null}
+                        {connectionState.kind === "incoming-request" ? (
+                          <>
+                            <button className="rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white" onClick={() => onRespondPrivateRequest(connectionState.request.id, true)} type="button">
+                              Aceptar
+                            </button>
+                            <button className="rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#6d5749]" onClick={() => onRespondPrivateRequest(connectionState.request.id, false)} type="button">
+                              Rechazar
+                            </button>
+                          </>
+                        ) : null}
+                        {connectionState.kind === "outgoing-request" ? (
+                          <span className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm font-semibold text-[#8f6f59]">
+                            Solicitud enviada
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+
+              {!canAccess ? (
+                <div className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 text-sm text-[#5f4b3f] shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+                  Aun no estas dentro. Solo puedes ver a amistades tuyas ya apuntadas.
+                </div>
+              ) : null}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MobileProfileCollectionScreen({
+  currentUser,
+  detail,
+  onBack,
+  onOpenChat,
+  onOpenEvent,
+  onOpenProfileUser,
+  privateChats,
+  state
+}: {
+  currentUser: PlatformUser;
+  detail: ProfileDrilldown;
+  onBack: () => void;
+  onOpenChat: (chatId: string) => void;
+  onOpenEvent: (eventId: string) => void;
+  onOpenProfileUser: (userId: string) => void;
+  privateChats: ReturnType<typeof getPrivateChatsForUser>;
+  state: PersistedState;
+}) {
+  const title =
+    detail === "created"
+      ? "Eventos creados"
+      : detail === "agenda"
+        ? "Tu agenda"
+        : detail === "friends"
+          ? "Amigos"
+          : "Privados";
+
+  return (
+    <div className="fixed inset-0 z-[55] overflow-y-auto bg-[#f6efe7] px-3 pb-6 pt-[max(1rem,env(safe-area-inset-top))]">
+      <div className="mb-4 flex items-center gap-3">
+        <button className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white shadow-[0_16px_30px_rgba(52,34,22,0.08)]" onClick={onBack} type="button">
+          <ChevronLeft className="h-5 w-5 text-[#1d160f]" />
+        </button>
+        <h1 className="text-2xl font-black tracking-tight text-[#1d160f]">{title}</h1>
+      </div>
+      <div className="space-y-3">
+        {detail === "created"
+          ? getHostedEvents(state, currentUser.id).map((event) => (
+              <button key={event.id} className="flex w-full items-center gap-3 rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 text-left shadow-[0_20px_40px_rgba(52,34,22,0.08)]" onClick={() => onOpenEvent(event.id)} type="button">
+                <div className="h-16 w-16 overflow-hidden rounded-[20px] border border-[#eadfd3]">
+                  <img alt={event.title} className="h-full w-full object-cover" src={event.coverImage} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-semibold text-[#1d160f]">{event.title}</p>
+                  <p className="text-sm text-[#8f6f59]">{formatEventDateRange(event)}</p>
+                </div>
+              </button>
+            ))
+          : null}
+        {detail === "agenda"
+          ? getJoinedEvents(state, currentUser.id).map((event) => (
+              <button key={event.id} className="flex w-full items-center gap-3 rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 text-left shadow-[0_20px_40px_rgba(52,34,22,0.08)]" onClick={() => onOpenEvent(event.id)} type="button">
+                <div className="h-16 w-16 overflow-hidden rounded-[20px] border border-[#eadfd3]">
+                  <img alt={event.title} className="h-full w-full object-cover" src={event.coverImage} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-semibold text-[#1d160f]">{event.title}</p>
+                  <p className="text-sm text-[#8f6f59]">{event.city}</p>
+                </div>
+              </button>
+            ))
+          : null}
+        {detail === "friends"
+          ? getFriends(state, currentUser.id).map((user) => (
+              <button key={user.id} className="flex w-full items-center gap-3 rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 text-left shadow-[0_20px_40px_rgba(52,34,22,0.08)]" onClick={() => onOpenProfileUser(user.id)} type="button">
+                <AvatarChip user={user} />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-semibold text-[#1d160f]">{user.name}</p>
+                  <p className="text-sm text-[#8f6f59]">{user.handle}</p>
+                </div>
+              </button>
+            ))
+          : null}
+        {detail === "private"
+          ? privateChats.map((chat) => {
+              const partner = getChatPartner(state, chat, currentUser.id);
+              return (
+                <button key={chat.id} className="flex w-full items-center gap-3 rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 text-left shadow-[0_20px_40px_rgba(52,34,22,0.08)]" onClick={() => onOpenChat(chat.id)} type="button">
+                  <AvatarChip user={partner} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-semibold text-[#1d160f]">{partner.name}</p>
+                    <p className="text-sm text-[#8f6f59]">{partner.handle}</p>
+                  </div>
+                </button>
+              );
+            })
+          : null}
+      </div>
+    </div>
+  );
+}
+
+function MobileUserProfileScreen({
+  currentUser,
+  likedPostKeys,
+  onBack,
+  onOpenStory,
+  onToggleFriendship,
+  onTogglePostLike,
+  state,
+  user
+}: {
+  currentUser: PlatformUser;
+  likedPostKeys: string[];
+  onBack: () => void;
+  onOpenStory: (storyId: string, stories: StoryItem[]) => void;
+  onToggleFriendship: (targetUserId: string) => void;
+  onTogglePostLike: (postId: string) => void;
+  state: PersistedState;
+  user: PlatformUser;
+}) {
+  const posts = getProfilePosts(state, user.id);
+  const stories = getProfileStories(state, user.id);
+  const isFriend = areFriends(state, currentUser.id, user.id);
+
+  return (
+    <div className="fixed inset-0 z-[55] overflow-y-auto bg-[#f6efe7] pb-6">
+      <div className="relative h-48">
+        <img alt={user.name} className="h-full w-full object-cover" src={user.coverImage} />
+        <button className="absolute left-4 top-[max(1rem,env(safe-area-inset-top))] inline-flex h-10 w-10 items-center justify-center rounded-full bg-black/35 text-white" onClick={onBack} type="button">
+          <ChevronLeft className="h-5 w-5" />
+        </button>
+      </div>
+      <div className="px-3">
+        <section className="-mt-10 rounded-[30px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+          <div className="flex items-end gap-3">
+            <div className="h-20 w-20 overflow-hidden rounded-[26px] border-4 border-[#f6efe7] bg-white">
+              <img alt={user.name} className="h-full w-full object-cover" src={user.avatar} />
+            </div>
+            <div>
+              <h1 className="text-2xl font-black tracking-tight text-[#1d160f]">{user.name}</h1>
+              <p className="text-sm text-[#8f6f59]">{user.handle}</p>
+            </div>
+          </div>
+          <p className="mt-4 text-sm leading-6 text-[#5f4b3f]">{user.bio}</p>
+          <button className={`mt-4 rounded-full px-4 py-3 text-sm font-semibold ${isFriend ? "border border-[#eadfd3] bg-white text-[#6d5749]" : "bg-[#1d160f] text-white"}`} onClick={() => onToggleFriendship(user.id)} type="button">
+            {isFriend ? "Quitar de amigos" : "Agregar a amigos"}
+          </button>
+        </section>
+
+        {stories.length > 0 ? <MobileStoriesBar onOpenStory={onOpenStory} state={state} stories={stories} /> : null}
+
+        <section className="mt-4 space-y-4">
+          {posts.map((post) => (
+            <MobileFeedPostCard
+              key={post.id}
+              currentUser={currentUser}
+              likedPostKeys={likedPostKeys}
+              onOpenEvent={() => {}}
+              onOpenProfileUser={() => {}}
+              onTogglePostLike={onTogglePostLike}
+              post={post}
+              state={state}
+            />
+          ))}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function MobileCameraComposerScreen({
+  composer,
+  currentUser,
+  onClose,
+  onSubmit,
+  onUpdateComposer,
+  onUploadCameraFile,
+  state
+}: {
+  composer: CameraComposerState;
+  currentUser: PlatformUser;
+  onClose: () => void;
+  onSubmit: () => void;
+  onUpdateComposer: Dispatch<SetStateAction<CameraComposerState | null>>;
+  onUploadCameraFile: (file: File | null) => void;
+  state: PersistedState;
+}) {
+  const currentEvent = composer.eventId ? getEventById(state, composer.eventId) : null;
+  const selectableUsers =
+    composer.target === "event" && currentEvent
+      ? getEventMembers(state, currentEvent.id).filter((user) => user.id !== currentUser.id)
+      : getFriends(state, currentUser.id);
+
+  return (
+    <div className="fixed inset-0 z-[65] overflow-y-auto bg-[#120d0a] px-4 pb-8 text-white">
+      <div className="flex items-center justify-between pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
+        <button className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-white/10" onClick={onClose} type="button">
+          <X className="h-5 w-5" />
+        </button>
+        <p className="text-sm font-semibold uppercase tracking-[0.2em] text-white/72">Camara</p>
+        <button className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-[#1d160f]" onClick={onSubmit} type="button">
+          Subir
+        </button>
+      </div>
+
+      <div className="space-y-4">
+        <div className="overflow-hidden rounded-[32px] border border-white/10 bg-white/5">
+          {composer.imageUrl ? (
+            <img alt="Preview" className="h-[360px] w-full object-cover" src={composer.imageUrl} />
+          ) : (
+            <div className="flex h-[360px] flex-col items-center justify-center gap-4 px-6 text-center">
+              <Camera className="h-12 w-12 text-white/72" />
+              <p className="max-w-xs text-sm text-white/72">
+                Abre la camara o la fototeca y decide si subirlo como historia o publicacion.
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <label className="flex cursor-pointer items-center justify-center gap-2 rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white">
+            <Camera className="h-4 w-4" />
+            Camara
+            <input accept="image/*" capture="environment" className="hidden" onChange={(event) => onUploadCameraFile(event.target.files?.[0] ?? null)} type="file" />
+          </label>
+          <label className="flex cursor-pointer items-center justify-center gap-2 rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white">
+            <Image className="h-4 w-4" />
+            Fototeca
+            <input accept="image/*" className="hidden" onChange={(event) => onUploadCameraFile(event.target.files?.[0] ?? null)} type="file" />
+          </label>
+        </div>
+
+        <div className="flex gap-2">
+          {[
+            { id: "story" as const, label: "Historia" },
+            { id: "post" as const, label: "Publicacion" }
+          ].map((item) => (
+            <button
+              key={item.id}
+              className={`flex-1 rounded-full px-4 py-3 text-sm font-semibold ${
+                composer.mode === item.id ? "bg-white text-[#1d160f]" : "bg-white/10 text-white"
+              }`}
+              onClick={() =>
+                onUpdateComposer((current) =>
+                  current
+                    ? {
+                        ...current,
+                        mode: item.id
+                      }
+                    : current
+                )
+              }
+              type="button"
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        {currentEvent ? (
+          <div className="flex gap-2">
+            {[
+              { id: "user" as const, label: "Tu perfil" },
+              { id: "event" as const, label: currentEvent.title }
+            ].map((item) => (
+              <button
+                key={item.id}
+                className={`rounded-full px-4 py-3 text-sm font-semibold ${
+                  composer.target === item.id ? "bg-white text-[#1d160f]" : "bg-white/10 text-white"
+                }`}
+                onClick={() =>
+                  onUpdateComposer((current) =>
+                    current
+                      ? {
+                          ...current,
+                          target: item.id,
+                          eventId: item.id === "event" ? currentEvent.id : null
+                        }
+                      : current
+                  )
+                }
+                type="button"
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        <textarea
+          className="min-h-[120px] w-full resize-none rounded-[24px] border border-white/15 bg-white/10 px-4 py-4 text-sm text-white outline-none"
+          onChange={(event) =>
+            onUpdateComposer((current) =>
+              current
+                ? {
+                    ...current,
+                    caption: event.target.value
+                  }
+                : current
+            )
+          }
+          placeholder="Escribe algo y etiqueta gente..."
+          value={composer.caption}
+        />
+
+        {selectableUsers.length > 0 ? (
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-white/72">Etietar personas</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {selectableUsers.map((user) => {
+                const active = composer.taggedUserIds.includes(user.id);
+                return (
+                  <button
+                    key={user.id}
+                    className={`rounded-full px-4 py-3 text-sm font-semibold ${
+                      active ? "bg-white text-[#1d160f]" : "bg-white/10 text-white"
+                    }`}
+                    onClick={() =>
+                      onUpdateComposer((current) =>
+                        current
+                          ? {
+                              ...current,
+                              taggedUserIds: active
+                                ? current.taggedUserIds.filter((id) => id !== user.id)
+                                : [...current.taggedUserIds, user.id]
+                            }
+                          : current
+                      )
+                    }
+                    type="button"
+                  >
+                    {user.handle}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -1371,24 +3641,82 @@ function DesktopNavigation({
 
 function MobileNavigation({
   activeTab,
-  onChange
+  hidden,
+  onChange,
+  onOpenCamera
 }: {
   activeTab: AppTab;
+  hidden?: boolean;
   onChange: (tab: AppTab) => void;
+  onOpenCamera: () => void;
 }) {
-  const items = buildNavItems();
+  const items = [
+    {
+      id: "discover" as const,
+      label: "Inicio",
+      icon: <Compass className="h-4 w-4" />
+    },
+    {
+      id: "agenda" as const,
+      label: "Eventos",
+      icon: <Ticket className="h-4 w-4" />
+    },
+    {
+      id: "inbox" as const,
+      label: "Chats",
+      icon: <Inbox className="h-4 w-4" />
+    },
+    {
+      id: "profile" as const,
+      label: "Perfil",
+      icon: <User className="h-4 w-4" />
+    }
+  ];
+
+  if (hidden) {
+    return null;
+  }
 
   return (
     <div className="md:hidden">
       <div className="h-[92px]" />
       <nav className="fixed inset-x-0 bottom-0 z-50 border-t border-[#eadfd3] bg-[rgba(249,244,238,0.96)] backdrop-blur-xl">
-        <div className="mx-auto flex max-w-[520px] items-center justify-around px-2 pb-[calc(env(safe-area-inset-bottom)+0.85rem)] pt-3">
-          {items.map((item) => {
+        <div className="mx-auto grid max-w-[520px] grid-cols-[1fr_1fr_auto_1fr_1fr] items-center gap-1 px-2 pb-[calc(env(safe-area-inset-bottom)+0.85rem)] pt-3">
+          {items.slice(0, 2).map((item) => {
             const active = item.id === activeTab;
             return (
               <button
                 key={item.id}
-                className={`flex min-w-0 flex-1 flex-col items-center gap-1 px-1 text-[11px] font-semibold ${
+                className={`flex min-w-0 flex-col items-center gap-1 px-1 text-[11px] font-semibold ${
+                  active ? "text-[#ff6b57]" : "text-[#7a6455]"
+                }`}
+                onClick={() => onChange(item.id)}
+                type="button"
+              >
+                <span
+                  className={`inline-flex h-11 w-11 items-center justify-center rounded-2xl ${
+                    active ? "bg-[#fff0e8]" : "bg-transparent"
+                  }`}
+                >
+                  {item.icon}
+                </span>
+                <span className="truncate">{item.label}</span>
+              </button>
+            );
+          })}
+          <button
+            className="inline-flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] text-white shadow-[0_18px_35px_rgba(240,138,36,0.32)]"
+            onClick={onOpenCamera}
+            type="button"
+          >
+            <Camera className="h-5 w-5" />
+          </button>
+          {items.slice(2).map((item) => {
+            const active = item.id === activeTab;
+            return (
+              <button
+                key={item.id}
+                className={`flex min-w-0 flex-col items-center gap-1 px-1 text-[11px] font-semibold ${
                   active ? "text-[#ff6b57]" : "text-[#7a6455]"
                 }`}
                 onClick={() => onChange(item.id)}
