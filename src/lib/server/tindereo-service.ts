@@ -1,18 +1,18 @@
-import { hydratePersistedState, stripSession } from "@/lib/tindereo-session";
+import { hydratePersistedState, stripSession } from "../tindereo-session";
 import {
   getDatasetRevision,
   readAppDataset,
   replaceAppDataset,
   resetAppDataset
-} from "@/lib/server/tindereo-database";
-import { publishPlatformUpdate } from "@/lib/server/tindereo-realtime";
+} from "./tindereo-database";
+import { publishPlatformUpdate } from "./tindereo-realtime";
 import type {
   AppDataset,
   CreateEventInput,
   PersistedState,
   PlatformAction,
   PlatformDataEnvelope
-} from "@/lib/tindereo-types";
+} from "../tindereo-types";
 import {
   createEvent,
   leaveEvent,
@@ -23,7 +23,7 @@ import {
   respondToPrivateChatRequest,
   sendPrivateChatRequest,
   sendPrivateMessage
-} from "@/lib/tindereo-utils";
+} from "../tindereo-utils";
 
 function buildPlatformEnvelope(
   data: AppDataset,

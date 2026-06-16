@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { resetPlatformData } from "@/lib/server/tindereo-service";
+import { resetPlatformData } from "../../../../lib/server/tindereo-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

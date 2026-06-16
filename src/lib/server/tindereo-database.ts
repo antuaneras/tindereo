@@ -1,8 +1,8 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { DEFAULT_STATE } from "@/lib/tindereo-data";
-import { stripSession } from "@/lib/tindereo-session";
+import { DEFAULT_STATE } from "../tindereo-data";
+import { stripSession } from "../tindereo-session";
 import type {
   AppDataset,
   EventGroupMessage,
@@ -12,7 +12,7 @@ import type {
   PrivateChat,
   PrivateChatRequest,
   PrivateMessage
-} from "@/lib/tindereo-types";
+} from "../tindereo-types";
 
 const DATABASE_PATH = path.join(process.cwd(), "storage", "tindereo.sqlite");
 

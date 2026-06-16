@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getPlatformEnvelope } from "@/lib/server/tindereo-service";
+import { getPlatformEnvelope } from "../../../lib/server/tindereo-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

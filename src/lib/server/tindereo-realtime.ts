@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { PlatformDataEnvelope } from "@/lib/tindereo-types";
+import type { PlatformDataEnvelope } from "../tindereo-types";
 
 const PLATFORM_UPDATE_EVENT = "platform-update";
 

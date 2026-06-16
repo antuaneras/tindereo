@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { runPlatformAction } from "@/lib/server/tindereo-service";
-import type { PlatformAction } from "@/lib/tindereo-types";
+import { runPlatformAction } from "../../../../lib/server/tindereo-service";
+import type { PlatformAction } from "../../../../lib/tindereo-types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

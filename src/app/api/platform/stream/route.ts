@@ -1,6 +1,6 @@
-import { getPlatformEnvelope } from "@/lib/server/tindereo-service";
-import { subscribeToPlatformUpdates } from "@/lib/server/tindereo-realtime";
-import type { PlatformDataEnvelope } from "@/lib/tindereo-types";
+import { getPlatformEnvelope } from "../../../../lib/server/tindereo-service";
+import { subscribeToPlatformUpdates } from "../../../../lib/server/tindereo-realtime";
+import type { PlatformDataEnvelope } from "../../../../lib/tindereo-types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
