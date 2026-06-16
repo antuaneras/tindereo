@@ -1,7 +1,11 @@
 import type {
   EventCategory,
+  EventInvite,
+  Friendship,
   PersistedState,
-  PlatformUser
+  PlatformUser,
+  SocialPost,
+  StoryItem
 } from "@/lib/tindereo-types";
 
 export const APP_NAME = "Tindereo";
@@ -162,6 +166,149 @@ export const DEMO_USERS: PlatformUser[] = [
       "https://images.unsplash.com/photo-1529156069898-49953e39b3ac?auto=format&fit=crop&w=1400&q=80",
     interests: ["Art", "Editorial", "Dinner clubs", "Creative tech", "House"],
     verified: false
+  }
+];
+
+export const DEMO_FRIENDSHIPS: Friendship[] = [
+  {
+    id: "friendship-lucia-ines",
+    userIds: ["lucia-serrano", "ines-oliver"],
+    createdAt: "2026-06-01T10:00:00+02:00"
+  },
+  {
+    id: "friendship-lucia-mateo",
+    userIds: ["lucia-serrano", "mateo-rivas"],
+    createdAt: "2026-06-03T10:00:00+02:00"
+  },
+  {
+    id: "friendship-sara-nora",
+    userIds: ["sara-mora", "nora-costa"],
+    createdAt: "2026-06-05T12:00:00+02:00"
+  },
+  {
+    id: "friendship-diego-mateo",
+    userIds: ["diego-luna", "mateo-rivas"],
+    createdAt: "2026-06-07T12:00:00+02:00"
+  }
+];
+
+export const DEMO_EVENT_INVITES: EventInvite[] = [
+  {
+    id: "invite-lucia-ines-secret",
+    eventId: "cena-secreta-estudio",
+    fromUserId: "lucia-serrano",
+    toUserId: "ines-oliver",
+    status: "accepted",
+    createdAt: "2026-06-13T12:45:00+02:00",
+    respondedAt: "2026-06-13T13:10:00+02:00"
+  },
+  {
+    id: "invite-diego-lucia-brunch",
+    eventId: "founders-brunch-circle",
+    fromUserId: "diego-luna",
+    toUserId: "lucia-serrano",
+    status: "accepted",
+    createdAt: "2026-06-14T11:40:00+02:00",
+    respondedAt: "2026-06-14T12:08:00+02:00"
+  },
+  {
+    id: "invite-sara-lucia-design",
+    eventId: "design-night-lab",
+    fromUserId: "sara-mora",
+    toUserId: "lucia-serrano",
+    status: "pending",
+    createdAt: "2026-06-16T17:25:00+02:00"
+  }
+];
+
+export const DEMO_SOCIAL_POSTS: SocialPost[] = [
+  {
+    id: "post-event-after-1",
+    authorType: "event",
+    authorId: "after-solar-2026",
+    imageUrl:
+      "https://images.unsplash.com/photo-1501386761578-eac5c94b800a?auto=format&fit=crop&w=1200&q=80",
+    caption: "Moodboard del rooftop. Vamos subiendo energia antes del sabado.",
+    createdAt: "2026-06-16T16:20:00+02:00"
+  },
+  {
+    id: "post-lucia-1",
+    authorType: "user",
+    authorId: "lucia-serrano",
+    imageUrl:
+      "https://images.unsplash.com/photo-1511578314322-379afb476865?auto=format&fit=crop&w=1200&q=80",
+    caption: "Buscando planes con gente que venga a hablar de verdad y no solo a fichar.",
+    createdAt: "2026-06-16T14:40:00+02:00"
+  },
+  {
+    id: "post-ines-1",
+    authorType: "user",
+    authorId: "ines-oliver",
+    imageUrl:
+      "https://images.unsplash.com/photo-1529156069898-49953e39b3ac?auto=format&fit=crop&w=1200&q=80",
+    caption: "Cuando un evento ya tiene conversacion buena antes de abrir puertas, se nota mucho.",
+    createdAt: "2026-06-16T13:05:00+02:00"
+  },
+  {
+    id: "post-event-secret-1",
+    authorType: "event",
+    authorId: "cena-secreta-estudio",
+    imageUrl:
+      "https://images.unsplash.com/photo-1414235077428-338989a2e8c0?auto=format&fit=crop&w=1200&q=80",
+    caption: "Mesa larga, luz baja y conversaciones con tiempo. La cena secreta ya tiene ambiente.",
+    createdAt: "2026-06-15T22:10:00+02:00"
+  },
+  {
+    id: "post-mateo-1",
+    authorType: "user",
+    authorId: "mateo-rivas",
+    imageUrl:
+      "https://images.unsplash.com/photo-1515169067868-5387ec356754?auto=format&fit=crop&w=1200&q=80",
+    caption: "Si un brunch no me deja dos conversaciones nuevas, no cuenta.",
+    createdAt: "2026-06-15T11:18:00+02:00"
+  }
+];
+
+export const DEMO_STORIES: StoryItem[] = [
+  {
+    id: "story-lucia-1",
+    authorType: "user",
+    authorId: "lucia-serrano",
+    imageUrl:
+      "https://images.unsplash.com/photo-1492684223066-81342ee5ff30?auto=format&fit=crop&w=800&q=80",
+    caption: "Sunset scouting para el sábado",
+    createdAt: "2026-06-16T18:10:00+02:00",
+    expiresAt: "2026-06-17T18:10:00+02:00"
+  },
+  {
+    id: "story-after-1",
+    authorType: "event",
+    authorId: "after-solar-2026",
+    imageUrl:
+      "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?auto=format&fit=crop&w=800&q=80",
+    caption: "Prueba de sonido y cielo limpio",
+    createdAt: "2026-06-16T17:50:00+02:00",
+    expiresAt: "2026-06-17T17:50:00+02:00"
+  },
+  {
+    id: "story-ines-1",
+    authorType: "user",
+    authorId: "ines-oliver",
+    imageUrl:
+      "https://images.unsplash.com/photo-1517457373958-b7bdd4587205?auto=format&fit=crop&w=800&q=80",
+    caption: "Referencias visuales para la semana",
+    createdAt: "2026-06-16T12:20:00+02:00",
+    expiresAt: "2026-06-17T12:20:00+02:00"
+  },
+  {
+    id: "story-design-1",
+    authorType: "event",
+    authorId: "design-night-lab",
+    imageUrl:
+      "https://images.unsplash.com/photo-1517048676732-d65bc937f952?auto=format&fit=crop&w=800&q=80",
+    caption: "Mood de la noche",
+    createdAt: "2026-06-16T11:05:00+02:00",
+    expiresAt: "2026-06-17T11:05:00+02:00"
   }
 ];
 
@@ -509,5 +656,9 @@ export const DEFAULT_STATE: PersistedState = {
       text: "Perfecto. Te escribo por aqui cuando suba y asi nos ubicamos.",
       createdAt: "2026-06-15T19:08:00+02:00"
     }
-  ]
+  ],
+  friendships: DEMO_FRIENDSHIPS,
+  eventInvites: DEMO_EVENT_INVITES,
+  socialPosts: DEMO_SOCIAL_POSTS,
+  stories: DEMO_STORIES
 };

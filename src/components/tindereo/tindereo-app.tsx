@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
@@ -8,9 +8,12 @@ import {
   Camera,
   Check,
   ChevronRight,
+  Clock3,
   Compass,
   Copy,
+  Heart,
   Inbox,
+  Image,
   MapPin,
   MessageCircle,
   RefreshCw,
@@ -21,6 +24,7 @@ import {
   Sparkles,
   Ticket,
   User,
+  UserPlus,
   Users
 } from "lucide-react";
 import { OrganizerDashboard } from "@/components/tindereo/organizer-dashboard";
@@ -40,6 +44,7 @@ import {
 import type {
   AppTab,
   CreateEventInput,
+  EventInvite,
   EventCategory,
   EventDetailTab,
   EventItem,
@@ -47,12 +52,16 @@ import type {
   PlatformDataEnvelope,
   PersistedState,
   PlatformUser,
-  RegisterUserInput
+  RegisterUserInput,
+  SocialPost,
+  StoryItem
 } from "@/lib/tindereo-types";
 import {
+  areFriends,
   formatEventDateRange,
   formatRelativeTime,
   formatTime,
+  getActiveStories,
   getCategoryMeta,
   getChatPartner,
   getCurrentUser,
@@ -62,18 +71,29 @@ import {
   getEventById,
   getEventConnectionState,
   getEventDeadlineLabel,
+  getEventFriendMembers,
   getEventGuestCount,
+  getEventInvitableFriends,
+  getEventPosts,
+  getEventStories,
   getEventHealth,
+  getEventInvitesForUser,
   getEventMembers,
   getEventMessages,
   getEventPendingCount,
   getEventPendingRequests,
   getEventRequirementSummary,
+  getFeedPosts,
+  getFriendSuggestions,
+  getFriends,
   getHostPendingRequests,
   getHostedEvents,
   getInitials,
   getJoinedEvents,
   getLatestPrivateMessage,
+  getPendingEventInvitesForUser,
+  getProfilePosts,
+  getProfileStories,
   getPrivateChatsForUser,
   getPrivateMessages,
   getPrivateRequestsForUser,
@@ -147,6 +167,11 @@ const INITIAL_REGISTER_FORM: RegisterUserInput = {
   bio: ""
 };
 
+type MediaDraft = {
+  imageUrl: string;
+  caption: string;
+};
+
 export function TindereoApp() {
   const [state, setState] = useState<PersistedState | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
@@ -155,6 +180,11 @@ export function TindereoApp() {
   const [requestDrafts, setRequestDrafts] = useState<Record<string, string>>({});
   const [selectedAttendeeByEvent, setSelectedAttendeeByEvent] = useState<Record<string, string>>({});
   const [privateDraft, setPrivateDraft] = useState("");
+  const [profileMediaDraft, setProfileMediaDraft] = useState({ imageUrl: "", caption: "" });
+  const [profileStoryDraft, setProfileStoryDraft] = useState({ imageUrl: "", caption: "" });
+  const [eventMediaDrafts, setEventMediaDrafts] = useState<
+    Record<string, { imageUrl: string; caption: string }>
+  >({});
   const [registerForm, setRegisterForm] = useState<RegisterUserInput>(INITIAL_REGISTER_FORM);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isRealtimeConnected, setIsRealtimeConnected] = useState(false);
@@ -376,6 +406,11 @@ export function TindereoApp() {
     privateChats.find((chat) => chat.id === state.session.selectedPrivateChatId) ??
     privateChats[0] ??
     null;
+  const friends = getFriends(state, currentUser.id);
+  const friendSuggestions = getFriendSuggestions(state, currentUser.id);
+  const feedPosts = getFeedPosts(state, currentUser.id);
+  const activeStories = getActiveStories(state, currentUser.id);
+  const pendingEventInvites = getPendingEventInvitesForUser(state, currentUser.id);
   const joinedCount = joinedEvents.length;
   const hostedCount = hostedEvents.length;
   const pendingApprovalsCount = hostPendingRequests.length;
@@ -417,9 +452,11 @@ export function TindereoApp() {
   };
 
   const openEvent = (eventId: string, tab: AppTab = state.session.activeTab) => {
+    const shouldOpenChat = hasEventAccess(state, eventId, currentUser.id) || tab === "agenda";
+
     updateSession({
       selectedEventId: eventId,
-      selectedEventView: tab === "agenda" ? "chat" : "overview",
+      selectedEventView: shouldOpenChat ? "chat" : "overview",
       activeTab: tab
     });
   };
@@ -446,6 +483,51 @@ export function TindereoApp() {
       membershipId,
       accept
     });
+  };
+
+  const handleToggleFriendship = async (targetUserId: string) => {
+    await runPlatformMutation({
+      type: "toggle-friendship",
+      actorId: state.session.currentUserId,
+      targetUserId
+    });
+  };
+
+  const handleSendEventInvite = async (eventId: string, targetUserId: string) => {
+    await runPlatformMutation({
+      type: "send-event-invite",
+      actorId: state.session.currentUserId,
+      eventId,
+      targetUserId
+    });
+  };
+
+  const handleRespondEventInvite = async (inviteId: string, accept: boolean) => {
+    const payload = await runPlatformMutation(
+      {
+        type: "respond-event-invite",
+        actorId: state.session.currentUserId,
+        inviteId,
+        accept
+      },
+      accept
+        ? {
+            activeTab: "agenda",
+            selectedEventView: "chat"
+          }
+        : undefined
+    );
+
+    if (accept) {
+      const invite = pendingEventInvites.find((item) => item.id === inviteId);
+      if (invite && payload) {
+        applyPlatformPayload(payload, {
+          activeTab: "agenda",
+          selectedEventId: invite.eventId,
+          selectedEventView: "chat"
+        });
+      }
+    }
   };
 
   const handleLeaveEvent = async (eventId: string) => {
@@ -540,6 +622,84 @@ export function TindereoApp() {
     }
   };
 
+  const handleCreateUserPost = async () => {
+    if (!profileMediaDraft.imageUrl.trim()) {
+      return;
+    }
+
+    const payload = await runPlatformMutation({
+      type: "create-user-post",
+      actorId: state.session.currentUserId,
+      imageUrl: profileMediaDraft.imageUrl,
+      caption: profileMediaDraft.caption
+    });
+
+    if (payload) {
+      setProfileMediaDraft({ imageUrl: "", caption: "" });
+    }
+  };
+
+  const handleCreateUserStory = async () => {
+    if (!profileStoryDraft.imageUrl.trim()) {
+      return;
+    }
+
+    const payload = await runPlatformMutation({
+      type: "create-user-story",
+      actorId: state.session.currentUserId,
+      imageUrl: profileStoryDraft.imageUrl,
+      caption: profileStoryDraft.caption
+    });
+
+    if (payload) {
+      setProfileStoryDraft({ imageUrl: "", caption: "" });
+    }
+  };
+
+  const handleCreateEventPost = async (eventId: string) => {
+    const draft = eventMediaDrafts[eventId];
+    if (!draft?.imageUrl.trim()) {
+      return;
+    }
+
+    const payload = await runPlatformMutation({
+      type: "create-event-post",
+      actorId: state.session.currentUserId,
+      eventId,
+      imageUrl: draft.imageUrl,
+      caption: draft.caption
+    });
+
+    if (payload) {
+      setEventMediaDrafts((current) => ({
+        ...current,
+        [eventId]: { imageUrl: "", caption: "" }
+      }));
+    }
+  };
+
+  const handleCreateEventStory = async (eventId: string) => {
+    const draft = eventMediaDrafts[eventId];
+    if (!draft?.imageUrl.trim()) {
+      return;
+    }
+
+    const payload = await runPlatformMutation({
+      type: "create-event-story",
+      actorId: state.session.currentUserId,
+      eventId,
+      imageUrl: draft.imageUrl,
+      caption: draft.caption
+    });
+
+    if (payload) {
+      setEventMediaDrafts((current) => ({
+        ...current,
+        [eventId]: { imageUrl: "", caption: "" }
+      }));
+    }
+  };
+
   const handleSwitchUser = (userId: string) => {
     setState((current) =>
       current
@@ -577,7 +737,7 @@ export function TindereoApp() {
       applyPlatformPayload(payload, {
         activeTab: "host",
         selectedEventId: payload.meta?.selectedEventId ?? null,
-        selectedEventView: "overview"
+        selectedEventView: "chat"
       });
     }
   };
@@ -602,6 +762,9 @@ export function TindereoApp() {
       setRequestDrafts({});
       setSelectedAttendeeByEvent({});
       setPrivateDraft("");
+      setProfileMediaDraft({ imageUrl: "", caption: "" });
+      setProfileStoryDraft({ imageUrl: "", caption: "" });
+      setEventMediaDrafts({});
     } catch (error) {
       setSyncError(
         error instanceof Error ? error.message : "No se pudo reiniciar la demo en backend."
@@ -660,14 +823,24 @@ export function TindereoApp() {
 
         {state.session.activeTab === "discover" ? (
           <div className="space-y-5">
+            <SocialHomeSection
+              currentUser={currentUser}
+              onOpenEvent={(eventId) => openEvent(eventId, "discover")}
+              onRespondEventInvite={handleRespondEventInvite}
+              pendingEventInvites={pendingEventInvites}
+              posts={feedPosts}
+              state={state}
+              stories={activeStories}
+            />
+
             <section className="rounded-[30px] border border-[#eadfd3] bg-white/88 p-4 shadow-[0_24px_60px_rgba(52,34,22,0.08)] md:p-5">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">
-                    Descubrir eventos
+                    Explorar eventos
                   </p>
                   <h1 className="mt-1 text-2xl font-black tracking-tight md:text-3xl">
-                    Eventos publicos con acceso moderado y comunidad previa
+                    Feed de eventos que puedes abrir o pedir acceso
                   </h1>
                 </div>
                 <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-2 text-sm text-[#6d5749]">
@@ -723,6 +896,15 @@ export function TindereoApp() {
                 onChangeGroupDraft={(value) =>
                   setGroupDrafts((current) => ({ ...current, [discoverSelection.id]: value }))
                 }
+                onChangeEventMediaDraft={(patch) =>
+                  setEventMediaDrafts((current) => ({
+                    ...current,
+                    [discoverSelection.id]: {
+                      imageUrl: patch.imageUrl ?? current[discoverSelection.id]?.imageUrl ?? "",
+                      caption: patch.caption ?? current[discoverSelection.id]?.caption ?? ""
+                    }
+                  }))
+                }
                 onChangeRequestDraft={(targetUserId, value) =>
                   setRequestDrafts((current) => ({
                     ...current,
@@ -730,10 +912,18 @@ export function TindereoApp() {
                   }))
                 }
                 onChangeView={(view) => updateSession({ selectedEventView: view })}
+                onCreateEventPost={() => void handleCreateEventPost(discoverSelection.id)}
+                onCreateEventStory={() => void handleCreateEventStory(discoverSelection.id)}
                 onLeaveEvent={handleLeaveEvent}
                 onOpenPrivateChat={openPrivateChat}
                 onRequestEventAccess={handleRequestEventAccess}
                 onRespondEventAccess={handleRespondEventAccess}
+                onRespondEventInvite={(inviteId, accept) =>
+                  void handleRespondEventInvite(inviteId, accept)
+                }
+                onSendEventInvite={(targetUserId) =>
+                  void handleSendEventInvite(discoverSelection.id, targetUserId)
+                }
                 onRespondPrivateRequest={handleRespondPrivateRequest}
                 onSelectAttendee={(userId) =>
                   setSelectedAttendeeByEvent((current) => ({
@@ -745,6 +935,8 @@ export function TindereoApp() {
                 onSendPrivateRequest={(targetUserId) =>
                   handleSendPrivateRequest(discoverSelection.id, targetUserId)
                 }
+                onToggleFriendship={(targetUserId) => void handleToggleFriendship(targetUserId)}
+                eventMediaDraft={eventMediaDrafts[discoverSelection.id] ?? { imageUrl: "", caption: "" }}
                 requestDraft={
                   requestDrafts[
                     `${discoverSelection.id}:${selectedAttendeeByEvent[discoverSelection.id] ?? ""}`
@@ -796,6 +988,15 @@ export function TindereoApp() {
                   onChangeGroupDraft={(value) =>
                     setGroupDrafts((current) => ({ ...current, [agendaSelection.id]: value }))
                   }
+                  onChangeEventMediaDraft={(patch) =>
+                    setEventMediaDrafts((current) => ({
+                      ...current,
+                      [agendaSelection.id]: {
+                        imageUrl: patch.imageUrl ?? current[agendaSelection.id]?.imageUrl ?? "",
+                        caption: patch.caption ?? current[agendaSelection.id]?.caption ?? ""
+                      }
+                    }))
+                  }
                   onChangeRequestDraft={(targetUserId, value) =>
                     setRequestDrafts((current) => ({
                       ...current,
@@ -803,10 +1004,18 @@ export function TindereoApp() {
                     }))
                   }
                   onChangeView={(view) => updateSession({ selectedEventView: view })}
+                  onCreateEventPost={() => void handleCreateEventPost(agendaSelection.id)}
+                  onCreateEventStory={() => void handleCreateEventStory(agendaSelection.id)}
                   onLeaveEvent={handleLeaveEvent}
                   onOpenPrivateChat={openPrivateChat}
                   onRequestEventAccess={handleRequestEventAccess}
                   onRespondEventAccess={handleRespondEventAccess}
+                  onRespondEventInvite={(inviteId, accept) =>
+                    void handleRespondEventInvite(inviteId, accept)
+                  }
+                  onSendEventInvite={(targetUserId) =>
+                    void handleSendEventInvite(agendaSelection.id, targetUserId)
+                  }
                   onRespondPrivateRequest={handleRespondPrivateRequest}
                   onSelectAttendee={(userId) =>
                     setSelectedAttendeeByEvent((current) => ({
@@ -818,6 +1027,8 @@ export function TindereoApp() {
                   onSendPrivateRequest={(targetUserId) =>
                     handleSendPrivateRequest(agendaSelection.id, targetUserId)
                   }
+                  onToggleFriendship={(targetUserId) => void handleToggleFriendship(targetUserId)}
+                  eventMediaDraft={eventMediaDrafts[agendaSelection.id] ?? { imageUrl: "", caption: "" }}
                   requestDraft={
                     requestDrafts[
                       `${agendaSelection.id}:${selectedAttendeeByEvent[agendaSelection.id] ?? ""}`
@@ -863,12 +1074,24 @@ export function TindereoApp() {
         {state.session.activeTab === "profile" ? (
           <ProfileSection
             currentUser={currentUser}
+            friendSuggestions={friendSuggestions}
+            friends={friends}
             hostedCount={hostedCount}
             joinedCount={joinedCount}
+            onCreateUserPost={() => void handleCreateUserPost()}
+            onCreateUserStory={() => void handleCreateUserStory()}
             pendingApprovalsCount={pendingApprovalsCount}
             onLogout={handleLogout}
             onResetDemo={handleResetDemo}
             onSwitchUser={handleSwitchUser}
+            onToggleFriendship={(targetUserId) => void handleToggleFriendship(targetUserId)}
+            pendingEventInvites={pendingEventInvites}
+            profileMediaDraft={profileMediaDraft}
+            profilePosts={getProfilePosts(state, currentUser.id)}
+            profileStories={getProfileStories(state, currentUser.id)}
+            profileStoryDraft={profileStoryDraft}
+            setProfileMediaDraft={setProfileMediaDraft}
+            setProfileStoryDraft={setProfileStoryDraft}
             state={state}
           />
         ) : null}
@@ -1238,25 +1461,352 @@ function SummaryBanner({
 }
 */
 
+function SocialHomeSection({
+  currentUser,
+  onOpenEvent,
+  onRespondEventInvite,
+  pendingEventInvites,
+  posts,
+  state,
+  stories
+}: {
+  currentUser: PlatformUser;
+  onOpenEvent: (eventId: string) => void;
+  onRespondEventInvite: (inviteId: string, accept: boolean) => void;
+  pendingEventInvites: EventInvite[];
+  posts: SocialPost[];
+  state: PersistedState;
+  stories: StoryItem[];
+}) {
+  return (
+    <section className="grid gap-5 xl:grid-cols-[0.92fr_1.08fr]">
+      <div className="space-y-5">
+        <SectionCard>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <SectionLabel>Inicio social</SectionLabel>
+              <h1 className="mt-1 text-2xl font-black tracking-tight md:text-3xl">
+                Historias y fotos de tu red
+              </h1>
+              <p className="mt-2 text-sm text-[#6d5749]">
+                Aqui se mezcla la gente que conoces con los eventos que estas siguiendo o a los que
+                ya tienes acceso.
+              </p>
+            </div>
+            <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-2 text-sm text-[#6d5749]">
+              Hola, {currentUser.name.split(" ")[0]}
+            </div>
+          </div>
+
+          <div className="mt-5">
+            <SectionLabel>Historias 24h</SectionLabel>
+            <div className="mt-4">
+              <StoriesRail
+                currentUserId={currentUser.id}
+                emptyCopy="Todavia no hay historias activas en tu red."
+                onOpenEvent={onOpenEvent}
+                state={state}
+                stories={stories}
+              />
+            </div>
+          </div>
+
+          <div className="mt-5 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+              Como funcionan las invitaciones
+            </p>
+            <p className="mt-3 text-sm leading-6 text-[#5f4b3f]">
+              El enlace compartido abre la ficha del evento, pero no mete a nadie dentro por si
+              solo. La invitacion expresa es la directa: el creador se la manda a un amigo y esa
+              persona puede aceptarla desde aqui.
+            </p>
+          </div>
+        </SectionCard>
+
+        <SectionCard>
+          <div className="flex items-center justify-between gap-3">
+            <SectionLabel>Invitaciones directas</SectionLabel>
+            <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-2 text-sm text-[#6d5749]">
+              {pendingEventInvites.length} pendientes
+            </div>
+          </div>
+
+          <div className="mt-4 space-y-3">
+            {pendingEventInvites.length === 0 ? (
+              <div className="rounded-[24px] border border-dashed border-[#eadfd3] bg-[#fffaf6] p-4 text-sm text-[#6d5749]">
+                Cuando un creador te invite de forma expresa a un evento, te aparecera aqui con
+                acceso directo.
+              </div>
+            ) : (
+              pendingEventInvites.map((invite) => {
+                const event = getEventById(state, invite.eventId);
+                const sender = getUserById(state, invite.fromUserId);
+
+                if (!event) {
+                  return null;
+                }
+
+                return (
+                  <div
+                    key={invite.id}
+                    className="rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                          Invitacion directa
+                        </p>
+                        <h3 className="mt-1 text-lg font-bold text-[#1d160f]">{event.title}</h3>
+                        <p className="mt-2 text-sm text-[#5f4b3f]">
+                          {sender.name} te ha invitado personalmente a este evento.
+                        </p>
+                        <p className="mt-2 text-xs text-[#8f6f59]">
+                          {formatEventDateRange(event)} - {event.venue}, {event.city}
+                        </p>
+                      </div>
+                      <button
+                        className="rounded-full border border-[#eadfd3] bg-white px-4 py-2 text-sm font-semibold text-[#1d160f]"
+                        onClick={() => onOpenEvent(event.id)}
+                        type="button"
+                      >
+                        Ver evento
+                      </button>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button
+                        className="rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+                        onClick={() => void onRespondEventInvite(invite.id, true)}
+                        type="button"
+                      >
+                        Entrar al chat
+                      </button>
+                      <button
+                        className="rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#6d5749]"
+                        onClick={() => void onRespondEventInvite(invite.id, false)}
+                        type="button"
+                      >
+                        Rechazar
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </SectionCard>
+      </div>
+
+      <div className="space-y-5">
+        <div>
+          <SectionLabel>Ultimas fotos</SectionLabel>
+          <p className="mt-2 text-sm text-[#6d5749]">
+            El feed mezcla publicaciones de amigos y de eventos visibles para ti, como si cada
+            evento fuera tambien un perfil vivo.
+          </p>
+        </div>
+
+        {posts.length === 0 ? (
+          <EmptyState
+            title="Tu feed aun esta en silencio"
+            copy="Empieza siguiendo gente, unete a eventos o sube tu primera foto desde Perfil para encender esta pantalla."
+          />
+        ) : (
+          posts.map((post) => (
+            <SocialPostCard
+              key={post.id}
+              onOpenEvent={onOpenEvent}
+              post={post}
+              state={state}
+            />
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+function StoriesRail({
+  currentUserId,
+  emptyCopy,
+  onOpenEvent,
+  state,
+  stories
+}: {
+  currentUserId: string;
+  emptyCopy: string;
+  onOpenEvent?: (eventId: string) => void;
+  state: PersistedState;
+  stories: StoryItem[];
+}) {
+  const latestStories = Array.from(
+    stories.reduce((collection, story) => {
+      const key = `${story.authorType}:${story.authorId}`;
+      if (!collection.has(key)) {
+        collection.set(key, story);
+      }
+      return collection;
+    }, new Map<string, StoryItem>()).values()
+  );
+
+  if (latestStories.length === 0) {
+    return (
+      <div className="rounded-[24px] border border-dashed border-[#eadfd3] bg-[#fffaf6] p-4 text-sm text-[#6d5749]">
+        {emptyCopy}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex gap-3 overflow-x-auto pb-2">
+      {latestStories.map((story) => {
+        const isUserStory = story.authorType === "user";
+        const user = isUserStory ? getUserById(state, story.authorId) : null;
+        const event = isUserStory ? null : getEventById(state, story.authorId);
+        const label = isUserStory ? user?.name ?? "Perfil" : event?.title ?? "Evento";
+        const subtitle = isUserStory
+          ? user?.handle ?? "Story"
+          : `${formatRelativeTime(story.createdAt)} - evento`;
+        const isCurrentUser = isUserStory && story.authorId === currentUserId;
+        const canOpenEvent = Boolean(event && onOpenEvent);
+
+        return (
+          <button
+            key={story.id}
+            className={`min-w-[102px] max-w-[102px] rounded-[28px] border p-2 text-left transition ${
+              canOpenEvent
+                ? "border-[#eadfd3] bg-[#fffaf6] hover:bg-white"
+                : "border-[#eadfd3] bg-[#fffaf6]"
+            }`}
+            disabled={!canOpenEvent}
+            onClick={() => {
+              if (event && onOpenEvent) {
+                onOpenEvent(event.id);
+              }
+            }}
+            type="button"
+          >
+            <div className="rounded-[24px] bg-[linear-gradient(135deg,#ff6b57,#f08a24)] p-[2px]">
+              <div className="h-[92px] overflow-hidden rounded-[22px] border border-white/50 bg-[#f7e7dc]">
+                <img alt={label} className="h-full w-full object-cover" src={story.imageUrl} />
+              </div>
+            </div>
+            <p className="mt-3 truncate text-sm font-semibold text-[#1d160f]">
+              {isCurrentUser ? "Tu historia" : label}
+            </p>
+            <p className="mt-1 line-clamp-2 text-xs text-[#8f6f59]">{subtitle}</p>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function SocialPostCard({
+  onOpenEvent,
+  post,
+  state
+}: {
+  onOpenEvent: (eventId: string) => void;
+  post: SocialPost;
+  state: PersistedState;
+}) {
+  if (post.authorType === "event") {
+    const event = getEventById(state, post.authorId);
+
+    if (!event) {
+      return null;
+    }
+
+    return (
+      <SectionCard>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="h-12 w-12 overflow-hidden rounded-2xl border border-[#eadfd3] bg-[#f5e4d6]">
+              <img alt={event.title} className="h-full w-full object-cover" src={event.coverImage} />
+            </div>
+            <div>
+              <p className="font-semibold text-[#1d160f]">{event.title}</p>
+              <p className="text-sm text-[#6d5749]">
+                Evento - {formatRelativeTime(post.createdAt)}
+              </p>
+            </div>
+          </div>
+          <button
+            className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-2 text-sm font-semibold text-[#1d160f]"
+            onClick={() => onOpenEvent(event.id)}
+            type="button"
+          >
+            Abrir chat
+          </button>
+        </div>
+        <div className="mt-4 overflow-hidden rounded-[28px] border border-[#eadfd3] bg-[#f6efe7]">
+          <img alt={event.title} className="h-[320px] w-full object-cover" src={post.imageUrl} />
+        </div>
+        <div className="mt-4 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-[#1d160f]">{event.venue}</p>
+            <p className="mt-1 text-sm leading-6 text-[#5f4b3f]">
+              {post.caption || event.summary}
+            </p>
+          </div>
+          <div className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-[#fffaf6] px-3 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[#8f6f59]">
+            <Ticket className="h-3.5 w-3.5" />
+            Evento
+          </div>
+        </div>
+      </SectionCard>
+    );
+  }
+
+  const author = getUserById(state, post.authorId);
+
+  return (
+    <SectionCard>
+      <div className="flex items-center gap-3">
+        <AvatarChip user={author} />
+        <div className="min-w-0 flex-1">
+          <p className="font-semibold text-[#1d160f]">{author.name}</p>
+          <p className="text-sm text-[#6d5749]">{formatRelativeTime(post.createdAt)}</p>
+        </div>
+        <div className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-[#fffaf6] px-3 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[#8f6f59]">
+          <Heart className="h-3.5 w-3.5" />
+          Perfil
+        </div>
+      </div>
+      <div className="mt-4 overflow-hidden rounded-[28px] border border-[#eadfd3] bg-[#f6efe7]">
+        <img alt={author.name} className="h-[320px] w-full object-cover" src={post.imageUrl} />
+      </div>
+      <p className="mt-4 text-sm leading-6 text-[#5f4b3f]">{post.caption || author.tagline}</p>
+    </SectionCard>
+  );
+}
+
 function EventWorkspace({
   collection,
   currentUser,
   currentView,
   event,
+  eventMediaDraft,
   groupDraft,
   mode,
   onChangeEvent,
+  onChangeEventMediaDraft,
   onChangeGroupDraft,
   onChangeRequestDraft,
   onChangeView,
+  onCreateEventPost,
+  onCreateEventStory,
   onLeaveEvent,
   onOpenPrivateChat,
   onRequestEventAccess,
   onRespondEventAccess,
+  onRespondEventInvite,
+  onSendEventInvite,
   onRespondPrivateRequest,
   onSelectAttendee,
   onSendGroupMessage,
   onSendPrivateRequest,
+  onToggleFriendship,
   requestDraft,
   selectedAttendeeId,
   state
@@ -1265,20 +1815,27 @@ function EventWorkspace({
   currentUser: PlatformUser;
   currentView: EventDetailTab;
   event: NonNullable<ReturnType<typeof getEventById>>;
+  eventMediaDraft: { imageUrl: string; caption: string };
   groupDraft: string;
   mode: "discover" | "agenda";
   onChangeEvent: (eventId: string) => void;
+  onChangeEventMediaDraft: (patch: Partial<{ imageUrl: string; caption: string }>) => void;
   onChangeGroupDraft: (value: string) => void;
   onChangeRequestDraft: (targetUserId: string, value: string) => void;
   onChangeView: (view: EventDetailTab) => void;
+  onCreateEventPost: () => void;
+  onCreateEventStory: () => void;
   onLeaveEvent: (eventId: string) => void;
   onOpenPrivateChat: (chatId: string) => void;
   onRequestEventAccess: (eventId: string) => void;
   onRespondEventAccess: (membershipId: string, accept: boolean) => void;
+  onRespondEventInvite: (inviteId: string, accept: boolean) => void;
+  onSendEventInvite: (targetUserId: string) => void;
   onRespondPrivateRequest: (requestId: string, accept: boolean) => void;
   onSelectAttendee: (userId: string) => void;
   onSendGroupMessage: () => void;
   onSendPrivateRequest: (targetUserId: string) => void;
+  onToggleFriendship: (targetUserId: string) => void;
   requestDraft: string;
   selectedAttendeeId: string | null;
   state: PersistedState;
@@ -1293,14 +1850,21 @@ function EventWorkspace({
   const fill = Math.round(getEventAttendanceRatio(state, event.id) * 100);
   const messages = getEventMessages(state, event.id);
   const members = getEventMembers(state, event.id);
+  const friendMembers = getEventFriendMembers(state, event.id, currentUser.id);
   const pendingRequests = isHost ? getEventPendingRequests(state, event.id) : [];
+  const pendingInvites = getEventInvitesForUser(state, currentUser.id).filter(
+    (invite) => invite.eventId === event.id && invite.status === "pending"
+  );
   const health = getEventHealth(state, event.id);
   const requirement = getEventRequirementSummary(state, event.id);
   const categoryMeta = getCategoryMeta(event.category);
+  const invitableFriends = getEventInvitableFriends(state, event.id, currentUser.id);
+  const eventPosts = getEventPosts(state, event.id);
+  const eventStories = getEventStories(state, event.id);
   const attendee =
-    members.find((user) => user.id === selectedAttendeeId) ??
-    members.find((user) => user.id !== currentUser.id) ??
-    members[0] ??
+    (canAccess ? members : friendMembers).find((user) => user.id === selectedAttendeeId) ??
+    (canAccess ? members : friendMembers).find((user) => user.id !== currentUser.id) ??
+    (canAccess ? members : friendMembers)[0] ??
     null;
   const connectionState =
     attendee && canAccess
@@ -1313,10 +1877,10 @@ function EventWorkspace({
       ? [
           { id: "chat" as const, label: "Chat" },
           { id: "people" as const, label: "Miembros" },
-          { id: "overview" as const, label: "Info" }
+          { id: "overview" as const, label: "Detalles" }
         ]
       : [
-          { id: "overview" as const, label: "Resumen" },
+          { id: "overview" as const, label: "Detalles" },
           { id: "chat" as const, label: "Chat general" },
           { id: "people" as const, label: "Asistentes" }
         ];
@@ -1401,7 +1965,11 @@ function EventWorkspace({
               <div className="h-20 w-20 overflow-hidden rounded-[24px] border border-[#eadfd3] bg-[#f4e3d8] shadow-[0_16px_30px_rgba(29,22,15,0.08)]">
                 <img alt={event.title} className="h-full w-full object-cover" src={event.coverImage} />
               </div>
-              <div className="min-w-0">
+              <button
+                className="min-w-0 text-left"
+                onClick={() => onChangeView("overview")}
+                type="button"
+              >
                 <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">
                   Grupo del evento
                 </p>
@@ -1409,12 +1977,15 @@ function EventWorkspace({
                   {event.title}
                 </h2>
                 <p className="mt-2 max-w-2xl text-sm text-[#5f4b3f]">{event.summary}</p>
+                <p className="mt-2 text-xs font-semibold uppercase tracking-[0.18em] text-[#b07f63]">
+                  Toca el titulo para abrir detalles, miembros e historias
+                </p>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Pill tone="light">{categoryMeta.label}</Pill>
                   <Pill tone="light">{guestCount} miembros</Pill>
                   <Pill tone="light">{event.visibility === "public" ? "Publico" : "Privado"}</Pill>
                 </div>
-              </div>
+              </button>
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -1585,9 +2156,59 @@ function EventWorkspace({
 
           {currentView === "overview" ? (
             <div className="space-y-4">
+              {pendingInvites.length > 0 ? (
+                <SectionCard>
+                  <SectionLabel>Invitacion directa pendiente</SectionLabel>
+                  <div className="mt-4 space-y-3">
+                    {pendingInvites.map((invite) => {
+                      const sender = getUserById(state, invite.fromUserId);
+
+                      return (
+                        <div
+                          key={invite.id}
+                          className="rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4"
+                        >
+                          <p className="text-sm leading-6 text-[#5f4b3f]">
+                            {sender.name} te ha invitado personalmente. Si aceptas, entras
+                            directamente en el grupo del evento.
+                          </p>
+                          <div className="mt-4 flex flex-wrap gap-2">
+                            <button
+                              className="rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+                              onClick={() => onRespondEventInvite(invite.id, true)}
+                              type="button"
+                            >
+                              Entrar al chat
+                            </button>
+                            <button
+                              className="rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#1d160f]"
+                              onClick={() => onRespondEventInvite(invite.id, false)}
+                              type="button"
+                            >
+                              Rechazar
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </SectionCard>
+              ) : null}
+
               <SectionCard>
-                <SectionLabel>Que pasa en este evento</SectionLabel>
-                <p className="mt-3 text-sm leading-6 text-[#5f4b3f]">{event.description}</p>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <SectionLabel>Perfil del evento</SectionLabel>
+                    <p className="mt-2 text-sm text-[#6d5749]">
+                      Al entrar en el grupo, el evento vive como un perfil: puede publicar fotos,
+                      historias y mover la conversacion antes de que llegue el dia.
+                    </p>
+                  </div>
+                  <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-2 text-sm text-[#6d5749]">
+                    {eventPosts.length} fotos - {eventStories.length} historias activas
+                  </div>
+                </div>
+                <p className="mt-4 text-sm leading-6 text-[#5f4b3f]">{event.description}</p>
                 <div className="mt-4 grid gap-3 md:grid-cols-3">
                   {event.highlights.map((highlight) => (
                     <div
@@ -1601,7 +2222,126 @@ function EventWorkspace({
                     </div>
                   ))}
                 </div>
+
+                <div className="mt-5 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                    Historias activas del evento
+                  </p>
+                  <div className="mt-4 flex gap-3 overflow-x-auto pb-2">
+                    {eventStories.length === 0 ? (
+                      <div className="rounded-[20px] border border-dashed border-[#eadfd3] bg-white px-4 py-4 text-sm text-[#6d5749]">
+                        El evento todavia no ha subido historias.
+                      </div>
+                    ) : (
+                      eventStories.map((story) => (
+                        <div key={story.id} className="min-w-[160px] max-w-[160px]">
+                          <div className="rounded-[26px] bg-[linear-gradient(135deg,#ff6b57,#f08a24)] p-[2px]">
+                            <div className="overflow-hidden rounded-[24px] border border-white/60 bg-white">
+                              <img
+                                alt={event.title}
+                                className="h-[210px] w-full object-cover"
+                                src={story.imageUrl}
+                              />
+                            </div>
+                          </div>
+                          <p className="mt-3 text-sm font-semibold text-[#1d160f]">
+                            {story.caption || event.title}
+                          </p>
+                          <p className="mt-1 text-xs text-[#8f6f59]">
+                            {formatRelativeTime(story.createdAt)}
+                          </p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-5 space-y-3">
+                  {eventPosts.length === 0 ? (
+                    <div className="rounded-[24px] border border-dashed border-[#eadfd3] bg-[#fffaf6] p-4 text-sm text-[#6d5749]">
+                      El evento aun no ha publicado fotos.
+                    </div>
+                  ) : (
+                    eventPosts.map((post) => (
+                      <div
+                        key={post.id}
+                        className="overflow-hidden rounded-[24px] border border-[#eadfd3] bg-[#fffaf6]"
+                      >
+                        <img
+                          alt={event.title}
+                          className="h-[240px] w-full object-cover"
+                          src={post.imageUrl}
+                        />
+                        <div className="p-4">
+                          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
+                            <Image className="h-4 w-4" />
+                            Publicacion del evento
+                          </div>
+                          <p className="mt-3 text-sm leading-6 text-[#5f4b3f]">
+                            {post.caption || event.summary}
+                          </p>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
               </SectionCard>
+
+              {isHost ? (
+                <SectionCard>
+                  <SectionLabel>Publicar como evento</SectionLabel>
+                  <p className="mt-3 text-sm text-[#5f4b3f]">
+                    Sube una foto o una historia para que el evento tenga vida propia como si fuera
+                    un perfil.
+                  </p>
+                  <div className="mt-4 grid gap-3 md:grid-cols-[1fr_0.9fr]">
+                    <label className="rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3">
+                      <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                        URL de imagen
+                      </span>
+                      <input
+                        className="w-full border-none bg-transparent p-0 text-sm text-[#1d160f] outline-none"
+                        onChange={(eventValue) =>
+                          onChangeEventMediaDraft({ imageUrl: eventValue.target.value })
+                        }
+                        placeholder="https://..."
+                        value={eventMediaDraft.imageUrl}
+                      />
+                    </label>
+                    <label className="rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3">
+                      <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                        Texto
+                      </span>
+                      <input
+                        className="w-full border-none bg-transparent p-0 text-sm text-[#1d160f] outline-none"
+                        onChange={(eventValue) =>
+                          onChangeEventMediaDraft({ caption: eventValue.target.value })
+                        }
+                        placeholder="Cuenta el ambiente, un avance o una foto del lugar"
+                        value={eventMediaDraft.caption}
+                      />
+                    </label>
+                  </div>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      className="rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+                      onClick={onCreateEventPost}
+                      type="button"
+                    >
+                      <Image className="h-4 w-4" />
+                      Publicar foto
+                    </button>
+                    <button
+                      className="rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#1d160f]"
+                      onClick={onCreateEventStory}
+                      type="button"
+                    >
+                      <Clock3 className="h-4 w-4" />
+                      Subir historia 24h
+                    </button>
+                  </div>
+                </SectionCard>
+              ) : null}
 
               <SectionCard>
                 <SectionLabel>Acceso y viabilidad</SectionLabel>
@@ -1631,9 +2371,10 @@ function EventWorkspace({
               </SectionCard>
 
               <SectionCard>
-                <SectionLabel>Invitar a mas gente</SectionLabel>
+                <SectionLabel>Compartir e invitar</SectionLabel>
                 <p className="mt-3 text-sm leading-6 text-[#5f4b3f]">
-                  Comparte el evento para que otras personas puedan abrirlo directamente y pedir acceso.
+                  Comparte el enlace para abrir la ficha del evento. Si quieres invitar a alguien de
+                  forma expresa, usa las invitaciones directas de abajo.
                 </p>
                 <div className="mt-4 flex flex-wrap gap-3">
                   <button
@@ -1678,9 +2419,52 @@ function EventWorkspace({
                   </div>
                   <p className="mt-3 text-sm text-[#8f6f59]">
                     {shareNotice ??
-                      "WhatsApp abre el enlace directo. En Instagram usamos el compartir nativo o te copiamos el texto para pegarlo en story o DM."}
+                      "WhatsApp abre el evento al instante. Para Instagram usamos el compartir nativo o te copiamos el texto para pegarlo en story o DM."}
                   </p>
                 </div>
+
+                {isHost ? (
+                  <div className="mt-5 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                        Invitar amigos
+                      </p>
+                      <div className="rounded-full border border-[#eadfd3] bg-white px-3 py-2 text-xs font-semibold text-[#6d5749]">
+                        {invitableFriends.length} disponibles
+                      </div>
+                    </div>
+                    <div className="mt-4 space-y-3">
+                      {invitableFriends.length === 0 ? (
+                        <p className="text-sm text-[#6d5749]">
+                          No te quedan amigos pendientes de invitar a este evento.
+                        </p>
+                      ) : (
+                        invitableFriends.map((friend) => (
+                          <div
+                            key={friend.id}
+                            className="flex flex-wrap items-center justify-between gap-3 rounded-[20px] border border-[#eadfd3] bg-white px-3 py-3"
+                          >
+                            <div className="flex items-center gap-3">
+                              <AvatarChip user={friend} />
+                              <div>
+                                <p className="font-semibold text-[#1d160f]">{friend.name}</p>
+                                <p className="text-sm text-[#6d5749]">{friend.title}</p>
+                              </div>
+                            </div>
+                            <button
+                              className="inline-flex items-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+                              onClick={() => onSendEventInvite(friend.id)}
+                              type="button"
+                            >
+                              <UserPlus className="h-4 w-4" />
+                              Invitar
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                ) : null}
               </SectionCard>
             </div>
           ) : null}
@@ -1873,6 +2657,11 @@ function EventWorkspace({
                                   Host
                                 </span>
                               ) : null}
+                              {areFriends(state, currentUser.id, member.id) ? (
+                                <span className="rounded-full border border-[#d7f1e4] bg-[#effbf4] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#1f8d60]">
+                                  Amigo
+                                </span>
+                              ) : null}
                             </div>
                             <p className="truncate text-sm text-[#6d5749]">{member.title}</p>
                           </div>
@@ -1908,6 +2697,25 @@ function EventWorkspace({
                           <p className="mt-2 text-sm text-[#5f4b3f]">{attendee.bio}</p>
                         </div>
                       </div>
+
+                      {attendee.id !== currentUser.id ? (
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          <button
+                            className={`inline-flex items-center gap-2 rounded-full px-4 py-3 text-sm font-semibold ${
+                              areFriends(state, currentUser.id, attendee.id)
+                                ? "border border-[#eadfd3] bg-white text-[#6d5749]"
+                                : "bg-[#1d160f] text-white"
+                            }`}
+                            onClick={() => onToggleFriendship(attendee.id)}
+                            type="button"
+                          >
+                            <UserPlus className="h-4 w-4" />
+                            {areFriends(state, currentUser.id, attendee.id)
+                              ? "Quitar de amigos"
+                              : "Agregar a amigos"}
+                          </button>
+                        </div>
+                      ) : null}
 
                       <div className="mt-4 flex flex-wrap gap-2">
                         {attendee.interests.map((interest) => (
@@ -2029,10 +2837,93 @@ function EventWorkspace({
                 </SectionCard>
               </div>
             ) : (
-              <EmptyState
-                title="La lista de asistentes se abre tras la aprobacion"
-                copy="Hasta que el creador te confirme, solo puedes revisar el resumen del evento."
-              />
+              <div className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
+                <SectionCard>
+                  <div className="flex items-center justify-between gap-3">
+                    <SectionLabel>Quien va</SectionLabel>
+                    <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-2 text-sm text-[#6d5749]">
+                      {guestCount} apuntados
+                    </div>
+                  </div>
+                  <p className="mt-4 text-sm leading-6 text-[#5f4b3f]">
+                    Hasta que no entres al evento no puedes ver la lista completa. Solo mostramos la
+                    cantidad total y, si tienes amistades dentro, quienes son.
+                  </p>
+
+                  <div className="mt-5 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                      Amigos que ya estan dentro
+                    </p>
+                    <div className="mt-4 space-y-3">
+                      {friendMembers.length === 0 ? (
+                        <p className="text-sm text-[#6d5749]">
+                          Ningun amigo tuyo aparece todavia en este evento.
+                        </p>
+                      ) : (
+                        friendMembers.map((member) => {
+                          const active = attendee?.id === member.id;
+
+                          return (
+                            <button
+                              key={member.id}
+                              className={`flex w-full items-center gap-3 rounded-[24px] border p-3 text-left transition ${
+                                active
+                                  ? "border-[#ffb493] bg-[#fff0e8]"
+                                  : "border-[#eadfd3] bg-white"
+                              }`}
+                              onClick={() => onSelectAttendee(member.id)}
+                              type="button"
+                            >
+                              <AvatarChip user={member} />
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate font-semibold text-[#1d160f]">{member.name}</p>
+                                <p className="truncate text-sm text-[#6d5749]">{member.title}</p>
+                              </div>
+                              <ChevronRight className="h-4 w-4 text-[#8f6f59]" />
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                </SectionCard>
+
+                <SectionCard>
+                  {attendee ? (
+                    <div>
+                      <div className="flex flex-wrap items-center gap-4">
+                        <div className="h-20 w-20 overflow-hidden rounded-[26px] border border-[#eadfd3] bg-[#f5e4d6]">
+                          <img alt={attendee.name} className="h-full w-full object-cover" src={attendee.avatar} />
+                        </div>
+                        <div>
+                          <h3 className="text-2xl font-black tracking-tight text-[#1d160f]">
+                            {attendee.name}
+                          </h3>
+                          <p className="mt-1 text-sm font-semibold text-[#8f6f59]">{attendee.title}</p>
+                          <p className="mt-2 text-sm text-[#5f4b3f]">
+                            Ya es amistad tuya y esta dentro del evento.
+                          </p>
+                        </div>
+                      </div>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        {attendee.interests.map((interest) => (
+                          <span
+                            key={interest}
+                            className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-3 py-2 text-xs font-semibold text-[#6d5749]"
+                          >
+                            {interest}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <EmptyState
+                      title="Privacidad protegida"
+                      copy="Cuando el creador te acepte podras ver a todo el grupo y pedir chats privados."
+                    />
+                  )}
+                </SectionCard>
+              </div>
             )
           ) : null}
         </div>
@@ -2398,21 +3289,45 @@ function InboxSection({
 
 function ProfileSection({
   currentUser,
+  friendSuggestions,
+  friends,
   hostedCount,
   joinedCount,
+  onCreateUserPost,
+  onCreateUserStory,
   pendingApprovalsCount,
   onLogout,
   onResetDemo,
   onSwitchUser,
+  onToggleFriendship,
+  pendingEventInvites,
+  profileMediaDraft,
+  profilePosts,
+  profileStories,
+  profileStoryDraft,
+  setProfileMediaDraft,
+  setProfileStoryDraft,
   state
 }: {
   currentUser: PlatformUser;
+  friendSuggestions: PlatformUser[];
+  friends: PlatformUser[];
   hostedCount: number;
   joinedCount: number;
+  onCreateUserPost: () => void;
+  onCreateUserStory: () => void;
   pendingApprovalsCount: number;
   onLogout: () => void;
   onResetDemo: () => void;
   onSwitchUser: (userId: string) => void;
+  onToggleFriendship: (targetUserId: string) => void;
+  pendingEventInvites: EventInvite[];
+  profileMediaDraft: MediaDraft;
+  profilePosts: SocialPost[];
+  profileStories: StoryItem[];
+  profileStoryDraft: MediaDraft;
+  setProfileMediaDraft: Dispatch<SetStateAction<MediaDraft>>;
+  setProfileStoryDraft: Dispatch<SetStateAction<MediaDraft>>;
   state: PersistedState;
 }) {
   const privateChats = getPrivateChatsForUser(state, currentUser.id);
@@ -2458,70 +3373,347 @@ function ProfileSection({
           <div className="mt-5 grid gap-3 md:grid-cols-4">
             <MetricTile label="Creados" value={String(hostedCount)} />
             <MetricTile label="Agenda" value={String(joinedCount)} />
-            <MetricTile label="Pendientes" value={String(pendingApprovalsCount)} />
+            <MetricTile label="Amigos" value={String(friends.length)} />
             <MetricTile label="Privados" value={String(privateChats.length)} />
           </div>
         </div>
       </section>
 
-      <section className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+      <section className="grid gap-5 xl:grid-cols-[1.02fr_0.98fr]">
         <SectionCard>
-          <SectionLabel>Cuenta y demo</SectionLabel>
+          <SectionLabel>Tu contenido</SectionLabel>
           <p className="mt-3 text-sm text-[#5f4b3f]">
-            Puedes cerrar sesion o resetear los datos demo para volver al estado inicial cuando
-            quieras.
+            Sube fotos a tu perfil o historias de 24 horas para que aparezcan en la portada tipo
+            Instagram.
           </p>
-          <div className="mt-4 flex flex-wrap gap-3">
-            <button
-              className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm font-semibold text-[#5f4b3f]"
-              onClick={onLogout}
-              type="button"
-            >
-              Cerrar sesion
-            </button>
+          <div className="mt-4 grid gap-3 md:grid-cols-[1fr_0.9fr]">
+            <label className="rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3">
+              <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                Foto del perfil
+              </span>
+              <input
+                className="w-full border-none bg-transparent p-0 text-sm text-[#1d160f] outline-none"
+                onChange={(eventValue) =>
+                  setProfileMediaDraft((current) => ({
+                    ...current,
+                    imageUrl: eventValue.target.value
+                  }))
+                }
+                placeholder="https://..."
+                value={profileMediaDraft.imageUrl}
+              />
+            </label>
+            <label className="rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3">
+              <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                Texto de la foto
+              </span>
+              <input
+                className="w-full border-none bg-transparent p-0 text-sm text-[#1d160f] outline-none"
+                onChange={(eventValue) =>
+                  setProfileMediaDraft((current) => ({
+                    ...current,
+                    caption: eventValue.target.value
+                  }))
+                }
+                placeholder="Algo que quieras contar"
+                value={profileMediaDraft.caption}
+              />
+            </label>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
             <button
               className="inline-flex items-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
-              onClick={onResetDemo}
+              onClick={onCreateUserPost}
               type="button"
             >
-              <RefreshCw className="h-4 w-4" />
-              Reiniciar todo
+              <Image className="h-4 w-4" />
+              Publicar foto
             </button>
+          </div>
+
+          <div className="mt-5 grid gap-3 md:grid-cols-[1fr_0.9fr]">
+            <label className="rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3">
+              <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                Historia 24h
+              </span>
+              <input
+                className="w-full border-none bg-transparent p-0 text-sm text-[#1d160f] outline-none"
+                onChange={(eventValue) =>
+                  setProfileStoryDraft((current) => ({
+                    ...current,
+                    imageUrl: eventValue.target.value
+                  }))
+                }
+                placeholder="https://..."
+                value={profileStoryDraft.imageUrl}
+              />
+            </label>
+            <label className="rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3">
+              <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                Texto de la historia
+              </span>
+              <input
+                className="w-full border-none bg-transparent p-0 text-sm text-[#1d160f] outline-none"
+                onChange={(eventValue) =>
+                  setProfileStoryDraft((current) => ({
+                    ...current,
+                    caption: eventValue.target.value
+                  }))
+                }
+                placeholder="Que estas haciendo ahora"
+                value={profileStoryDraft.caption}
+              />
+            </label>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button
+              className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#1d160f]"
+              onClick={onCreateUserStory}
+              type="button"
+            >
+              <Clock3 className="h-4 w-4" />
+              Subir historia
+            </button>
+          </div>
+
+          <div className="mt-5 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                Historias activas
+              </p>
+              <div className="rounded-full border border-[#eadfd3] bg-white px-3 py-2 text-xs font-semibold text-[#6d5749]">
+                {profileStories.length}
+              </div>
+            </div>
+            <div className="mt-4 flex gap-3 overflow-x-auto pb-2">
+              {profileStories.length === 0 ? (
+                <div className="rounded-[20px] border border-dashed border-[#eadfd3] bg-white px-4 py-4 text-sm text-[#6d5749]">
+                  Todavia no has subido historias.
+                </div>
+              ) : (
+                profileStories.map((story) => (
+                  <div key={story.id} className="min-w-[148px] max-w-[148px]">
+                    <div className="rounded-[24px] bg-[linear-gradient(135deg,#ff6b57,#f08a24)] p-[2px]">
+                      <div className="overflow-hidden rounded-[22px] border border-white/60 bg-white">
+                        <img
+                          alt={currentUser.name}
+                          className="h-[190px] w-full object-cover"
+                          src={story.imageUrl}
+                        />
+                      </div>
+                    </div>
+                    <p className="mt-3 text-sm font-semibold text-[#1d160f]">
+                      {story.caption || "Tu historia"}
+                    </p>
+                    <p className="mt-1 text-xs text-[#8f6f59]">
+                      {formatRelativeTime(story.createdAt)}
+                    </p>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          <div className="mt-5">
+            <div className="flex items-center justify-between gap-3">
+              <SectionLabel>Fotos del perfil</SectionLabel>
+              <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-2 text-sm text-[#6d5749]">
+                {profilePosts.length} publicaciones
+              </div>
+            </div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              {profilePosts.length === 0 ? (
+                <div className="rounded-[24px] border border-dashed border-[#eadfd3] bg-[#fffaf6] p-4 text-sm text-[#6d5749] sm:col-span-2">
+                  Aun no has publicado fotos en tu perfil.
+                </div>
+              ) : (
+                profilePosts.map((post) => (
+                  <div
+                    key={post.id}
+                    className="overflow-hidden rounded-[24px] border border-[#eadfd3] bg-[#fffaf6]"
+                  >
+                    <img
+                      alt={currentUser.name}
+                      className="h-[220px] w-full object-cover"
+                      src={post.imageUrl}
+                    />
+                    <div className="p-4">
+                      <p className="text-sm leading-6 text-[#5f4b3f]">
+                        {post.caption || currentUser.tagline}
+                      </p>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </SectionCard>
 
         <SectionCard>
-          <SectionLabel>Cambiar de perfil demo</SectionLabel>
+          <SectionLabel>Amigos y red</SectionLabel>
           <p className="mt-3 text-sm text-[#5f4b3f]">
-            Mantengo esto aqui para que podamos probar rapido aprobaciones, rechazos y privados
-            desde distintos lados del flujo.
+            Desde aqui controlas tus amistades. Si alguien es amigo tuyo, podras saber si esta
+            dentro de un evento aunque todavia no te hayas unido.
           </p>
-          <div className="mt-4 grid gap-3 md:grid-cols-2">
-            {state.users.map((user) => {
-              const active = user.id === currentUser.id;
-              return (
-                <button
+          <div className="mt-4 space-y-3">
+            {friends.length === 0 ? (
+              <div className="rounded-[24px] border border-dashed border-[#eadfd3] bg-[#fffaf6] p-4 text-sm text-[#6d5749]">
+                Todavia no tienes amigos agregados.
+              </div>
+            ) : (
+              friends.map((friend) => (
+                <div
+                  key={friend.id}
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4"
+                >
+                  <div className="flex items-center gap-3">
+                    <AvatarChip user={friend} />
+                    <div>
+                      <p className="font-semibold text-[#1d160f]">{friend.name}</p>
+                      <p className="text-sm text-[#6d5749]">{friend.title}</p>
+                    </div>
+                  </div>
+                  <button
+                    className="rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#6d5749]"
+                    onClick={() => onToggleFriendship(friend.id)}
+                    type="button"
+                  >
+                    Quitar amigo
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="mt-5 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                Sugerencias
+              </p>
+              <div className="rounded-full border border-[#eadfd3] bg-white px-3 py-2 text-xs font-semibold text-[#6d5749]">
+                {friendSuggestions.length}
+              </div>
+            </div>
+            <div className="mt-4 space-y-3">
+              {friendSuggestions.slice(0, 4).map((user) => (
+                <div
                   key={user.id}
-                  className={`flex items-center gap-3 rounded-[24px] border p-4 text-left transition ${
-                    active ? "border-[#ffb493] bg-[#fff0e8]" : "border-[#eadfd3] bg-[#fffaf6]"
-                  }`}
-                  onClick={() => onSwitchUser(user.id)}
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-[20px] border border-[#eadfd3] bg-white px-3 py-3"
+                >
+                  <div className="flex items-center gap-3">
+                    <AvatarChip user={user} />
+                    <div>
+                      <p className="font-semibold text-[#1d160f]">{user.name}</p>
+                      <p className="text-sm text-[#6d5749]">{user.title}</p>
+                    </div>
+                  </div>
+                  <button
+                    className="inline-flex items-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+                    onClick={() => onToggleFriendship(user.id)}
+                    type="button"
+                  >
+                    <UserPlus className="h-4 w-4" />
+                    Agregar
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-5 xl:grid-cols-2">
+            <section className="rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
+              <SectionLabel>Invitaciones directas</SectionLabel>
+              <div className="mt-4 space-y-3">
+                {pendingEventInvites.length === 0 ? (
+                  <p className="text-sm text-[#6d5749]">
+                    No tienes invitaciones directas pendientes ahora mismo.
+                  </p>
+                ) : (
+                  pendingEventInvites.map((invite) => {
+                    const inviteEvent = getEventById(state, invite.eventId);
+                    const sender = getUserById(state, invite.fromUserId);
+
+                    if (!inviteEvent) {
+                      return null;
+                    }
+
+                    return (
+                      <div
+                        key={invite.id}
+                        className="rounded-[20px] border border-[#eadfd3] bg-white px-3 py-3"
+                      >
+                        <p className="font-semibold text-[#1d160f]">{inviteEvent.title}</p>
+                        <p className="mt-1 text-sm text-[#6d5749]">
+                          Invitacion de {sender.name}
+                        </p>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </section>
+
+            <section className="rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
+              <SectionLabel>Cuenta y demo</SectionLabel>
+              <p className="mt-3 text-sm text-[#5f4b3f]">
+                Puedes cerrar sesion o resetear los datos demo para volver al estado inicial.
+              </p>
+              <div className="mt-4 flex flex-wrap gap-3">
+                <button
+                  className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#5f4b3f]"
+                  onClick={onLogout}
                   type="button"
                 >
-                  <AvatarChip user={user} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="truncate font-semibold text-[#1d160f]">{user.name}</p>
-                    </div>
-                    <p className="truncate text-sm text-[#6d5749]">{user.title}</p>
-                    <p className="mt-1 truncate text-xs text-[#8f6f59]">{user.handle}</p>
-                  </div>
+                  Cerrar sesion
                 </button>
-              );
-            })}
+                <button
+                  className="inline-flex items-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+                  onClick={onResetDemo}
+                  type="button"
+                >
+                  <RefreshCw className="h-4 w-4" />
+                  Reiniciar todo
+                </button>
+              </div>
+              <div className="mt-4 rounded-[20px] border border-[#eadfd3] bg-white px-4 py-4 text-sm text-[#6d5749]">
+                {pendingApprovalsCount} solicitudes por revisar en tus eventos.
+              </div>
+            </section>
           </div>
         </SectionCard>
       </section>
+
+      <SectionCard>
+        <SectionLabel>Cambiar de perfil demo</SectionLabel>
+        <p className="mt-3 text-sm text-[#5f4b3f]">
+          Esto sigue aqui para probar rapido aprobaciones, rechazos, amistades y privados desde
+          distintos lados del flujo.
+        </p>
+        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {state.users.map((user) => {
+            const active = user.id === currentUser.id;
+            return (
+              <button
+                key={user.id}
+                className={`flex items-center gap-3 rounded-[24px] border p-4 text-left transition ${
+                  active ? "border-[#ffb493] bg-[#fff0e8]" : "border-[#eadfd3] bg-[#fffaf6]"
+                }`}
+                onClick={() => onSwitchUser(user.id)}
+                type="button"
+              >
+                <AvatarChip user={user} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="truncate font-semibold text-[#1d160f]">{user.name}</p>
+                  </div>
+                  <p className="truncate text-sm text-[#6d5749]">{user.title}</p>
+                  <p className="mt-1 truncate text-xs text-[#8f6f59]">{user.handle}</p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </SectionCard>
     </div>
   );
 }
@@ -2549,7 +3741,7 @@ function SyncStatus({
     >
       {error
         ? `Backend local: ${error}`
-        : `Backend local activo: cambios guardandose en SQLite. Chat en tiempo real ${
+        : `Backend activo: cambios guardandose en el store local o remoto. Chat en tiempo real ${
             isRealtimeConnected ? "conectado" : "reconectando"
           }.`}
     </section>
@@ -2702,17 +3894,17 @@ function buildNavItems() {
   return [
     {
       id: "discover" as const,
-      label: "Descubrir",
+      label: "Inicio",
       icon: <Compass className="h-4 w-4" />
     },
     {
       id: "agenda" as const,
-      label: "Grupos",
+      label: "Eventos",
       icon: <Ticket className="h-4 w-4" />
     },
     {
       id: "inbox" as const,
-      label: "Inbox",
+      label: "Chats",
       icon: <Inbox className="h-4 w-4" />
     },
     {

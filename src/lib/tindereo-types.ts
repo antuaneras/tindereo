@@ -14,6 +14,10 @@ export type GroupMessageKind = "text" | "system";
 
 export type PrivateChatRequestStatus = "pending" | "accepted" | "rejected";
 
+export type SocialAuthorType = "user" | "event";
+
+export type EventInviteStatus = "pending" | "accepted" | "declined";
+
 export interface PlatformUser {
   id: string;
   name: string;
@@ -100,6 +104,41 @@ export interface PrivateMessage {
   createdAt: string;
 }
 
+export interface Friendship {
+  id: string;
+  userIds: [string, string];
+  createdAt: string;
+}
+
+export interface EventInvite {
+  id: string;
+  eventId: string;
+  fromUserId: string;
+  toUserId: string;
+  status: EventInviteStatus;
+  createdAt: string;
+  respondedAt?: string;
+}
+
+export interface SocialPost {
+  id: string;
+  authorType: SocialAuthorType;
+  authorId: string;
+  imageUrl: string;
+  caption: string;
+  createdAt: string;
+}
+
+export interface StoryItem {
+  id: string;
+  authorType: SocialAuthorType;
+  authorId: string;
+  imageUrl: string;
+  caption: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
 export interface SessionState {
   isAuthenticated: boolean;
   currentUserId: string;
@@ -117,6 +156,10 @@ export interface AppDataset {
   privateChatRequests: PrivateChatRequest[];
   privateChats: PrivateChat[];
   privateMessages: PrivateMessage[];
+  friendships: Friendship[];
+  eventInvites: EventInvite[];
+  socialPosts: SocialPost[];
+  stories: StoryItem[];
 }
 
 export interface PersistedState extends AppDataset {
@@ -155,6 +198,13 @@ export type PlatformAction =
   | { type: "respond-event-access"; actorId: string; membershipId: string; accept: boolean }
   | { type: "leave-event"; actorId: string; eventId: string }
   | { type: "send-group-message"; actorId: string; eventId: string; text: string }
+  | { type: "toggle-friendship"; actorId: string; targetUserId: string }
+  | { type: "send-event-invite"; actorId: string; eventId: string; targetUserId: string }
+  | { type: "respond-event-invite"; actorId: string; inviteId: string; accept: boolean }
+  | { type: "create-user-post"; actorId: string; imageUrl: string; caption: string }
+  | { type: "create-user-story"; actorId: string; imageUrl: string; caption: string }
+  | { type: "create-event-post"; actorId: string; eventId: string; imageUrl: string; caption: string }
+  | { type: "create-event-story"; actorId: string; eventId: string; imageUrl: string; caption: string }
   | {
       type: "send-private-request";
       actorId: string;

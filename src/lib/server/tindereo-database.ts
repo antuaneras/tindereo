@@ -329,7 +329,11 @@ export function readAppDataset(): AppDataset {
     groupMessages,
     privateChatRequests,
     privateChats,
-    privateMessages
+    privateMessages,
+    friendships: [],
+    eventInvites: [],
+    socialPosts: [],
+    stories: []
   };
 }
 

@@ -1,18 +1,25 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { DEFAULT_STATE } from "../tindereo-data";
 import type { AppDataset } from "../tindereo-types";
-import {
-  getDatasetRevision as getLocalDatasetRevision,
-  readAppDataset as readLocalAppDataset,
-  replaceAppDataset as replaceLocalAppDataset,
-  resetAppDataset as resetLocalAppDataset
-} from "./tindereo-database";
 
 const PLATFORM_STATE_ID = "main";
+const LOCAL_STATE_PATH = path.join(process.cwd(), "storage", "platform-state.json");
+
+type PlatformStateRecord = {
+  data: AppDataset;
+  revision: number;
+};
 
 type SupabasePlatformStateRow = {
   data: AppDataset;
   revision: number;
 };
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __tindereoLocalPlatformState__: PlatformStateRecord | undefined;
+}
 
 function getSupabaseUrl() {
   return process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? null;
@@ -24,6 +31,59 @@ function getSupabaseServiceRoleKey() {
 
 function isSupabaseConfigured() {
   return Boolean(getSupabaseUrl() && getSupabaseServiceRoleKey());
+}
+
+function cloneData<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function createInitialLocalState(): PlatformStateRecord {
+  return {
+    data: cloneData(DEFAULT_STATE),
+    revision: 1
+  };
+}
+
+function sanitizeLocalState(value: unknown) {
+  if (!value || typeof value !== "object") {
+    return createInitialLocalState();
+  }
+
+  const candidate = value as Partial<PlatformStateRecord>;
+  return {
+    data: cloneData((candidate.data as AppDataset | undefined) ?? DEFAULT_STATE),
+    revision: Number(candidate.revision ?? 1) || 1
+  } satisfies PlatformStateRecord;
+}
+
+function ensureLocalStateFile() {
+  mkdirSync(path.dirname(LOCAL_STATE_PATH), { recursive: true });
+
+  try {
+    readFileSync(LOCAL_STATE_PATH, "utf8");
+  } catch {
+    const initialState = createInitialLocalState();
+    writeFileSync(LOCAL_STATE_PATH, JSON.stringify(initialState, null, 2), "utf8");
+  }
+}
+
+function readLocalStateRecord() {
+  if (globalThis.__tindereoLocalPlatformState__) {
+    return globalThis.__tindereoLocalPlatformState__;
+  }
+
+  ensureLocalStateFile();
+  const raw = readFileSync(LOCAL_STATE_PATH, "utf8");
+  const parsed = sanitizeLocalState(JSON.parse(raw) as unknown);
+  globalThis.__tindereoLocalPlatformState__ = parsed;
+  return parsed;
+}
+
+function writeLocalStateRecord(nextRecord: PlatformStateRecord) {
+  ensureLocalStateFile();
+  globalThis.__tindereoLocalPlatformState__ = nextRecord;
+  writeFileSync(LOCAL_STATE_PATH, JSON.stringify(nextRecord, null, 2), "utf8");
+  return nextRecord;
 }
 
 function buildSupabaseHeaders() {
@@ -61,14 +121,14 @@ async function parseSupabaseResponse<T>(response: Response) {
   return payload as T;
 }
 
-async function callSupabase<T>(path: string, init?: RequestInit) {
+async function callSupabase<T>(pathName: string, init?: RequestInit) {
   const url = getSupabaseUrl();
 
   if (!url) {
     throw new Error("Falta SUPABASE_URL para usar la persistencia remota.");
   }
 
-  const response = await fetch(`${url}${path}`, {
+  const response = await fetch(`${url}${pathName}`, {
     ...init,
     headers: {
       ...buildSupabaseHeaders(),
@@ -132,7 +192,7 @@ async function readSupabasePlatformState() {
 
 export async function getDatasetRevision() {
   if (!isSupabaseConfigured()) {
-    return getLocalDatasetRevision();
+    return readLocalStateRecord().revision;
   }
 
   const row = await readSupabasePlatformState();
@@ -141,7 +201,7 @@ export async function getDatasetRevision() {
 
 export async function readAppDataset() {
   if (!isSupabaseConfigured()) {
-    return readLocalAppDataset();
+    return cloneData(readLocalStateRecord().data);
   }
 
   const row = await readSupabasePlatformState();
@@ -150,7 +210,11 @@ export async function readAppDataset() {
 
 export async function replaceAppDataset(data: AppDataset) {
   if (!isSupabaseConfigured()) {
-    return replaceLocalAppDataset(data);
+    const current = readLocalStateRecord();
+    return writeLocalStateRecord({
+      data: cloneData(data),
+      revision: current.revision + 1
+    }).data;
   }
 
   const row = await setSupabasePlatformState(data);
@@ -159,7 +223,11 @@ export async function replaceAppDataset(data: AppDataset) {
 
 export async function resetAppDataset() {
   if (!isSupabaseConfigured()) {
-    return resetLocalAppDataset();
+    const current = readLocalStateRecord();
+    return writeLocalStateRecord({
+      data: cloneData(DEFAULT_STATE),
+      revision: current.revision + 1
+    }).data;
   }
 
   const row = await setSupabasePlatformState(DEFAULT_STATE);

@@ -1,9 +1,7 @@
-const isWindows = process.platform === "win32";
-
 const nextConfig = {
   experimental: {
     cpus: 1,
-    workerThreads: isWindows,
+    workerThreads: process.platform === "win32",
     webpackBuildWorker: false
   },
   eslint: {

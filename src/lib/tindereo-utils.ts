@@ -6,18 +6,23 @@ import {
 import type {
   CreateEventInput,
   EventAccessState,
+  EventInvite,
+  EventInviteStatus,
   EventConnectionState,
   EventDetailTab,
   EventGroupMessage,
   EventHealthStatus,
   EventItem,
   EventMembership,
+  Friendship,
   PersistedState,
   PlatformUser,
   RegisterUserInput,
   PrivateChat,
   PrivateChatRequest,
-  PrivateMessage
+  PrivateMessage,
+  SocialPost,
+  StoryItem
 } from "@/lib/tindereo-types";
 
 function cloneState<T>(value: T): T {
@@ -188,6 +193,10 @@ function isPersistedState(value: unknown): value is PersistedState {
     Array.isArray(candidate.privateChatRequests) &&
     Array.isArray(candidate.privateChats) &&
     Array.isArray(candidate.privateMessages) &&
+    Array.isArray(candidate.friendships) &&
+    Array.isArray(candidate.eventInvites) &&
+    Array.isArray(candidate.socialPosts) &&
+    Array.isArray(candidate.stories) &&
     (!firstEvent ||
       (typeof firstEvent.visibility === "string" &&
         typeof firstEvent.createdAt === "string" &&
@@ -248,12 +257,17 @@ export function normalizeState(state: PersistedState) {
     : (state.users[0]?.id ?? DEFAULT_STATE.session.currentUserId);
 
   const provisionalState: PersistedState = {
+    ...DEFAULT_STATE,
     ...state,
     session: {
       ...DEFAULT_STATE.session,
       ...state.session,
       currentUserId
-    }
+    },
+    friendships: state.friendships ?? DEFAULT_STATE.friendships,
+    eventInvites: state.eventInvites ?? DEFAULT_STATE.eventInvites,
+    socialPosts: state.socialPosts ?? DEFAULT_STATE.socialPosts,
+    stories: state.stories ?? DEFAULT_STATE.stories
   };
 
   const joinedEvents = getJoinedEvents(provisionalState, currentUserId);
@@ -292,6 +306,29 @@ export function getUserById(state: PersistedState, userId: string) {
   return state.users.find((user) => user.id === userId) ?? getCurrentUser(state);
 }
 
+export function areFriends(state: PersistedState, userAId: string, userBId: string) {
+  return state.friendships.some(
+    (friendship) =>
+      friendship.userIds.includes(userAId) && friendship.userIds.includes(userBId)
+  );
+}
+
+export function getFriends(state: PersistedState, userId: string) {
+  return state.friendships
+    .filter((friendship) => friendship.userIds.includes(userId))
+    .map((friendship) => {
+      const friendId = friendship.userIds.find((candidate) => candidate !== userId) ?? userId;
+      return getUserById(state, friendId);
+    })
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export function getFriendSuggestions(state: PersistedState, userId: string) {
+  return state.users
+    .filter((user) => user.id !== userId && !areFriends(state, userId, user.id))
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
 export function getEventById(state: PersistedState, eventId: string | null) {
   if (!eventId) {
     return sortEventsByStart(state.events)[0] ?? null;
@@ -320,7 +357,13 @@ export function getDiscoverFeedEvents(state: PersistedState, userId: string) {
       (event) =>
         event.visibility === "public" ||
         event.hostId === userId ||
-        getEventRequest(state, event.id, userId)?.status === "approved"
+        getEventRequest(state, event.id, userId)?.status === "approved" ||
+        state.eventInvites.some(
+          (invite) =>
+            invite.eventId === event.id &&
+            invite.toUserId === userId &&
+            (invite.status === "pending" || invite.status === "accepted")
+        )
     )
   );
 }
@@ -389,6 +432,48 @@ export function getEventMembers(state: PersistedState, eventId: string) {
   }
 
   return [...map.values()].sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export function getEventFriendMembers(state: PersistedState, eventId: string, userId: string) {
+  const friendIds = new Set(getFriends(state, userId).map((friend) => friend.id));
+  return getEventMembers(state, eventId).filter((member) => friendIds.has(member.id));
+}
+
+export function canRevealEventMembers(state: PersistedState, eventId: string, userId: string) {
+  return hasEventAccess(state, eventId, userId);
+}
+
+export function getEventInvitesForUser(state: PersistedState, userId: string) {
+  return state.eventInvites
+    .filter((invite) => invite.toUserId === userId || invite.fromUserId === userId)
+    .slice()
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+export function getPendingEventInvitesForUser(state: PersistedState, userId: string) {
+  return getEventInvitesForUser(state, userId).filter(
+    (invite) => invite.toUserId === userId && invite.status === "pending"
+  );
+}
+
+export function getEventInvitableFriends(state: PersistedState, eventId: string, userId: string) {
+  const friendIds = new Set(getFriends(state, userId).map((friend) => friend.id));
+  const invitedIds = new Set(
+    state.eventInvites
+      .filter((invite) => invite.eventId === eventId && invite.status === "pending")
+      .map((invite) => invite.toUserId)
+  );
+  const attendeeIds = new Set(getEventMembers(state, eventId).map((member) => member.id));
+
+  return state.users
+    .filter(
+      (user) =>
+        friendIds.has(user.id) &&
+        !invitedIds.has(user.id) &&
+        !attendeeIds.has(user.id) &&
+        user.id !== userId
+    )
+    .sort((left, right) => left.name.localeCompare(right.name));
 }
 
 export function getEventPendingRequests(state: PersistedState, eventId: string) {
@@ -616,6 +701,270 @@ export function leaveEvent(state: PersistedState, eventId: string, userId: strin
   };
 }
 
+export function toggleFriendship(state: PersistedState, actorId: string, targetUserId: string) {
+  if (actorId === targetUserId) {
+    return state;
+  }
+
+  const existing = state.friendships.find(
+    (friendship) =>
+      friendship.userIds.includes(actorId) && friendship.userIds.includes(targetUserId)
+  );
+
+  if (existing) {
+    return {
+      ...state,
+      friendships: state.friendships.filter((friendship) => friendship.id !== existing.id)
+    };
+  }
+
+  const nextFriendship: Friendship = {
+    id: buildId("friend"),
+    userIds: [actorId, targetUserId],
+    createdAt: new Date().toISOString()
+  };
+
+  return {
+    ...state,
+    friendships: [...state.friendships, nextFriendship]
+  };
+}
+
+export function sendEventInvite(
+  state: PersistedState,
+  actorId: string,
+  eventId: string,
+  targetUserId: string
+) {
+  const event = getEventById(state, eventId);
+  if (!event || event.hostId !== actorId || targetUserId === actorId) {
+    return state;
+  }
+
+  if (!areFriends(state, actorId, targetUserId)) {
+    return state;
+  }
+
+  if (getEventMembers(state, eventId).some((member) => member.id === targetUserId)) {
+    return state;
+  }
+
+  const existingPending = state.eventInvites.find(
+    (invite) =>
+      invite.eventId === eventId &&
+      invite.toUserId === targetUserId &&
+      invite.status === "pending"
+  );
+
+  if (existingPending) {
+    return state;
+  }
+
+  const nextInvite: EventInvite = {
+    id: buildId("invite"),
+    eventId,
+    fromUserId: actorId,
+    toUserId: targetUserId,
+    status: "pending",
+    createdAt: new Date().toISOString()
+  };
+
+  return {
+    ...state,
+    eventInvites: [nextInvite, ...state.eventInvites]
+  };
+}
+
+export function respondToEventInvite(
+  state: PersistedState,
+  inviteId: string,
+  actorId: string,
+  accept: boolean
+) {
+  const invite = state.eventInvites.find((item) => item.id === inviteId);
+  if (!invite || invite.toUserId !== actorId || invite.status !== "pending") {
+    return state;
+  }
+
+  const respondedAt = new Date().toISOString();
+  const nextInvites: EventInvite[] = state.eventInvites.map((item) =>
+    item.id === inviteId
+      ? {
+          ...item,
+          status: (accept ? "accepted" : "declined") as EventInviteStatus,
+          respondedAt
+        }
+      : item
+  );
+
+  if (!accept) {
+    return {
+      ...state,
+      eventInvites: nextInvites
+    };
+  }
+
+  const event = getEventById(state, invite.eventId);
+  if (!event) {
+    return {
+      ...state,
+      eventInvites: nextInvites
+    };
+  }
+
+  const existingMembership = getEventRequest(state, invite.eventId, actorId);
+  if (existingMembership) {
+    const memberships = state.memberships.map((membership) =>
+      membership.id === existingMembership.id
+        ? {
+            ...membership,
+            status: "approved" as const,
+            respondedAt
+          }
+        : membership
+    );
+
+    return {
+      ...state,
+      eventInvites: nextInvites,
+      memberships
+    };
+  }
+
+  const nextMembership: EventMembership = {
+    id: buildId("membership"),
+    eventId: invite.eventId,
+    userId: actorId,
+    status: "approved",
+    requestedAt: respondedAt,
+    respondedAt
+  };
+
+  const user = getUserById(state, actorId);
+  const systemMessage: EventGroupMessage = {
+    id: buildId("group"),
+    eventId: invite.eventId,
+    authorId: "system",
+    text: `${user.name} ha entrado al evento desde una invitacion directa.`,
+    kind: "system",
+    createdAt: respondedAt
+  };
+
+  return {
+    ...state,
+    eventInvites: nextInvites,
+    memberships: [...state.memberships, nextMembership],
+    groupMessages: [...state.groupMessages, systemMessage]
+  };
+}
+
+function createMediaPost(
+  state: PersistedState,
+  authorType: SocialPost["authorType"],
+  authorId: string,
+  imageUrl: string,
+  caption: string
+) {
+  const trimmedImageUrl = imageUrl.trim();
+  const trimmedCaption = caption.trim();
+  if (!trimmedImageUrl) {
+    return state;
+  }
+
+  const nextPost: SocialPost = {
+    id: buildId("post"),
+    authorType,
+    authorId,
+    imageUrl: trimmedImageUrl,
+    caption: trimmedCaption,
+    createdAt: new Date().toISOString()
+  };
+
+  return {
+    ...state,
+    socialPosts: [nextPost, ...state.socialPosts]
+  };
+}
+
+function createStoryEntry(
+  state: PersistedState,
+  authorType: StoryItem["authorType"],
+  authorId: string,
+  imageUrl: string,
+  caption: string
+) {
+  const trimmedImageUrl = imageUrl.trim();
+  const trimmedCaption = caption.trim();
+  if (!trimmedImageUrl) {
+    return state;
+  }
+
+  const createdAt = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  const nextStory: StoryItem = {
+    id: buildId("story"),
+    authorType,
+    authorId,
+    imageUrl: trimmedImageUrl,
+    caption: trimmedCaption,
+    createdAt,
+    expiresAt
+  };
+
+  return {
+    ...state,
+    stories: [nextStory, ...state.stories]
+  };
+}
+
+export function createUserPost(
+  state: PersistedState,
+  actorId: string,
+  imageUrl: string,
+  caption: string
+) {
+  return createMediaPost(state, "user", actorId, imageUrl, caption);
+}
+
+export function createUserStory(
+  state: PersistedState,
+  actorId: string,
+  imageUrl: string,
+  caption: string
+) {
+  return createStoryEntry(state, "user", actorId, imageUrl, caption);
+}
+
+export function createEventPost(
+  state: PersistedState,
+  actorId: string,
+  eventId: string,
+  imageUrl: string,
+  caption: string
+) {
+  const event = getEventById(state, eventId);
+  if (!event || event.hostId !== actorId) {
+    return state;
+  }
+
+  return createMediaPost(state, "event", eventId, imageUrl, caption);
+}
+
+export function createEventStory(
+  state: PersistedState,
+  actorId: string,
+  eventId: string,
+  imageUrl: string,
+  caption: string
+) {
+  const event = getEventById(state, eventId);
+  if (!event || event.hostId !== actorId) {
+    return state;
+  }
+
+  return createStoryEntry(state, "event", eventId, imageUrl, caption);
+}
+
 export function getCategoryMeta(category: EventItem["category"]) {
   return EVENT_CATEGORY_META[category];
 }
@@ -673,6 +1022,85 @@ export function formatRelativeTime(dateIso: string) {
   }
 
   return `hace ${Math.round(diffHours / 24)} d`;
+}
+
+export function isStoryActive(story: StoryItem) {
+  return new Date(story.expiresAt).getTime() > Date.now();
+}
+
+function canSeeEventMedia(state: PersistedState, eventId: string, userId: string) {
+  const event = getEventById(state, eventId);
+  if (!event) {
+    return false;
+  }
+
+  return event.visibility === "public" || hasEventAccess(state, eventId, userId);
+}
+
+export function getFeedPosts(state: PersistedState, userId: string) {
+  const friendIds = new Set(getFriends(state, userId).map((friend) => friend.id));
+
+  return state.socialPosts
+    .filter((post) => {
+      if (post.authorType === "user") {
+        return post.authorId === userId || friendIds.has(post.authorId);
+      }
+
+      return canSeeEventMedia(state, post.authorId, userId);
+    })
+    .slice()
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+export function getProfilePosts(state: PersistedState, userId: string) {
+  return state.socialPosts
+    .filter((post) => post.authorType === "user" && post.authorId === userId)
+    .slice()
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+export function getEventPosts(state: PersistedState, eventId: string) {
+  return state.socialPosts
+    .filter((post) => post.authorType === "event" && post.authorId === eventId)
+    .slice()
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+export function getActiveStories(state: PersistedState, userId: string) {
+  const friendIds = new Set(getFriends(state, userId).map((friend) => friend.id));
+
+  return state.stories
+    .filter((story) => {
+      if (!isStoryActive(story)) {
+        return false;
+      }
+
+      if (story.authorType === "user") {
+        return story.authorId === userId || friendIds.has(story.authorId);
+      }
+
+      return canSeeEventMedia(state, story.authorId, userId);
+    })
+    .slice()
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+export function getProfileStories(state: PersistedState, userId: string) {
+  return state.stories
+    .filter(
+      (story) => story.authorType === "user" && story.authorId === userId && isStoryActive(story)
+    )
+    .slice()
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+export function getEventStories(state: PersistedState, eventId: string) {
+  return state.stories
+    .filter(
+      (story) => story.authorType === "event" && story.authorId === eventId && isStoryActive(story)
+    )
+    .slice()
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
 export function getInitials(name: string) {

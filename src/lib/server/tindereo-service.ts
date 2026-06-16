@@ -14,15 +14,22 @@ import type {
   PlatformDataEnvelope
 } from "../tindereo-types";
 import {
+  createEventPost,
+  createEventStory,
   createEvent,
+  createUserPost,
+  createUserStory,
   leaveEvent,
   postEventMessage,
   registerUser,
   requestEventAccess,
   respondToEventAccess,
+  respondToEventInvite,
   respondToPrivateChatRequest,
   sendPrivateChatRequest,
-  sendPrivateMessage
+  sendEventInvite,
+  sendPrivateMessage,
+  toggleFriendship
 } from "../tindereo-utils";
 
 function buildPlatformEnvelope(
@@ -107,9 +114,38 @@ export async function runPlatformAction(action: PlatformAction): Promise<Platfor
       return runStateMutation(action.actorId, (state) =>
         respondToEventAccess(state, action.membershipId, action.actorId, action.accept)
       );
+    case "toggle-friendship":
+      return runStateMutation(action.actorId, (state) =>
+        toggleFriendship(state, action.actorId, action.targetUserId)
+      );
+    case "send-event-invite":
+      return runStateMutation(
+        action.actorId,
+        (state) => sendEventInvite(state, action.actorId, action.eventId, action.targetUserId)
+      );
+    case "respond-event-invite":
+      return runStateMutation(action.actorId, (state) =>
+        respondToEventInvite(state, action.inviteId, action.actorId, action.accept)
+      );
     case "leave-event":
       return runStateMutation(action.actorId, (state) =>
         leaveEvent(state, action.eventId, action.actorId)
+      );
+    case "create-user-post":
+      return runStateMutation(action.actorId, (state) =>
+        createUserPost(state, action.actorId, action.imageUrl, action.caption)
+      );
+    case "create-user-story":
+      return runStateMutation(action.actorId, (state) =>
+        createUserStory(state, action.actorId, action.imageUrl, action.caption)
+      );
+    case "create-event-post":
+      return runStateMutation(action.actorId, (state) =>
+        createEventPost(state, action.actorId, action.eventId, action.imageUrl, action.caption)
+      );
+    case "create-event-story":
+      return runStateMutation(action.actorId, (state) =>
+        createEventStory(state, action.actorId, action.eventId, action.imageUrl, action.caption)
       );
     case "send-group-message":
       return runStateMutation(action.actorId, (state) =>
