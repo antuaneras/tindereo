@@ -6,16 +6,19 @@ import {
   ArrowRight,
   BadgeCheck,
   CalendarDays,
+  Camera,
   Check,
   ChevronRight,
   Clock3,
   Compass,
+  Copy,
   Inbox,
   MapPin,
   MessageCircle,
   RefreshCw,
   Search,
   Send,
+  Share2,
   Shield,
   Sparkles,
   Ticket,
@@ -24,18 +27,30 @@ import {
   X
 } from "lucide-react";
 import { OrganizerDashboard } from "@/components/tindereo/organizer-dashboard";
+import {
+  executePlatformAction,
+  extractPlatformData,
+  fetchPlatformData,
+  resetPlatformData
+} from "@/lib/tindereo-api";
 import { APP_NAME, APP_TAGLINE, EVENT_CATEGORY_OPTIONS } from "@/lib/tindereo-data";
+import {
+  hydratePersistedState,
+  readSessionState,
+  SESSION_STORAGE_KEY
+} from "@/lib/tindereo-session";
 import type {
   AppTab,
   CreateEventInput,
   EventCategory,
   EventDetailTab,
+  EventItem,
+  PlatformAction,
+  PlatformDataEnvelope,
   PersistedState,
   PlatformUser
 } from "@/lib/tindereo-types";
 import {
-  createEvent,
-  createInitialState,
   formatEventDateRange,
   formatRelativeTime,
   formatTime,
@@ -67,17 +82,66 @@ import {
   getUserById,
   hasEventAccess,
   isEventHost,
-  leaveEvent,
-  postEventMessage,
-  readPersistedState,
-  requestEventAccess,
-  respondToEventAccess,
-  respondToPrivateChatRequest,
-  sendPrivateChatRequest,
-  sendPrivateMessage
+  normalizeState
 } from "@/lib/tindereo-utils";
 
-const STORAGE_KEY = "tindereo-events-demo-v2";
+function readSharedEventSlug() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  return new URL(window.location.href).searchParams.get("event");
+}
+
+function writeSharedEventSlug(eventSlug: string | null) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const url = new URL(window.location.href);
+  if (eventSlug) {
+    url.searchParams.set("event", eventSlug);
+  } else {
+    url.searchParams.delete("event");
+  }
+
+  window.history.replaceState({}, "", url.toString());
+}
+
+function buildEventShareUrl(eventSlug: string) {
+  if (typeof window === "undefined") {
+    return `/?event=${eventSlug}`;
+  }
+
+  const url = new URL(window.location.href);
+  url.searchParams.set("event", eventSlug);
+  return url.toString();
+}
+
+function buildEventShareCopy(event: EventItem, shareUrl: string) {
+  return `Te paso ${event.title} en Tindereo. ${event.summary} Únete aquí: ${shareUrl}`;
+}
+
+async function copyToClipboard(value: string) {
+  if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+    return false;
+  }
+
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function mergeEventIntoCollection(collection: EventItem[], event: EventItem | null) {
+  if (!event || collection.some((item) => item.id === event.id)) {
+    return collection;
+  }
+
+  return [event, ...collection];
+}
 
 export function TindereoApp() {
   const [state, setState] = useState<PersistedState | null>(null);
@@ -87,13 +151,74 @@ export function TindereoApp() {
   const [requestDrafts, setRequestDrafts] = useState<Record<string, string>>({});
   const [selectedAttendeeByEvent, setSelectedAttendeeByEvent] = useState<Record<string, string>>({});
   const [privateDraft, setPrivateDraft] = useState("");
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const getStoredSession = () => {
     if (typeof window === "undefined") {
-      return;
+      return {};
     }
 
-    setState(readPersistedState(window.localStorage.getItem(STORAGE_KEY)));
+    return readSessionState(window.localStorage.getItem(SESSION_STORAGE_KEY));
+  };
+
+  const applyPlatformPayload = (
+    payload: PlatformDataEnvelope,
+    sessionPatch?: Partial<PersistedState["session"]>
+  ) => {
+    const data = extractPlatformData(payload);
+    const sharedEventId = data.events.find((event) => event.slug === readSharedEventSlug())?.id;
+
+    setState((current) =>
+      normalizeState(
+        hydratePersistedState(data, {
+          ...(current?.session ?? getStoredSession()),
+          ...(sharedEventId ? { selectedEventId: sharedEventId } : {}),
+          ...sessionPatch
+        })
+      )
+    );
+  };
+
+  const loadPlatform = async (sessionPatch?: Partial<PersistedState["session"]>) => {
+    setSyncError(null);
+    setIsSyncing(true);
+
+    try {
+      const payload = await fetchPlatformData();
+      applyPlatformPayload(payload, sessionPatch);
+    } catch (error) {
+      setSyncError(
+        error instanceof Error ? error.message : "No se pudo cargar la base de datos local."
+      );
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const runPlatformMutation = async (
+    action: PlatformAction,
+    sessionPatch?: Partial<PersistedState["session"]>
+  ) => {
+    setSyncError(null);
+    setIsSyncing(true);
+
+    try {
+      const payload = await executePlatformAction(action);
+      applyPlatformPayload(payload, sessionPatch);
+      return payload;
+    } catch (error) {
+      setSyncError(
+        error instanceof Error ? error.message : "No se pudo guardar la accion en backend."
+      );
+      return null;
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadPlatform();
   }, []);
 
   useEffect(() => {
@@ -101,11 +226,14 @@ export function TindereoApp() {
       return;
     }
 
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(state.session));
+    writeSharedEventSlug(
+      state.events.find((event) => event.id === state.session.selectedEventId)?.slug ?? null
+    );
   }, [state]);
 
   if (!state) {
-    return <LoadingScreen />;
+    return <LoadingScreen error={syncError} onRetry={() => void loadPlatform()} />;
   }
 
   const currentUser = getCurrentUser(state);
@@ -113,6 +241,7 @@ export function TindereoApp() {
   const joinedEvents = getJoinedEvents(state, currentUser.id);
   const hostedEvents = getHostedEvents(state, currentUser.id);
   const hostPendingRequests = getHostPendingRequests(state, currentUser.id);
+  const selectedEvent = state.events.find((item) => item.id === state.session.selectedEventId) ?? null;
   const filteredEvents = discoverEvents.filter((event) => {
     const matchesCategory = categoryFilter === "all" || event.category === categoryFilter;
     const haystack = `${event.title} ${event.city} ${event.venue} ${event.tags.join(" ")}`.toLowerCase();
@@ -120,10 +249,20 @@ export function TindereoApp() {
     return matchesCategory && matchesSearch;
   });
   const discoverSelection =
+    (selectedEvent &&
+    (filteredEvents.some((item) => item.id === selectedEvent.id) ||
+      discoverEvents.some((item) => item.id === selectedEvent.id) ||
+      selectedEvent.visibility === "private")
+      ? selectedEvent
+      : null) ??
     pickEvent(filteredEvents, state.session.selectedEventId) ??
     pickEvent(discoverEvents, state.session.selectedEventId) ??
     discoverEvents[0] ??
     null;
+  const discoverCollection = mergeEventIntoCollection(
+    filteredEvents.length > 0 ? filteredEvents : discoverEvents,
+    discoverSelection
+  );
   const agendaSelection = pickEvent(joinedEvents, state.session.selectedEventId) ?? joinedEvents[0] ?? null;
   const incomingPrivateRequests = getIncomingPendingRequests(state, currentUser.id);
   const privateChats = getPrivateChatsForUser(state, currentUser.id);
@@ -139,13 +278,13 @@ export function TindereoApp() {
   const updateSession = (patch: Partial<PersistedState["session"]>) => {
     setState((current) =>
       current
-        ? {
+        ? normalizeState({
             ...current,
             session: {
               ...current.session,
               ...patch
             }
-          }
+          })
         : current
     );
   };
@@ -165,181 +304,173 @@ export function TindereoApp() {
     });
   };
 
-  const handleRequestEventAccess = (eventId: string) => {
-    setState((current) =>
-      current ? requestEventAccess(current, eventId, current.session.currentUserId) : current
+  const handleRequestEventAccess = async (eventId: string) => {
+    await runPlatformMutation({
+      type: "request-event-access",
+      actorId: state.session.currentUserId,
+      eventId
+    });
+  };
+
+  const handleRespondEventAccess = async (membershipId: string, accept: boolean) => {
+    await runPlatformMutation({
+      type: "respond-event-access",
+      actorId: state.session.currentUserId,
+      membershipId,
+      accept
+    });
+  };
+
+  const handleLeaveEvent = async (eventId: string) => {
+    const nextTab =
+      getJoinedEvents(state, state.session.currentUserId).filter((event) => event.id !== eventId)
+        .length > 0
+        ? "agenda"
+        : "discover";
+
+    await runPlatformMutation(
+      {
+        type: "leave-event",
+        actorId: state.session.currentUserId,
+        eventId
+      },
+      {
+        activeTab: nextTab,
+        selectedEventId: null,
+        selectedEventView: "overview"
+      }
     );
   };
 
-  const handleRespondEventAccess = (membershipId: string, accept: boolean) => {
-    setState((current) => {
-      if (!current) {
-        return current;
-      }
-
-      return respondToEventAccess(current, membershipId, current.session.currentUserId, accept);
-    });
-  };
-
-  const handleLeaveEvent = (eventId: string) => {
-    setState((current) => {
-      if (!current) {
-        return current;
-      }
-
-      const next = leaveEvent(current, eventId, current.session.currentUserId);
-      const nextJoined = getJoinedEvents(next, next.session.currentUserId);
-      return {
-        ...next,
-        session: {
-          ...next.session,
-          activeTab: nextJoined.length > 0 ? "agenda" : "discover",
-          selectedEventId:
-            nextJoined[0]?.id ??
-            getDiscoverFeedEvents(next, next.session.currentUserId)[0]?.id ??
-            next.events[0]?.id ??
-            null,
-          selectedEventView: "overview"
-        }
-      };
-    });
-  };
-
-  const handleSendGroupMessage = (eventId: string) => {
+  const handleSendGroupMessage = async (eventId: string) => {
     const message = groupDrafts[eventId] ?? "";
     if (!message.trim()) {
       return;
     }
 
-    setState((current) =>
-      current ? postEventMessage(current, eventId, current.session.currentUserId, message) : current
-    );
-    setGroupDrafts((current) => ({ ...current, [eventId]: "" }));
+    const payload = await runPlatformMutation({
+      type: "send-group-message",
+      actorId: state.session.currentUserId,
+      eventId,
+      text: message
+    });
+
+    if (payload) {
+      setGroupDrafts((current) => ({ ...current, [eventId]: "" }));
+    }
   };
 
-  const handleSendPrivateRequest = (eventId: string, targetUserId: string) => {
+  const handleSendPrivateRequest = async (eventId: string, targetUserId: string) => {
     const draftKey = `${eventId}:${targetUserId}`;
     const message =
       requestDrafts[draftKey] ||
       `Hola. Me apetece conocerte mejor antes de ${getEventById(state, eventId)?.title}. Si te cuadra, abrimos chat privado.`;
 
-    setState((current) => {
-      if (!current) {
-        return current;
-      }
-
-      return sendPrivateChatRequest(
-        current,
-        eventId,
-        current.session.currentUserId,
-        targetUserId,
-        message
-      );
+    const payload = await runPlatformMutation({
+      type: "send-private-request",
+      actorId: state.session.currentUserId,
+      eventId,
+      targetUserId,
+      message
     });
-    setRequestDrafts((current) => ({ ...current, [draftKey]: "" }));
+
+    if (payload) {
+      setRequestDrafts((current) => ({ ...current, [draftKey]: "" }));
+    }
   };
 
-  const handleRespondPrivateRequest = (requestId: string, accept: boolean) => {
-    setState((current) => {
-      if (!current) {
-        return current;
-      }
-
-      const next = respondToPrivateChatRequest(
-        current,
+  const handleRespondPrivateRequest = async (requestId: string, accept: boolean) => {
+    await runPlatformMutation(
+      {
+        type: "respond-private-request",
+        actorId: state.session.currentUserId,
         requestId,
-        current.session.currentUserId,
         accept
-      );
-      const latestChat = getPrivateChatsForUser(next, next.session.currentUserId)[0] ?? null;
-
-      return {
-        ...next,
-        session: {
-          ...next.session,
-          activeTab: accept ? "inbox" : next.session.activeTab,
-          selectedPrivateChatId: accept
-            ? latestChat?.id ?? next.session.selectedPrivateChatId
-            : next.session.selectedPrivateChatId
-        }
-      };
-    });
+      },
+      accept
+        ? {
+            activeTab: "inbox",
+            selectedPrivateChatId: null
+          }
+        : undefined
+    );
   };
 
-  const handleSendPrivateMessage = () => {
+  const handleSendPrivateMessage = async () => {
     if (!selectedPrivateChat || !privateDraft.trim()) {
       return;
     }
 
-    setState((current) =>
-      current
-        ? sendPrivateMessage(
-            current,
-            selectedPrivateChat.id,
-            current.session.currentUserId,
-            privateDraft
-          )
-        : current
-    );
-    setPrivateDraft("");
+    const payload = await runPlatformMutation({
+      type: "send-private-message",
+      actorId: state.session.currentUserId,
+      chatId: selectedPrivateChat.id,
+      text: privateDraft
+    });
+
+    if (payload) {
+      setPrivateDraft("");
+    }
   };
 
   const handleSwitchUser = (userId: string) => {
-    setState((current) => {
-      if (!current) {
-        return current;
-      }
-
-      const provisionalState = {
-        ...current,
-        session: {
-          ...current.session,
-          currentUserId: userId
-        }
-      };
-      const nextChats = getPrivateChatsForUser(provisionalState, userId);
-      const nextDiscover = getDiscoverFeedEvents(provisionalState, userId);
-      const nextJoined = getJoinedEvents(provisionalState, userId);
-      const selectedEventId =
-        nextJoined[0]?.id ?? nextDiscover[0]?.id ?? provisionalState.events[0]?.id ?? null;
-
-      return {
-        ...provisionalState,
-        session: {
-          ...provisionalState.session,
-          currentUserId: userId,
-          selectedPrivateChatId: nextChats[0]?.id ?? null,
-          selectedEventId
-        }
-      };
-    });
+    setState((current) =>
+      current
+        ? normalizeState({
+            ...current,
+            session: {
+              ...current.session,
+              currentUserId: userId,
+              selectedEventId: null,
+              selectedPrivateChatId: null
+            }
+          })
+        : current
+    );
   };
 
-  const handleCreateEvent = (input: CreateEventInput) => {
-    setState((current) => {
-      if (!current) {
-        return current;
-      }
-
-      const next = createEvent(current, current.session.currentUserId, input);
-      return {
-        ...next,
-        session: {
-          ...next.session,
-          activeTab: "host"
-        }
-      };
+  const handleCreateEvent = async (input: CreateEventInput) => {
+    const payload = await runPlatformMutation({
+      type: "create-event",
+      actorId: state.session.currentUserId,
+      input
     });
+
+    if (payload) {
+      applyPlatformPayload(payload, {
+        activeTab: "host",
+        selectedEventId: payload.meta?.selectedEventId ?? null,
+        selectedEventView: "overview"
+      });
+    }
   };
 
-  const handleResetDemo = () => {
-    setState(createInitialState());
-    setSearchTerm("");
-    setCategoryFilter("all");
-    setGroupDrafts({});
-    setRequestDrafts({});
-    setSelectedAttendeeByEvent({});
-    setPrivateDraft("");
+  const handleResetDemo = async () => {
+    setSyncError(null);
+    setIsSyncing(true);
+
+    try {
+      const payload = await resetPlatformData();
+      applyPlatformPayload(payload, {
+        currentUserId: state.session.currentUserId,
+        activeTab: "discover",
+        selectedEventId: null,
+        selectedEventView: "overview",
+        selectedPrivateChatId: null
+      });
+      setSearchTerm("");
+      setCategoryFilter("all");
+      setGroupDrafts({});
+      setRequestDrafts({});
+      setSelectedAttendeeByEvent({});
+      setPrivateDraft("");
+    } catch (error) {
+      setSyncError(
+        error instanceof Error ? error.message : "No se pudo reiniciar la demo en backend."
+      );
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   return (
@@ -354,7 +485,7 @@ export function TindereoApp() {
             </div>
             <button
               className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-white/88 px-4 py-2 text-sm font-semibold text-[#5f4b3f] shadow-[0_10px_24px_rgba(52,34,22,0.06)]"
-              onClick={handleResetDemo}
+              onClick={() => void handleResetDemo()}
               type="button"
             >
               <RefreshCw className="h-4 w-4" />
@@ -372,6 +503,8 @@ export function TindereoApp() {
           pendingApprovalsCount={pendingApprovalsCount}
           privateRequestCount={privateRequestCount}
         />
+
+        <SyncStatus error={syncError} isSyncing={isSyncing} />
 
         {state.session.activeTab === "discover" ? (
           <div className="space-y-5">
@@ -428,7 +561,7 @@ export function TindereoApp() {
 
             {discoverSelection ? (
               <EventWorkspace
-                collection={filteredEvents.length > 0 ? filteredEvents : discoverEvents}
+                collection={discoverCollection}
                 currentUser={currentUser}
                 currentView={state.session.selectedEventView}
                 event={discoverSelection}
@@ -763,6 +896,7 @@ function EventWorkspace({
   selectedAttendeeId: string | null;
   state: PersistedState;
 }) {
+  const [shareNotice, setShareNotice] = useState<string | null>(null);
   const host = getUserById(state, event.hostId);
   const accessState = getEventAccessState(state, event.id, currentUser.id);
   const isHost = accessState.kind === "host";
@@ -785,6 +919,79 @@ function EventWorkspace({
     attendee && canAccess
       ? getEventConnectionState(state, event.id, currentUser.id, attendee.id)
       : null;
+  const shareUrl = buildEventShareUrl(event.slug);
+  const shareCopy = buildEventShareCopy(event, shareUrl);
+
+  useEffect(() => {
+    if (!shareNotice || typeof window === "undefined") {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => setShareNotice(null), 3200);
+    return () => window.clearTimeout(timeoutId);
+  }, [shareNotice]);
+
+  const handleNativeShare = async () => {
+    if (typeof navigator === "undefined" || !navigator.share) {
+      const copied = await copyToClipboard(shareCopy);
+      setShareNotice(
+        copied
+          ? "Enlace copiado. Ya puedes compartirlo donde quieras."
+          : "Tu navegador no permite compartir directamente aqui."
+      );
+      return;
+    }
+
+    try {
+      await navigator.share({
+        title: event.title,
+        text: event.summary,
+        url: shareUrl
+      });
+      setShareNotice("Evento listo para compartir.");
+    } catch {
+      setShareNotice(null);
+    }
+  };
+
+  const handleWhatsappShare = () => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(shareCopy)}`;
+    window.open(whatsappUrl, "_blank", "noopener,noreferrer");
+  };
+
+  const handleCopyShareLink = async () => {
+    const copied = await copyToClipboard(shareUrl);
+    setShareNotice(
+      copied ? "Enlace copiado. Ya lo puedes pasar por mensaje o story." : "No se pudo copiar el enlace."
+    );
+  };
+
+  const handleInstagramShare = async () => {
+    if (typeof navigator !== "undefined" && navigator.share) {
+      try {
+        await navigator.share({
+          title: event.title,
+          text: shareCopy,
+          url: shareUrl
+        });
+        setShareNotice("Abierto el panel de compartir para Instagram.");
+        return;
+      } catch {
+        setShareNotice(null);
+      }
+    }
+
+    const copied = await copyToClipboard(shareCopy);
+    setShareNotice(
+      copied
+        ? "Texto copiado para pegarlo en una story o DM de Instagram."
+        : "Copia manualmente el enlace para compartirlo en Instagram."
+    );
+  };
 
   return (
     <div className="space-y-5">
@@ -871,6 +1078,15 @@ function EventWorkspace({
               </div>
             ) : null}
 
+            <button
+              className="inline-flex items-center gap-2 rounded-full border border-white/18 bg-white/10 px-5 py-3 text-sm font-semibold text-white"
+              onClick={() => void handleNativeShare()}
+              type="button"
+            >
+              <Share2 className="h-4 w-4" />
+              Compartir evento
+            </button>
+
             <div className="rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm text-white/72">
               Crea {host.name}
             </div>
@@ -948,6 +1164,59 @@ function EventWorkspace({
                         : ` Quedan ${requirement.remainingCount} por confirmar antes del ${getEventDeadlineLabel(event)}.`}
                     </p>
                   </div>
+                </div>
+              </SectionCard>
+
+              <SectionCard>
+                <SectionLabel>Invitar a mas gente</SectionLabel>
+                <p className="mt-3 text-sm leading-6 text-[#5f4b3f]">
+                  Comparte el evento para que otras personas puedan abrirlo directamente y pedir acceso.
+                </p>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <button
+                    className="inline-flex items-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+                    onClick={() => void handleNativeShare()}
+                    type="button"
+                  >
+                    <Share2 className="h-4 w-4" />
+                    Compartir
+                  </button>
+                  <button
+                    className="inline-flex items-center gap-2 rounded-full border border-[#d7f1e4] bg-[#effbf4] px-4 py-3 text-sm font-semibold text-[#1f8d60]"
+                    onClick={handleWhatsappShare}
+                    type="button"
+                  >
+                    <MessageCircle className="h-4 w-4" />
+                    WhatsApp
+                  </button>
+                  <button
+                    className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm font-semibold text-[#6d5749]"
+                    onClick={() => void handleInstagramShare()}
+                    type="button"
+                  >
+                    <Camera className="h-4 w-4" />
+                    Instagram
+                  </button>
+                </div>
+                <div className="mt-4 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                    Enlace del evento
+                  </p>
+                  <div className="mt-3 flex flex-col gap-3 md:flex-row md:items-center">
+                    <p className="min-w-0 flex-1 truncate text-sm text-[#5f4b3f]">{shareUrl}</p>
+                    <button
+                      className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#1d160f]"
+                      onClick={() => void handleCopyShareLink()}
+                      type="button"
+                    >
+                      <Copy className="h-4 w-4" />
+                      Copiar enlace
+                    </button>
+                  </div>
+                  <p className="mt-3 text-sm text-[#8f6f59]">
+                    {shareNotice ??
+                      "WhatsApp abre el enlace directo. En Instagram usamos el compartir nativo o te copiamos el texto para pegarlo en story o DM."}
+                  </p>
                 </div>
               </SectionCard>
             </div>
@@ -1763,12 +2032,56 @@ function ProfileSection({
   );
 }
 
-function LoadingScreen() {
+function SyncStatus({
+  error,
+  isSyncing
+}: {
+  error: string | null;
+  isSyncing: boolean;
+}) {
+  if (!error && !isSyncing) {
+    return null;
+  }
+
+  return (
+    <section
+      className={`mb-5 rounded-[24px] border px-4 py-3 text-sm shadow-[0_16px_30px_rgba(52,34,22,0.05)] ${
+        error
+          ? "border-[#ffcfbb] bg-[#fff4ed] text-[#b14a20]"
+          : "border-[#eadfd3] bg-white/88 text-[#6d5749]"
+      }`}
+    >
+      {error
+        ? `Backend local: ${error}`
+        : "Backend local activo: cambios guardandose en SQLite."}
+    </section>
+  );
+}
+
+function LoadingScreen({
+  error,
+  onRetry
+}: {
+  error?: string | null;
+  onRetry?: () => void;
+}) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-[#f6efe7] px-4">
       <div className="rounded-[34px] border border-[#eadfd3] bg-white/88 px-6 py-8 text-center shadow-[0_24px_60px_rgba(52,34,22,0.08)]">
         <BrandMark />
-        <p className="mt-4 text-sm text-[#6d5749]">Cargando la demo social de eventos...</p>
+        <p className="mt-4 text-sm text-[#6d5749]">
+          {error ?? "Cargando la demo social de eventos..."}
+        </p>
+        {error && onRetry ? (
+          <button
+            className="mt-4 inline-flex items-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+            onClick={onRetry}
+            type="button"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Reintentar
+          </button>
+        ) : null}
       </div>
     </div>
   );

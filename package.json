@@ -2,9 +2,14 @@
   "name": "tindereo",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node ./scripts/build.mjs",
+    "build:compile": "next build --experimental-build-mode compile",
+    "build:full": "next build",
     "start": "next start",
     "typecheck": "node ./node_modules/typescript/bin/tsc --noEmit"
   },

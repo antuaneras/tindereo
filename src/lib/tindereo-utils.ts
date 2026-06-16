@@ -117,6 +117,44 @@ export function readPersistedState(raw: string | null) {
   }
 }
 
+export function normalizeState(state: PersistedState) {
+  const currentUserId = state.users.some((user) => user.id === state.session.currentUserId)
+    ? state.session.currentUserId
+    : (state.users[0]?.id ?? DEFAULT_STATE.session.currentUserId);
+
+  const provisionalState: PersistedState = {
+    ...state,
+    session: {
+      ...DEFAULT_STATE.session,
+      ...state.session,
+      currentUserId
+    }
+  };
+
+  const joinedEvents = getJoinedEvents(provisionalState, currentUserId);
+  const discoverEvents = getDiscoverFeedEvents(provisionalState, currentUserId);
+  const selectedEventId = provisionalState.events.some(
+    (event) => event.id === provisionalState.session.selectedEventId
+  )
+    ? provisionalState.session.selectedEventId
+    : (joinedEvents[0]?.id ?? discoverEvents[0]?.id ?? provisionalState.events[0]?.id ?? null);
+  const privateChats = getPrivateChatsForUser(provisionalState, currentUserId);
+  const selectedPrivateChatId = privateChats.some(
+    (chat) => chat.id === provisionalState.session.selectedPrivateChatId
+  )
+    ? provisionalState.session.selectedPrivateChatId
+    : (privateChats[0]?.id ?? null);
+
+  return {
+    ...provisionalState,
+    session: {
+      ...provisionalState.session,
+      selectedEventId,
+      selectedPrivateChatId
+    }
+  };
+}
+
 export function getCurrentUser(state: PersistedState) {
   return (
     state.users.find((user) => user.id === state.session.currentUserId) ??

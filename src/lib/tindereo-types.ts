@@ -101,6 +101,7 @@ export interface PrivateMessage {
 }
 
 export interface SessionState {
+  isAuthenticated: boolean;
   currentUserId: string;
   activeTab: AppTab;
   selectedEventId: string | null;
@@ -108,8 +109,7 @@ export interface SessionState {
   selectedPrivateChatId: string | null;
 }
 
-export interface PersistedState {
-  session: SessionState;
+export interface AppDataset {
   users: PlatformUser[];
   events: EventItem[];
   memberships: EventMembership[];
@@ -117,6 +117,10 @@ export interface PersistedState {
   privateChatRequests: PrivateChatRequest[];
   privateChats: PrivateChat[];
   privateMessages: PrivateMessage[];
+}
+
+export interface PersistedState extends AppDataset {
+  session: SessionState;
 }
 
 export interface CreateEventInput {
@@ -135,6 +139,38 @@ export interface CreateEventInput {
   tags: string[];
   highlights: string[];
   coverImage?: string;
+}
+
+export interface RegisterUserInput {
+  name: string;
+  handle: string;
+  city: string;
+  bio: string;
+}
+
+export type PlatformAction =
+  | { type: "register-user"; input: RegisterUserInput }
+  | { type: "create-event"; actorId: string; input: CreateEventInput }
+  | { type: "request-event-access"; actorId: string; eventId: string }
+  | { type: "respond-event-access"; actorId: string; membershipId: string; accept: boolean }
+  | { type: "leave-event"; actorId: string; eventId: string }
+  | { type: "send-group-message"; actorId: string; eventId: string; text: string }
+  | {
+      type: "send-private-request";
+      actorId: string;
+      eventId: string;
+      targetUserId: string;
+      message: string;
+    }
+  | { type: "respond-private-request"; actorId: string; requestId: string; accept: boolean }
+  | { type: "send-private-message"; actorId: string; chatId: string; text: string };
+
+export interface PlatformDataEnvelope {
+  data: AppDataset;
+  meta?: {
+    currentUserId?: string | null;
+    selectedEventId?: string | null;
+  };
 }
 
 export type EventAccessState =

@@ -4,6 +4,8 @@ import "@/app/globals.css";
 
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "Tindereo",
   description:
