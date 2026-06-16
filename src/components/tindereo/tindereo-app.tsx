@@ -1990,14 +1990,6 @@ function MobileAppShell({
 
       {state.session.activeTab === "host" ? (
         <div className="space-y-4">
-          <div className="rounded-[28px] border border-[#eadfd3] bg-white/90 px-4 py-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">
-              Crear evento
-            </p>
-            <p className="mt-2 text-sm text-[#5f4b3f]">
-              Esta vista sigue en modo admin/demo de momento. El flujo social nuevo vive arriba.
-            </p>
-          </div>
           <OrganizerDashboard
             currentUser={currentUser}
             onCreateEvent={onCreateEvent}
@@ -2044,7 +2036,7 @@ function MobileHomeScreen({
 }) {
   return (
     <div className="space-y-4">
-      <MobileStoriesBar onOpenStory={onOpenStory} state={state} stories={stories} />
+      <MobileStoriesBar bare onOpenStory={onOpenStory} state={state} stories={stories} />
 
       {pendingEventInvites.length > 0 ? (
         <section className="space-y-3">
@@ -2470,10 +2462,12 @@ function MobileProfileScreen({
 }
 
 function MobileStoriesBar({
+  bare,
   onOpenStory,
   state,
   stories
 }: {
+  bare?: boolean;
   onOpenStory: (storyId: string, stories: StoryItem[]) => void;
   state: PersistedState;
   stories: StoryItem[];
@@ -2489,8 +2483,14 @@ function MobileStoriesBar({
   );
 
   return (
-    <section className="rounded-[28px] border border-[#eadfd3] bg-white/92 px-3 py-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
-      <div className="flex gap-3 overflow-x-auto pb-1">
+    <section
+      className={
+        bare
+          ? ""
+          : "rounded-[28px] border border-[#eadfd3] bg-white/92 px-3 py-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]"
+      }
+    >
+      <div className={`flex gap-3 overflow-x-auto pb-1 ${bare ? "px-1" : ""}`}>
         {latestStories.map((story) => {
           const user = story.authorType === "user" ? getUserById(state, story.authorId) : null;
           const event = story.authorType === "event" ? getEventById(state, story.authorId) : null;
@@ -2628,15 +2628,20 @@ function StoryViewerOverlay({
           </div>
         </div>
         <div className="space-y-3 border-t border-white/10 bg-[#120d0a] px-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] pt-4">
-          <div className="flex gap-2">
-            {["❤️", "🔥", "👏", "😍"].map((reaction) => (
+          <div className="flex flex-wrap gap-2">
+            {[
+              { id: "love", label: "Like" },
+              { id: "fire", label: "Fuego" },
+              { id: "clap", label: "Aplauso" },
+              { id: "wow", label: "Wow" }
+            ].map((reaction) => (
               <button
-                key={reaction}
-                className="rounded-full bg-white/10 px-3 py-2 text-lg"
-                onClick={() => onSendReply("", reaction)}
+                key={reaction.id}
+                className="rounded-full bg-white/10 px-3 py-2 text-sm font-semibold"
+                onClick={() => onSendReply("", reaction.label)}
                 type="button"
               >
-                {reaction}
+                {reaction.label}
               </button>
             ))}
           </div>
@@ -2808,6 +2813,52 @@ function MobileEventScreen({
   const members = getEventMembers(state, event.id);
   const friendMembers = getEventFriendMembers(state, event.id, currentUser.id);
   const pendingRequests = getEventPendingRequests(state, event.id);
+  const [shareNotice, setShareNotice] = useState<string | null>(null);
+  const shareUrl = buildEventShareUrl(event.slug);
+  const shareCopy = buildEventShareCopy(event, shareUrl);
+
+  useEffect(() => {
+    if (!shareNotice || typeof window === "undefined") {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => setShareNotice(null), 3200);
+    return () => window.clearTimeout(timeoutId);
+  }, [shareNotice]);
+
+  const handleNativeShare = async () => {
+    if (typeof navigator === "undefined" || !navigator.share) {
+      const copied = await copyToClipboard(shareCopy);
+      setShareNotice(
+        copied ? "Texto copiado para compartir el evento." : "No se pudo abrir el compartir nativo."
+      );
+      return;
+    }
+
+    try {
+      await navigator.share({
+        title: event.title,
+        text: event.summary,
+        url: shareUrl
+      });
+      setShareNotice("Evento listo para compartir.");
+    } catch {
+      setShareNotice(null);
+    }
+  };
+
+  const handleWhatsappShare = () => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.open(`https://wa.me/?text=${encodeURIComponent(shareCopy)}`, "_blank", "noopener,noreferrer");
+  };
+
+  const handleCopyShareLink = async () => {
+    const copied = await copyToClipboard(shareUrl);
+    setShareNotice(copied ? "Enlace copiado." : "No se pudo copiar el enlace.");
+  };
 
   return (
     <div className="fixed inset-0 z-[60] flex flex-col bg-[#efe8df]">
@@ -2949,6 +3000,42 @@ function MobileEventScreen({
                     </button>
                   </div>
                 </div>
+              </section>
+
+              <section className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    className="rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+                    onClick={() => void handleNativeShare()}
+                    type="button"
+                  >
+                    Compartir
+                  </button>
+                  <button
+                    className="rounded-full border border-[#d7f1e4] bg-[#effbf4] px-4 py-3 text-sm font-semibold text-[#1f8d60]"
+                    onClick={handleWhatsappShare}
+                    type="button"
+                  >
+                    WhatsApp
+                  </button>
+                  <button
+                    className="rounded-full border border-[#eadfd3] bg-[#fff4fb] px-4 py-3 text-sm font-semibold text-[#8a3d69]"
+                    onClick={() => void handleNativeShare()}
+                    type="button"
+                  >
+                    Instagram
+                  </button>
+                  <button
+                    className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm font-semibold text-[#6d5749]"
+                    onClick={() => void handleCopyShareLink()}
+                    type="button"
+                  >
+                    Copiar enlace
+                  </button>
+                </div>
+                {shareNotice ? (
+                  <p className="mt-3 text-sm text-[#8f6f59]">{shareNotice}</p>
+                ) : null}
               </section>
 
               {eventStories.length > 0 ? (
@@ -3366,7 +3453,7 @@ function MobileCameraComposerScreen({
 
         {selectableUsers.length > 0 ? (
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-white/72">Etietar personas</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-white/72">Etiquetar personas</p>
             <div className="mt-3 flex flex-wrap gap-2">
               {selectableUsers.map((user) => {
                 const active = composer.taggedUserIds.includes(user.id);

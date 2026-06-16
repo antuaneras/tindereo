@@ -24,6 +24,7 @@
 html,
 body {
   min-height: 100%;
+  overflow-x: hidden;
 }
 
 html {
@@ -39,6 +40,7 @@ body {
     linear-gradient(180deg, #f6efe7 0%, #f3ece4 100%);
   color: var(--text-main);
   font-family: "Avenir Next", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  width: 100%;
 }
 
 button,
