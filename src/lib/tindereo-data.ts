@@ -1,446 +1,542 @@
 import type {
-  ActivityPoint,
-  ChatMessage,
-  EventInfo,
-  EventZone,
-  MatchItem,
-  RegistrationDraft,
-  SwipeRecord,
-  UserProfile
+  EventCategory,
+  PersistedState,
+  PlatformUser
 } from "@/lib/tindereo-types";
 
-export const EVENT_INFO: EventInfo = {
-  name: "After Solar",
-  subtitle: "Noches que conectan",
-  eventCode: "AFTER-SOLAR-2026",
-  location: "La Marina Rooftop, Madrid",
-  dateLabel: "Sabado 14 de junio · 20:00 a 03:00",
-  organizerEmail: "organizador@tindereo.local",
-  organizerPassword: "tardeo2026",
-  liveAttendees: 347
-};
+export const APP_NAME = "Tindereo";
+export const APP_TAGLINE = "Eventos que conectan antes de que empiecen";
+export const ORGANIZER_CONTACT_EMAIL = "hola@tindereo.app";
 
-export const INTEREST_OPTIONS = [
-  "Musica electronica",
-  "Reggaeton",
-  "Techno",
-  "House",
-  "Viajes",
-  "Emprendimiento",
-  "Deporte",
-  "Gastronomia",
-  "Inversion",
-  "Tecnologia",
-  "Arte",
-  "Moda",
-  "Networking",
-  "Nuevas amistades",
-  "Cultura",
-  "Videojuegos"
-];
-
-export const GOAL_OPTIONS = [
-  "Conocer gente nueva",
-  "Hacer amigos",
-  "Networking profesional",
-  "Encontrar pareja",
-  "Tomar algo con gente afin",
-  "Lo que surja"
-];
-
-export const RELATIONSHIP_OPTIONS = [
-  "Soltero/a",
-  "Libre",
-  "En pareja",
-  "Prefiero no decir"
-];
-
-export const AVATAR_CHOICES = [
-  {
-    photo:
-      "https://images.unsplash.com/photo-1553197661-8a95fd20858b?w=400&h=400&fit=crop&auto=format",
-    coverPhoto:
-      "https://images.unsplash.com/photo-1603190287605-e6ade32fa852?w=1200&h=600&fit=crop&auto=format"
+export const EVENT_CATEGORY_META: Record<
+  EventCategory,
+  { label: string; accent: string; softAccent: string }
+> = {
+  music: {
+    label: "Musica",
+    accent: "#FF6B57",
+    softAccent: "rgba(255, 107, 87, 0.16)"
   },
-  {
-    photo:
-      "https://images.unsplash.com/photo-1760595968567-c5b981a8d6df?w=400&h=400&fit=crop&auto=format",
-    coverPhoto:
-      "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=1200&h=600&fit=crop&auto=format"
+  networking: {
+    label: "Networking",
+    accent: "#F08A24",
+    softAccent: "rgba(240, 138, 36, 0.16)"
   },
-  {
-    photo:
-      "https://images.unsplash.com/photo-1780587481270-dc7d287f40cc?w=400&h=400&fit=crop&auto=format",
-    coverPhoto:
-      "https://images.unsplash.com/photo-1506157786151-b8491531f063?w=1200&h=600&fit=crop&auto=format"
+  food: {
+    label: "Food",
+    accent: "#C7702E",
+    softAccent: "rgba(199, 112, 46, 0.16)"
+  },
+  creative: {
+    label: "Creativo",
+    accent: "#8A5CF6",
+    softAccent: "rgba(138, 92, 246, 0.16)"
+  },
+  wellness: {
+    label: "Wellness",
+    accent: "#2AA876",
+    softAccent: "rgba(42, 168, 118, 0.16)"
   }
-];
-
-export const DEFAULT_REGISTRATION: RegistrationDraft = {
-  name: "",
-  age: "26",
-  instagram: "",
-  city: "Madrid",
-  occupation: "",
-  relationship: "Soltero/a",
-  bio: "",
-  interests: ["Techno", "Viajes"],
-  goal: "",
-  photo: AVATAR_CHOICES[0].photo,
-  coverPhoto: AVATAR_CHOICES[0].coverPhoto
 };
 
-export const EVENT_ZONES: EventZone[] = [
-  { id: "barra", label: "Barra", emoji: "🍹", x: 15, y: 55, w: 22, h: 18, people: 47, color: "#FF5A5F" },
-  { id: "terraza", label: "Terraza", emoji: "🌙", x: 58, y: 10, w: 35, h: 25, people: 83, color: "#FF8C42" },
-  { id: "dj", label: "DJ Stage", emoji: "🎧", x: 35, y: 38, w: 28, h: 22, people: 124, color: "#FFB347" },
-  { id: "chill", label: "Zona Chill", emoji: "🛋", x: 12, y: 25, w: 20, h: 24, people: 31, color: "#B8AFA4" },
-  { id: "food", label: "Food Trucks", emoji: "🌮", x: 60, y: 65, w: 32, h: 22, people: 56, color: "#3D3630" }
-];
+export const EVENT_CATEGORY_OPTIONS = [
+  { value: "all", label: "Todos" },
+  { value: "music", label: "Musica" },
+  { value: "networking", label: "Networking" },
+  { value: "food", label: "Food" },
+  { value: "creative", label: "Creativo" },
+  { value: "wellness", label: "Wellness" }
+] as const;
 
-export const DEMO_USER: UserProfile = {
-  id: "sofia-demo",
-  name: "Sofia M.",
-  age: 26,
-  city: "Madrid",
-  occupation: "Disenadora UX",
-  instagram: "@sofiadesigna",
-  relationship: "Soltero/a",
-  goal: "Lo que surja",
-  bio: "Disenadora de experiencias. Aqui por la musica, la energia y las conversaciones sin pose.",
-  interests: ["Techno", "Viajes", "Arte", "Emprendimiento", "Gastronomia"],
-  photo: AVATAR_CHOICES[0].photo,
-  coverPhoto: AVATAR_CHOICES[0].coverPhoto,
-  zoneId: "dj",
-  points: 620,
-  matches: 2,
-  superLikes: 1,
-  gender: "Mujer",
-  joinedAt: "2026-06-13T21:32:00.000Z",
-  status: "online",
-  headline: "Aqui por la pista y las charlas honestas."
+export const EVENT_COVER_BY_CATEGORY: Record<EventCategory, string> = {
+  music:
+    "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?auto=format&fit=crop&w=1400&q=80",
+  networking:
+    "https://images.unsplash.com/photo-1511578314322-379afb476865?auto=format&fit=crop&w=1400&q=80",
+  food:
+    "https://images.unsplash.com/photo-1414235077428-338989a2e8c0?auto=format&fit=crop&w=1400&q=80",
+  creative:
+    "https://images.unsplash.com/photo-1517048676732-d65bc937f952?auto=format&fit=crop&w=1400&q=80",
+  wellness:
+    "https://images.unsplash.com/photo-1483721310020-03333e577078?auto=format&fit=crop&w=1400&q=80"
 };
 
-export const BASE_ATTENDEES: UserProfile[] = [
+export const DEMO_USERS: PlatformUser[] = [
   {
-    id: "valentina",
-    name: "Valentina",
-    age: 26,
+    id: "lucia-serrano",
+    name: "Lucia Serrano",
+    handle: "@luciagoesout",
+    role: "attendee",
     city: "Madrid",
-    occupation: "DJ y disenadora",
-    instagram: "@valeafter",
-    relationship: "Soltero/a",
-    goal: "Conocer gente nueva",
-    bio: "DJ los fines de semana, disenadora entre semana. Aqui por el techno y las buenas charlas.",
-    interests: ["Techno", "Arte", "Viajes", "Moda"],
-    photo: "https://images.unsplash.com/photo-1760595968567-c5b981a8d6df?w=500&h=700&fit=crop&auto=format",
-    coverPhoto: "https://images.unsplash.com/photo-1506157786151-b8491531f063?w=1200&h=600&fit=crop&auto=format",
-    zoneId: "terraza",
-    points: 1840,
-    matches: 12,
-    superLikes: 4,
-    gender: "Mujer",
-    joinedAt: "2026-06-13T20:12:00.000Z",
-    status: "chatting",
-    headline: "Una mezcla de musica, terraceo y cero prisa."
+    title: "Brand strategist",
+    company: "North Studio",
+    bio:
+      "Me gustan los eventos con buen ritmo, gente curiosa y conversaciones que siguen despues del plan.",
+    tagline: "Llego por el evento, me quedo por la comunidad.",
+    avatar:
+      "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=600&q=80",
+    coverImage:
+      "https://images.unsplash.com/photo-1517457373958-b7bdd4587205?auto=format&fit=crop&w=1400&q=80",
+    interests: ["Rooftops", "Brand", "Wine bars", "Community", "House"],
+    verified: true
   },
   {
-    id: "carlos",
-    name: "Carlos",
-    age: 29,
+    id: "mateo-rivas",
+    name: "Mateo Rivas",
+    handle: "@mateo.builds",
+    role: "attendee",
     city: "Madrid",
-    occupation: "Founder",
-    instagram: "@carlosscale",
-    relationship: "Libre",
-    goal: "Networking profesional",
-    bio: "Monto productos B2B entre semana y me escapo a bailar house cada vez que puedo.",
-    interests: ["House", "Inversion", "Emprendimiento", "Tecnologia", "Networking"],
-    photo: "https://images.unsplash.com/photo-1762066436642-945a40f35097?w=500&h=700&fit=crop&auto=format",
-    coverPhoto: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=1200&h=600&fit=crop&auto=format",
-    zoneId: "barra",
-    points: 1620,
-    matches: 9,
-    superLikes: 3,
-    gender: "Hombre",
-    joinedAt: "2026-06-13T20:26:00.000Z",
-    status: "online",
-    headline: "Buen vino, producto digital y pista cuando cae el drop."
+    title: "Growth lead",
+    company: "Itera Labs",
+    bio:
+      "Voy a eventos para conocer gente con energia, descubrir planes nuevos y salir con una idea mejor que cuando entre.",
+    tagline: "Mucho social, poco postureo.",
+    avatar:
+      "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=600&q=80",
+    coverImage:
+      "https://images.unsplash.com/photo-1515169067868-5387ec356754?auto=format&fit=crop&w=1400&q=80",
+    interests: ["Startups", "Running", "Brunch", "Tech", "Live music"],
+    verified: false
   },
   {
-    id: "camila",
-    name: "Camila",
-    age: 24,
-    city: "Valencia",
-    occupation: "Brand strategist",
-    instagram: "@camistories",
-    relationship: "Soltero/a",
-    goal: "Tomar algo con gente afin",
-    bio: "Emprendedora, curiosa y fan de la musica con groove. Si hay rooftop, mejor.",
-    interests: ["House", "Emprendimiento", "Moda", "Viajes", "Gastronomia"],
-    photo: "https://images.unsplash.com/photo-1780587481270-dc7d287f40cc?w=500&h=700&fit=crop&auto=format",
-    coverPhoto: "https://images.unsplash.com/photo-1603190287605-e6ade32fa852?w=1200&h=600&fit=crop&auto=format",
-    zoneId: "dj",
-    points: 1440,
-    matches: 8,
-    superLikes: 3,
-    gender: "Mujer",
-    joinedAt: "2026-06-13T20:48:00.000Z",
-    status: "online",
-    headline: "Rooftops, house y conversaciones que luego siguen."
-  },
-  {
-    id: "daniela",
-    name: "Daniela",
-    age: 28,
-    city: "Sevilla",
-    occupation: "Arquitecta",
-    instagram: "@dani.plans",
-    relationship: "Soltero/a",
-    goal: "Conocer gente nueva",
-    bio: "Arquitecta de dia, bailarina de noche. Viaje tres paises este ano y aun quiero mas.",
-    interests: ["Viajes", "Arte", "Moda", "Cultura"],
-    photo: "https://images.unsplash.com/photo-1553197661-8a95fd20858b?w=500&h=700&fit=crop&auto=format",
-    coverPhoto: "https://images.unsplash.com/photo-1506157786151-b8491531f063?w=1200&h=600&fit=crop&auto=format",
-    zoneId: "chill",
-    points: 1310,
-    matches: 7,
-    superLikes: 2,
-    gender: "Mujer",
-    joinedAt: "2026-06-13T21:02:00.000Z",
-    status: "roaming",
-    headline: "Arquitectura, baile y ganas de improvisar planes."
-  },
-  {
-    id: "miguel",
-    name: "Miguel",
-    age: 31,
-    city: "Bilbao",
-    occupation: "Growth advisor",
-    instagram: "@miguelbuilds",
-    relationship: "Libre",
-    goal: "Networking profesional",
-    bio: "Mezclo growth, cafe y eventos bien montados. Tambien estoy aqui para bajar el ritmo y conocer gente real.",
-    interests: ["Networking", "Tecnologia", "Emprendimiento", "Gastronomia"],
-    photo: "https://images.unsplash.com/photo-1736299299252-638ebe282979?w=500&h=700&fit=crop&auto=format",
-    coverPhoto: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=1200&h=600&fit=crop&auto=format",
-    zoneId: "food",
-    points: 1120,
-    matches: 6,
-    superLikes: 1,
-    gender: "Hombre",
-    joinedAt: "2026-06-13T20:40:00.000Z",
-    status: "roaming",
-    headline: "Growth, tacos de medianoche y cero small talk."
-  },
-  {
-    id: "alba",
-    name: "Alba",
-    age: 25,
+    id: "ines-oliver",
+    name: "Ines Oliver",
+    handle: "@ineslayers",
+    role: "attendee",
     city: "Barcelona",
-    occupation: "Product designer",
-    instagram: "@albamakes",
-    relationship: "Soltero/a",
-    goal: "Hacer amigos",
-    bio: "Diseno producto, hago fotos analógicas y no perdono un buen set de house.",
-    interests: ["Arte", "Tecnologia", "House", "Nuevas amistades"],
-    photo: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=500&h=700&fit=crop&auto=format",
-    coverPhoto: "https://images.unsplash.com/photo-1603190287605-e6ade32fa852?w=1200&h=600&fit=crop&auto=format",
-    zoneId: "terraza",
-    points: 980,
-    matches: 5,
-    superLikes: 2,
-    gender: "Mujer",
-    joinedAt: "2026-06-13T21:18:00.000Z",
-    status: "online",
-    headline: "Diseno, fotos y una playlist que nunca falla."
+    title: "Creative producer",
+    company: "Frame House",
+    bio:
+      "Produzco experiencias de marca y me quedo siempre en los eventos donde la gente quiere hablar de verdad.",
+    tagline: "Creatividad, gente bonita y cero conversaciones vacias.",
+    avatar:
+      "https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=600&q=80",
+    coverImage:
+      "https://images.unsplash.com/photo-1511578314322-379afb476865?auto=format&fit=crop&w=1400&q=80",
+    interests: ["Creative direction", "Music", "Art", "Food", "Pop-ups"],
+    verified: true
   },
   {
-    id: "leo",
-    name: "Leo",
-    age: 27,
-    city: "Malaga",
-    occupation: "Data analyst",
-    instagram: "@leoinsights",
-    relationship: "Prefiero no decir",
-    goal: "Lo que surja",
-    bio: "Me flipa cruzar gente distinta en eventos asi. Si hay data, tambien hay juego.",
-    interests: ["Tecnologia", "Inversion", "Techno", "Videojuegos"],
-    photo: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=500&h=700&fit=crop&auto=format",
-    coverPhoto: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=1200&h=600&fit=crop&auto=format",
-    zoneId: "barra",
-    points: 940,
-    matches: 4,
-    superLikes: 1,
-    gender: "Hombre",
-    joinedAt: "2026-06-13T20:58:00.000Z",
-    status: "roaming",
-    headline: "Data, techno y planes que nacen sobre la marcha."
-  },
-  {
-    id: "nora",
-    name: "Nora",
-    age: 30,
-    city: "Madrid",
-    occupation: "Fotografa",
-    instagram: "@noraonfilm",
-    relationship: "Soltero/a",
-    goal: "Conocer gente nueva",
-    bio: "Voy con mi camara a todas partes y casi siempre acabo en la terraza viendo a la gente bailar.",
-    interests: ["Arte", "Moda", "Viajes", "Cultura"],
-    photo: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=500&h=700&fit=crop&auto=format",
-    coverPhoto: "https://images.unsplash.com/photo-1506157786151-b8491531f063?w=1200&h=600&fit=crop&auto=format",
-    zoneId: "terraza",
-    points: 890,
-    matches: 4,
-    superLikes: 1,
-    gender: "Mujer",
-    joinedAt: "2026-06-13T21:10:00.000Z",
-    status: "online",
-    headline: "Camara al hombro y ganas de conocer a quien suma."
-  },
-  {
-    id: "sam",
-    name: "Sam",
-    age: 28,
+    id: "nora-costa",
+    name: "Nora Costa",
+    handle: "@noraonfilm",
+    role: "attendee",
     city: "Lisboa",
-    occupation: "Creative coder",
-    instagram: "@sampatches",
-    relationship: "Libre",
-    goal: "Tomar algo con gente afin",
-    bio: "Creative coding, visuales y ritual de sunset con buena conversacion.",
-    interests: ["Tecnologia", "Arte", "Musica electronica", "Networking"],
-    photo: "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=500&h=700&fit=crop&auto=format",
-    coverPhoto: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=1200&h=600&fit=crop&auto=format",
-    zoneId: "dj",
-    points: 860,
-    matches: 3,
-    superLikes: 1,
-    gender: "No binario",
-    joinedAt: "2026-06-13T20:36:00.000Z",
-    status: "chatting",
-    headline: "Visuales, codigo y una copa bien elegida."
+    title: "Photographer",
+    company: "Freelance",
+    bio:
+      "Me quedo donde hay buena luz, gente abierta y un plan que luego se pueda recordar con ganas.",
+    tagline: "Camara en mano y radar social activado.",
+    avatar:
+      "https://images.unsplash.com/photo-1488426862026-3ee34a7d66df?auto=format&fit=crop&w=600&q=80",
+    coverImage:
+      "https://images.unsplash.com/photo-1492684223066-81342ee5ff30?auto=format&fit=crop&w=1400&q=80",
+    interests: ["Photo walks", "Brunch", "Travel", "Community", "Indie pop"],
+    verified: false
+  },
+  {
+    id: "diego-luna",
+    name: "Diego Luna",
+    handle: "@diegospeaks",
+    role: "attendee",
+    city: "Valencia",
+    title: "Founder",
+    company: "Scene Ops",
+    bio:
+      "Soy de los que llega pronto, habla con todo el mundo y acaba proponiendo el siguiente plan antes de irse.",
+    tagline: "Si hay energia buena, me apunto.",
+    avatar:
+      "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?auto=format&fit=crop&w=600&q=80",
+    coverImage:
+      "https://images.unsplash.com/photo-1511795409834-ef04bbd61622?auto=format&fit=crop&w=1400&q=80",
+    interests: ["Hospitality", "Angel investing", "Food", "Fitness", "Live sessions"],
+    verified: true
+  },
+  {
+    id: "sara-mora",
+    name: "Sara Mora",
+    handle: "@saramora.jpg",
+    role: "attendee",
+    city: "Madrid",
+    title: "Art director",
+    company: "Mono Studio",
+    bio:
+      "Busco eventos donde se mezclen creatividad, social y una excusa buena para salir del escritorio.",
+    tagline: "Arte, gente afilada y planes que dejan huella.",
+    avatar:
+      "https://images.unsplash.com/photo-1487412720507-e7ab37603c6f?auto=format&fit=crop&w=600&q=80",
+    coverImage:
+      "https://images.unsplash.com/photo-1529156069898-49953e39b3ac?auto=format&fit=crop&w=1400&q=80",
+    interests: ["Art", "Editorial", "Dinner clubs", "Creative tech", "House"],
+    verified: false
+  },
+  {
+    id: "clara-vidal",
+    name: "Clara Vidal",
+    handle: "@clarahosts",
+    role: "organizer",
+    city: "Madrid",
+    title: "Head of Experiences",
+    company: "After Social Club",
+    bio:
+      "Diseno eventos donde la conversacion empieza antes de llegar al venue y sigue mucho despues.",
+    tagline: "Organizo experiencias pensadas para conectar.",
+    avatar:
+      "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?auto=format&fit=crop&w=600&q=80",
+    coverImage:
+      "https://images.unsplash.com/photo-1511578314322-379afb476865?auto=format&fit=crop&w=1400&q=80",
+    interests: ["Community", "Music", "Operations", "Partnerships", "Hospitality"],
+    verified: true
+  },
+  {
+    id: "raul-ibarra",
+    name: "Raul Ibarra",
+    handle: "@raulbuildslive",
+    role: "organizer",
+    city: "Madrid",
+    title: "Creative events lead",
+    company: "Open Table Sessions",
+    bio:
+      "Me obsesiona que el evento empiece antes y acabe despues. Por eso el chat y la comunidad importan tanto como el venue.",
+    tagline: "Produccion limpia, comunidad fuerte.",
+    avatar:
+      "https://images.unsplash.com/photo-1504593811423-6dd665756598?auto=format&fit=crop&w=600&q=80",
+    coverImage:
+      "https://images.unsplash.com/photo-1529156069898-49953e39b3ac?auto=format&fit=crop&w=1400&q=80",
+    interests: ["Community design", "Partnerships", "Art", "Panels", "Food"],
+    verified: true
   }
 ];
 
-export const DEMO_SWIPES: SwipeRecord[] = [
-  {
-    id: "swipe-demo-1",
-    fromUserId: "sofia-demo",
-    toUserId: "valentina",
-    direction: "right",
-    createdAt: "2026-06-13T22:14:00.000Z"
+export const DEFAULT_STATE: PersistedState = {
+  session: {
+    currentUserId: "lucia-serrano",
+    activeTab: "discover",
+    selectedEventId: "after-solar-2026",
+    selectedEventView: "overview",
+    selectedPrivateChatId: "chat-lucia-ines"
   },
-  {
-    id: "swipe-demo-2",
-    fromUserId: "sofia-demo",
-    toUserId: "carlos",
-    direction: "super",
-    createdAt: "2026-06-13T22:20:00.000Z"
-  },
-  {
-    id: "swipe-demo-3",
-    fromUserId: "sofia-demo",
-    toUserId: "leo",
-    direction: "left",
-    createdAt: "2026-06-13T22:28:00.000Z"
-  }
-];
-
-export const DEMO_MATCHES: MatchItem[] = [
-  {
-    id: "match-valentina",
-    userIds: ["sofia-demo", "valentina"],
-    createdAt: "2026-06-13T22:14:30.000Z",
-    zoneId: "terraza",
-    commonInterests: ["Techno", "Viajes", "Arte"],
-    superLike: false,
-    unreadCount: 2
-  },
-  {
-    id: "match-carlos",
-    userIds: ["sofia-demo", "carlos"],
-    createdAt: "2026-06-13T22:20:20.000Z",
-    zoneId: "barra",
-    commonInterests: ["Emprendimiento"],
-    superLike: true,
-    unreadCount: 1
-  }
-];
-
-export const DEMO_MESSAGES: Record<string, ChatMessage[]> = {
-  "match-valentina": [
+  users: DEMO_USERS,
+  events: [
     {
-      id: "msg-v-1",
-      matchId: "match-valentina",
-      senderId: "valentina",
-      text: "Hola. Me alegra que hayamos hecho match.",
-      createdAt: "2026-06-13T22:14:40.000Z",
-      kind: "text"
+      id: "after-solar-2026",
+      slug: "after-solar-2026",
+      title: "After Solar Rooftop Session",
+      category: "music",
+      city: "Madrid",
+      venue: "La Marina Rooftop",
+      coverImage:
+        "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?auto=format&fit=crop&w=1600&q=80",
+      startsAt: "2026-06-19T20:30:00+02:00",
+      endsAt: "2026-06-20T02:30:00+02:00",
+      priceLabel: "Desde 18 EUR",
+      capacity: 260,
+      baseGuestCount: 142,
+      waitlistCount: 18,
+      hostId: "clara-vidal",
+      summary: "Rooftop al atardecer con DJ set, mesa larga y grupo general para romper el hielo antes de llegar.",
+      description:
+        "Una noche pensada para mezclar musica, energia social y una comunidad que se activa dias antes. Cuando te unes, entras al chat general del evento para presentarte, ver quien va y proponer mini planes antes de subir.",
+      highlights: [
+        "Chat general activo desde el momento en que te unes",
+        "Guest list con perfiles visibles para detectar afinidad",
+        "Solicitud de chat privado entre asistentes"
+      ],
+      tags: ["Rooftop", "DJ set", "Comunidad", "Madrid", "Sunset"],
+      dressCode: "Summer city",
+      conversationPrompt:
+        "Comparte en el chat general que te ha traido al evento y con que tipo de gente te gustaria conectar."
     },
     {
-      id: "msg-v-2",
-      matchId: "match-valentina",
-      senderId: "sofia-demo",
-      text: "Igualmente. Vi que tambien te va el techno.",
-      createdAt: "2026-06-13T22:15:20.000Z",
-      kind: "text"
+      id: "founders-brunch-circle",
+      slug: "founders-brunch-circle",
+      title: "Founders Brunch Circle",
+      category: "networking",
+      city: "Madrid",
+      venue: "Casa Numa",
+      coverImage:
+        "https://images.unsplash.com/photo-1511578314322-379afb476865?auto=format&fit=crop&w=1600&q=80",
+      startsAt: "2026-06-21T11:00:00+02:00",
+      endsAt: "2026-06-21T14:30:00+02:00",
+      priceLabel: "Reserva 24 EUR",
+      capacity: 90,
+      baseGuestCount: 48,
+      waitlistCount: 6,
+      hostId: "clara-vidal",
+      summary: "Brunch curado para perfiles de producto, growth y operaciones que quieren conocerse antes del domingo.",
+      description:
+        "El objetivo no es intercambiar tarjetas. Es llegar al brunch habiendo abierto ya un par de conversaciones utiles y saber a quien quieres saludar primero.",
+      highlights: [
+        "Mesas de presentacion y dinamicas ligeras",
+        "Chat general con prompts para romper el hielo",
+        "Espacio para abrir chats privados post evento"
+      ],
+      tags: ["Brunch", "Networking", "Producto", "Founders"],
+      dressCode: "Smart casual",
+      conversationPrompt:
+        "Cuenta en una frase que estas construyendo o que tipo de gente te gustaria conocer en el brunch."
     },
     {
-      id: "msg-v-3",
-      matchId: "match-valentina",
-      senderId: "valentina",
-      text: "Estoy en la terraza ahora mismo. El DJ esta fino.",
-      createdAt: "2026-06-13T22:16:20.000Z",
-      kind: "text"
+      id: "design-night-lab",
+      slug: "design-night-lab",
+      title: "Design Night Lab",
+      category: "creative",
+      city: "Madrid",
+      venue: "Taller Cero",
+      coverImage:
+        "https://images.unsplash.com/photo-1517048676732-d65bc937f952?auto=format&fit=crop&w=1600&q=80",
+      startsAt: "2026-06-26T19:30:00+02:00",
+      endsAt: "2026-06-26T23:30:00+02:00",
+      priceLabel: "Invitacion + 12 EUR",
+      capacity: 70,
+      baseGuestCount: 27,
+      waitlistCount: 0,
+      hostId: "raul-ibarra",
+      summary: "Mesa redonda, visuales y after para gente de diseño, contenido y direccion creativa.",
+      description:
+        "Un evento para perfiles visuales que quieren hablar con calma antes de verse. El chat general funciona como precalentamiento creativo y despues queda abierto el canal privado entre quien conecte.",
+      highlights: [
+        "Visual review en vivo y lightning talks",
+        "Lista de asistentes con perfiles visibles",
+        "Chats privados persistentes despues del evento"
+      ],
+      tags: ["Design", "Creative", "Visual culture", "Afterwork"],
+      dressCode: "Expressive casual",
+      conversationPrompt:
+        "Presentate con la referencia visual o proyecto que mas te apetece comentar esa noche."
     },
     {
-      id: "msg-v-4",
-      matchId: "match-valentina",
-      senderId: "valentina",
-      text: "Que buena vibra hay arriba. Si subes me escribes.",
-      createdAt: "2026-06-13T22:18:00.000Z",
-      kind: "text"
+      id: "run-club-rio",
+      slug: "run-club-rio",
+      title: "Run Club Rio + Coffee",
+      category: "wellness",
+      city: "Madrid",
+      venue: "Madrid Rio",
+      coverImage:
+        "https://images.unsplash.com/photo-1483721310020-03333e577078?auto=format&fit=crop&w=1600&q=80",
+      startsAt: "2026-06-28T09:00:00+02:00",
+      endsAt: "2026-06-28T11:30:00+02:00",
+      priceLabel: "Gratis con RSVP",
+      capacity: 120,
+      baseGuestCount: 63,
+      waitlistCount: 0,
+      hostId: "raul-ibarra",
+      summary: "Carrera suave, cafe y comunidad para gente que quiere socializar desde un plan mas ligero.",
+      description:
+        "Perfecto para conocer a la gente antes del domingo. Entras, te unes al chat general y ya sabes quien corre a tu ritmo o quien se apunta al cafe despues.",
+      highlights: [
+        "Pace groups de 5K y 8K",
+        "Coffee social despues de correr",
+        "Solicitud de chat privado entre asistentes"
+      ],
+      tags: ["Running", "Coffee", "Community", "Morning plans"],
+      dressCode: "Sport casual",
+      conversationPrompt:
+        "Escribe tu ritmo, si te quedas al cafe y con quien te gustaria coincidir para conoceros."
     }
   ],
-  "match-carlos": [
+  memberships: [
     {
-      id: "msg-c-1",
-      matchId: "match-carlos",
-      senderId: "carlos",
-      text: "Super like recibido. Eso merece brindis.",
-      createdAt: "2026-06-13T22:21:00.000Z",
-      kind: "text"
+      id: "membership-after-lucia",
+      eventId: "after-solar-2026",
+      userId: "lucia-serrano",
+      joinedAt: "2026-06-15T18:10:00+02:00"
     },
     {
-      id: "msg-c-2",
-      matchId: "match-carlos",
-      senderId: "carlos",
-      text: "Estoy por la barra si te apetece saludar.",
-      createdAt: "2026-06-13T22:23:00.000Z",
-      kind: "text"
+      id: "membership-after-mateo",
+      eventId: "after-solar-2026",
+      userId: "mateo-rivas",
+      joinedAt: "2026-06-15T18:20:00+02:00"
+    },
+    {
+      id: "membership-after-ines",
+      eventId: "after-solar-2026",
+      userId: "ines-oliver",
+      joinedAt: "2026-06-15T18:32:00+02:00"
+    },
+    {
+      id: "membership-after-diego",
+      eventId: "after-solar-2026",
+      userId: "diego-luna",
+      joinedAt: "2026-06-15T18:40:00+02:00"
+    },
+    {
+      id: "membership-after-sara",
+      eventId: "after-solar-2026",
+      userId: "sara-mora",
+      joinedAt: "2026-06-15T18:48:00+02:00"
+    },
+    {
+      id: "membership-brunch-lucia",
+      eventId: "founders-brunch-circle",
+      userId: "lucia-serrano",
+      joinedAt: "2026-06-15T12:08:00+02:00"
+    },
+    {
+      id: "membership-brunch-ines",
+      eventId: "founders-brunch-circle",
+      userId: "ines-oliver",
+      joinedAt: "2026-06-15T12:12:00+02:00"
+    },
+    {
+      id: "membership-brunch-nora",
+      eventId: "founders-brunch-circle",
+      userId: "nora-costa",
+      joinedAt: "2026-06-15T12:15:00+02:00"
+    },
+    {
+      id: "membership-design-mateo",
+      eventId: "design-night-lab",
+      userId: "mateo-rivas",
+      joinedAt: "2026-06-15T19:10:00+02:00"
+    },
+    {
+      id: "membership-design-sara",
+      eventId: "design-night-lab",
+      userId: "sara-mora",
+      joinedAt: "2026-06-15T19:20:00+02:00"
+    },
+    {
+      id: "membership-run-diego",
+      eventId: "run-club-rio",
+      userId: "diego-luna",
+      joinedAt: "2026-06-15T20:04:00+02:00"
+    }
+  ],
+  groupMessages: [
+    {
+      id: "group-after-1",
+      eventId: "after-solar-2026",
+      authorId: "system",
+      text: "El chat general ya esta abierto. Presentaos y decid con quien os gustaria coincidir al llegar.",
+      kind: "system",
+      createdAt: "2026-06-15T18:00:00+02:00"
+    },
+    {
+      id: "group-after-2",
+      eventId: "after-solar-2026",
+      authorId: "mateo-rivas",
+      text: "Yo llegare pronto. Si alguien quiere empezar en la terraza, me apunto.",
+      kind: "text",
+      createdAt: "2026-06-15T18:42:00+02:00"
+    },
+    {
+      id: "group-after-3",
+      eventId: "after-solar-2026",
+      authorId: "lucia-serrano",
+      text: "Busco gente que este mas por conocer y charlar un rato antes del set fuerte.",
+      kind: "text",
+      createdAt: "2026-06-15T18:46:00+02:00"
+    },
+    {
+      id: "group-after-4",
+      eventId: "after-solar-2026",
+      authorId: "ines-oliver",
+      text: "Yo voy con dos amigas un rato y luego me pierdo por la pista. Feliz de saludar a gente nueva.",
+      kind: "text",
+      createdAt: "2026-06-15T18:49:00+02:00"
+    },
+    {
+      id: "group-brunch-1",
+      eventId: "founders-brunch-circle",
+      authorId: "system",
+      text: "Usad este chat para contar que estais construyendo y reservar vuestra primera conversacion.",
+      kind: "system",
+      createdAt: "2026-06-15T12:00:00+02:00"
+    },
+    {
+      id: "group-brunch-2",
+      eventId: "founders-brunch-circle",
+      authorId: "nora-costa",
+      text: "Yo voy desde Lisboa y me interesa mucho conocer gente de producto y marca.",
+      kind: "text",
+      createdAt: "2026-06-15T12:22:00+02:00"
+    },
+    {
+      id: "group-brunch-3",
+      eventId: "founders-brunch-circle",
+      authorId: "lucia-serrano",
+      text: "Si alguien esta montando comunidad o experiencias, tengo mil ganas de hablar.",
+      kind: "text",
+      createdAt: "2026-06-15T12:24:00+02:00"
+    }
+  ],
+  privateChatRequests: [
+    {
+      id: "request-mateo-lucia-after",
+      eventId: "after-solar-2026",
+      fromUserId: "mateo-rivas",
+      toUserId: "lucia-serrano",
+      message:
+        "He visto que tambien te interesan comunidad y eventos. Si te apetece, abrimos chat y nos ubicamos antes de subir.",
+      status: "pending",
+      createdAt: "2026-06-15T19:15:00+02:00"
+    },
+    {
+      id: "request-lucia-ines-after",
+      eventId: "after-solar-2026",
+      fromUserId: "lucia-serrano",
+      toUserId: "ines-oliver",
+      message:
+        "Tu perfil me ha dado mucha curiosidad. Si te va, abrimos privado y vemos si coincidimos al llegar.",
+      status: "accepted",
+      createdAt: "2026-06-15T18:52:00+02:00",
+      respondedAt: "2026-06-15T19:02:00+02:00"
+    },
+    {
+      id: "request-lucia-diego-after",
+      eventId: "after-solar-2026",
+      fromUserId: "lucia-serrano",
+      toUserId: "diego-luna",
+      message:
+        "Creo que podemos tener buena conversacion de hospitality y comunidad. Te apetece abrir chat?",
+      status: "rejected",
+      createdAt: "2026-06-15T19:08:00+02:00",
+      respondedAt: "2026-06-15T19:30:00+02:00"
+    }
+  ],
+  privateChats: [
+    {
+      id: "chat-lucia-ines",
+      participantIds: ["lucia-serrano", "ines-oliver"],
+      originEventId: "after-solar-2026",
+      requestId: "request-lucia-ines-after",
+      createdAt: "2026-06-15T19:02:00+02:00"
+    }
+  ],
+  privateMessages: [
+    {
+      id: "private-lucia-ines-1",
+      chatId: "chat-lucia-ines",
+      authorId: "ines-oliver",
+      text: "Aceptada. Me mola hablar antes para no llegar en frio.",
+      createdAt: "2026-06-15T19:03:00+02:00"
+    },
+    {
+      id: "private-lucia-ines-2",
+      chatId: "chat-lucia-ines",
+      authorId: "lucia-serrano",
+      text: "Total. Yo seguramente llegue sobre las nueve y media.",
+      createdAt: "2026-06-15T19:05:00+02:00"
+    },
+    {
+      id: "private-lucia-ines-3",
+      chatId: "chat-lucia-ines",
+      authorId: "ines-oliver",
+      text: "Perfecto. Te escribo por aqui cuando suba y asi nos ubicamos.",
+      createdAt: "2026-06-15T19:08:00+02:00"
+    }
+  ],
+  organizerLeads: [
+    {
+      id: "lead-sara",
+      fromUserId: "sara-mora",
+      companyName: "Mono Studio",
+      concept: "Cenas creativas para gente de arte y moda",
+      message:
+        "No quiero montar eventos abiertos sin curacion. Me gustaria hablar con vosotros para activar un perfil organizador.",
+      status: "pending",
+      createdAt: "2026-06-15T17:40:00+02:00"
     }
   ]
 };
-
-export const ACTIVITY_CURVE: ActivityPoint[] = [
-  { time: "20:00", users: 18, matches: 3 },
-  { time: "21:00", users: 58, matches: 14 },
-  { time: "22:00", users: 136, matches: 41 },
-  { time: "23:00", users: 247, matches: 89 },
-  { time: "00:00", users: 341, matches: 128 },
-  { time: "01:00", users: 298, matches: 143 }
-];
-
-export const ADMIN_SNAPSHOT = {
-  registeredUsers: 341,
-  activeUsers: 298,
-  matchesGenerated: 128,
-  chatsStarted: 94
-};
-
-export const AUTO_REPLIES = [
-  "Te leo. Si subes a la terraza avisa.",
-  "Buena energia. Yo estoy cerca del DJ.",
-  "Me gusta tu vibra. Luego nos cruzamos.",
-  "Eso suena bien. Dame diez minutos y te digo."
-];

@@ -1,7 +1,7 @@
 {
   "name": "Tindereo",
   "short_name": "Tindereo",
-  "description": "Matching para tardeos y eventos con perfiles, chat y panel de organizacion.",
+  "description": "Plataforma social para descubrir eventos, entrar en su chat general y abrir conexiones privadas entre asistentes.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

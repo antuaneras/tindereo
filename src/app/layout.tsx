@@ -7,7 +7,7 @@ const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 export const metadata: Metadata = {
   title: "Tindereo",
   description:
-    "App social para tardeos y eventos con matching, chats y panel de organizador.",
+    "Plataforma social para descubrir eventos, unirse a su chat general y abrir conexiones privadas entre asistentes.",
   applicationName: "Tindereo",
   manifest: `${basePath}/manifest.webmanifest`,
   icons: {
