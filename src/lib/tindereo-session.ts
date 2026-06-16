@@ -65,7 +65,8 @@ export function hydratePersistedState(
     session: {
       ...createSessionState(fallbackUserId),
       ...sessionPatch,
-      currentUserId: fallbackUserId
+      currentUserId: fallbackUserId,
+      isAuthenticated: Boolean((sessionPatch?.isAuthenticated ?? false) && fallbackUserId)
     }
   };
 }

@@ -191,6 +191,13 @@ type StoryViewerState = {
   storyIds: string[];
 };
 
+type StoryChatAttachment = {
+  actionLabel: string;
+  mode: "reaction" | "comment";
+  storyId: string;
+  text: string;
+};
+
 type ProfileDrilldown = "created" | "agenda" | "friends" | "private";
 
 type CameraComposerState = {
@@ -213,6 +220,8 @@ const CAMERA_COMPOSER_INITIAL_STATE: CameraComposerState = {
 
 const POST_LIKES_STORAGE_KEY = "tindereo-post-likes-v1";
 const REPLY_PREFIX = "[reply:";
+const STORY_PREFIX = "[story:";
+const STORY_AUTO_ADVANCE_MS = 4500;
 
 function buildReplyMessageText(text: string, replyTarget: ReplyTarget | null) {
   const trimmed = text.trim();
@@ -264,11 +273,73 @@ function parseReplyMessageText(text: string) {
 }
 
 function buildReplyTarget(authorLabel: string, id: string, text: string): ReplyTarget {
-  const parsed = parseReplyMessageText(text);
+  const parsed = parseChatMessage(text);
   return {
     authorLabel,
     id,
-    snippet: (parsed.body || text).slice(0, 92)
+    snippet: (parsed.body || parsed.summary || text).slice(0, 92)
+  };
+}
+
+function buildStoryMessageText(storyId: string, mode: StoryChatAttachment["mode"], text: string) {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  return `${STORY_PREFIX}${storyId}|${mode}|${encodeURIComponent(trimmed)}]`;
+}
+
+function parseStoryMessageText(text: string) {
+  if (!text.startsWith(STORY_PREFIX)) {
+    return null as StoryChatAttachment | null;
+  }
+
+  const closingIndex = text.indexOf("]");
+  if (closingIndex === -1) {
+    return null;
+  }
+
+  const metadata = text.slice(STORY_PREFIX.length, closingIndex).split("|");
+  if (metadata.length < 3) {
+    return null;
+  }
+
+  const storyId = metadata[0] ?? "";
+  const mode = metadata[1] === "reaction" ? "reaction" : metadata[1] === "comment" ? "comment" : null;
+  if (!storyId || !mode) {
+    return null;
+  }
+
+  const decodedText = decodeURIComponent(metadata.slice(2).join("|"));
+
+  return {
+    storyId,
+    mode,
+    text: decodedText,
+    actionLabel: mode === "reaction" ? `Reacciono: ${decodedText}` : "Comento una historia"
+  } satisfies StoryChatAttachment;
+}
+
+function parseChatMessage(text: string) {
+  const reply = parseReplyMessageText(text);
+  const story = parseStoryMessageText(text);
+
+  if (story) {
+    return {
+      body: story.mode === "comment" ? story.text : "",
+      reply: null as ReplyTarget | null,
+      story,
+      summary:
+        story.mode === "reaction" ? `Reacciono a una historia: ${story.text}` : `Comento una historia: ${story.text}`
+    };
+  }
+
+  return {
+    body: reply.body,
+    reply: reply.reply,
+    story: null as StoryChatAttachment | null,
+    summary: reply.body
   };
 }
 
@@ -995,10 +1066,10 @@ export function TindereoApp() {
       setProfileFocusUserId(null);
       setGroupReplyTargets({});
       setPrivateReplyTarget(null);
-      setUiNotice("Demo reiniciada.");
+      setUiNotice("Datos vaciados.");
     } catch (error) {
       setSyncError(
-        error instanceof Error ? error.message : "No se pudo reiniciar la demo en backend."
+        error instanceof Error ? error.message : "No se pudieron vaciar los datos."
       );
     } finally {
       setIsSyncing(false);
@@ -1154,8 +1225,18 @@ export function TindereoApp() {
       return;
     }
 
-    const replyText = [reaction, message.trim()].filter(Boolean).join(" ").trim();
-    if (!replyText) {
+    const normalizedMessage = message.trim();
+    const normalizedReaction = reaction?.trim() ?? "";
+    const mode =
+      normalizedMessage.length > 0 ? "comment" : normalizedReaction.length > 0 ? "reaction" : null;
+    const storyPayload =
+      mode === "comment"
+        ? buildStoryMessageText(story.id, "comment", normalizedMessage)
+        : mode === "reaction"
+          ? buildStoryMessageText(story.id, "reaction", normalizedReaction)
+          : "";
+
+    if (!storyPayload || !mode) {
       return;
     }
 
@@ -1169,7 +1250,7 @@ export function TindereoApp() {
         type: "send-group-message",
         actorId: state.session.currentUserId,
         eventId: story.authorId,
-        text: `Respondio a la historia: ${replyText}`
+        text: storyPayload
       });
       setStoryReplyDraft("");
       setUiNotice("Respuesta enviada al chat del evento.");
@@ -1191,7 +1272,7 @@ export function TindereoApp() {
         type: "send-private-message",
         actorId: state.session.currentUserId,
         chatId: existingChat.id,
-        text: `Respondio a tu historia: ${replyText}`
+        text: storyPayload
       });
       setStoryReplyDraft("");
       setUiNotice("Mensaje enviado por privado.");
@@ -1213,7 +1294,10 @@ export function TindereoApp() {
       actorId: state.session.currentUserId,
       eventId: sharedEvent.id,
       targetUserId: story.authorId,
-      message: `Respondio a tu historia: ${replyText}`
+      message:
+        mode === "reaction"
+          ? `Quiero abrir privado contigo. Reaccione a tu historia con "${normalizedReaction}".`
+          : `Quiero abrir privado contigo. Te comente tu historia: "${normalizedMessage}".`
     });
     setStoryReplyDraft("");
     setUiNotice("Solicitud privada enviada desde la historia.");
@@ -1331,7 +1415,7 @@ export function TindereoApp() {
               type="button"
             >
               <RefreshCw className="h-4 w-4" />
-              Reiniciar demo
+              Vaciar datos
             </button>
           </div>
           */}
@@ -1347,7 +1431,7 @@ export function TindereoApp() {
               type="button"
             >
               <RefreshCw className="h-4 w-4" />
-              Reiniciar demo
+              Vaciar datos
             </button>
           </div>
         </header>
@@ -1820,11 +1904,12 @@ function MobileAppShell({
 
   if (storyViewer && activeStory) {
     return (
-        <StoryViewerOverlay
-          activeStory={activeStory}
-          onClose={closeStoryViewer}
-          onMove={onMoveStory}
-          onSendReply={onSendStoryReply}
+      <StoryViewerOverlay
+        activeStory={activeStory}
+        onClose={closeStoryViewer}
+        onMove={onMoveStory}
+        onSendReply={onSendStoryReply}
+        shouldAutoAdvance={storyViewer.storyIds.length > 1}
         replyDraft={storyReplyDraft}
         setReplyDraft={setStoryReplyDraft}
         state={state}
@@ -2036,7 +2121,14 @@ function MobileHomeScreen({
 }) {
   return (
     <div className="space-y-4">
-      <MobileStoriesBar bare onOpenStory={onOpenStory} state={state} stories={stories} />
+      {stories.length > 0 ? (
+        <MobileStoriesBar bare onOpenStory={onOpenStory} state={state} stories={stories} />
+      ) : (
+        <EmptyState
+          copy="Cuando tu o tus amigos subais historias, apareceran aqui arriba como en un carrusel."
+          title="Aun no hay historias"
+        />
+      )}
 
       {pendingEventInvites.length > 0 ? (
         <section className="space-y-3">
@@ -2083,18 +2175,25 @@ function MobileHomeScreen({
       ) : null}
 
       <section className="space-y-4">
-        {posts.map((post) => (
-          <MobileFeedPostCard
-            key={post.id}
-            currentUser={currentUser}
-            likedPostKeys={likedPostKeys}
-            onOpenEvent={onOpenEvent}
-            onOpenProfileUser={onOpenProfileUser}
-            onTogglePostLike={onTogglePostLike}
-            post={post}
-            state={state}
+        {posts.length === 0 ? (
+          <EmptyState
+            copy="Crea eventos, publica fotos o usa la camara central para empezar a llenar el inicio."
+            title="Todavia no hay publicaciones"
           />
-        ))}
+        ) : (
+          posts.map((post) => (
+            <MobileFeedPostCard
+              key={post.id}
+              currentUser={currentUser}
+              likedPostKeys={likedPostKeys}
+              onOpenEvent={onOpenEvent}
+              onOpenProfileUser={onOpenProfileUser}
+              onTogglePostLike={onTogglePostLike}
+              post={post}
+              state={state}
+            />
+          ))
+        )}
       </section>
     </div>
   );
@@ -2177,36 +2276,51 @@ function MobileEventsScreen({
       </section>
 
       <section className="space-y-3">
-        {collection.map((event) => {
-          const lastMessage = getEventMessages(state, event.id).slice(-1)[0] ?? null;
-          const isJoined = hasEventAccess(state, event.id, currentUser.id);
-          return (
-            <button
-              key={event.id}
-              className="flex w-full items-center gap-3 rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 text-left shadow-[0_20px_40px_rgba(52,34,22,0.08)]"
-              onClick={() => onOpenEvent(event.id)}
-              type="button"
-            >
-              <div className="h-16 w-16 overflow-hidden rounded-[20px] border border-[#eadfd3] bg-[#f4e3d8]">
-                <img alt={event.title} className="h-full w-full object-cover" src={event.coverImage} />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="truncate font-semibold text-[#1d160f]">{event.title}</p>
-                  <span className="text-[11px] text-[#8f6f59]">
-                    {formatTime(lastMessage?.createdAt ?? event.startsAt)}
-                  </span>
+        {collection.length === 0 ? (
+          <EmptyState
+            copy={
+              eventListMode === "joined"
+                ? "Aun no te has unido a ningun evento. Descubre uno y entra en su chat."
+                : "Todavia no hay eventos publicados. Crea el primero desde el boton superior."
+            }
+            title={eventListMode === "joined" ? "Sin eventos en tu agenda" : "Sin eventos publicados"}
+          />
+        ) : (
+          collection.map((event) => {
+            const lastMessage = getEventMessages(state, event.id).slice(-1)[0] ?? null;
+            const isJoined = hasEventAccess(state, event.id, currentUser.id);
+            return (
+              <button
+                key={event.id}
+                className="flex w-full items-center gap-3 rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 text-left shadow-[0_20px_40px_rgba(52,34,22,0.08)]"
+                onClick={() => onOpenEvent(event.id)}
+                type="button"
+              >
+                <div className="h-16 w-16 overflow-hidden rounded-[20px] border border-[#eadfd3] bg-[#f4e3d8]">
+                  <img alt={event.title} className="h-full w-full object-cover" src={event.coverImage} />
                 </div>
-                <p className="mt-1 text-xs text-[#8f6f59]">
-                  {getEventGuestCount(state, event.id)} asistentes - {event.city}
-                </p>
-                <p className="mt-2 truncate text-sm text-[#5f4b3f]">
-                  {isJoined ? lastMessage?.text ?? event.summary : event.summary}
-                </p>
-              </div>
-            </button>
-          );
-        })}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="truncate font-semibold text-[#1d160f]">{event.title}</p>
+                    <span className="text-[11px] text-[#8f6f59]">
+                      {formatTime(lastMessage?.createdAt ?? event.startsAt)}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-[#8f6f59]">
+                    {getEventGuestCount(state, event.id)} asistentes - {event.city}
+                  </p>
+                  <p className="mt-2 truncate text-sm text-[#5f4b3f]">
+                    {isJoined
+                      ? lastMessage
+                        ? parseChatMessage(lastMessage.text).summary
+                        : event.summary
+                      : event.summary}
+                  </p>
+                </div>
+              </button>
+            );
+          })
+        )}
       </section>
     </div>
   );
@@ -2278,31 +2392,38 @@ function MobileInboxScreen({
       ) : null}
 
       <section className="space-y-3">
-        {privateChats.map((chat) => {
-          const partner = getChatPartner(state, chat, currentUser.id);
-          const lastMessage = getLatestPrivateMessage(state, chat.id);
-          return (
-            <button
-              key={chat.id}
-              className="flex w-full items-center gap-3 rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 text-left shadow-[0_20px_40px_rgba(52,34,22,0.08)]"
-              onClick={() => onOpenChat(chat.id)}
-              type="button"
-            >
-              <AvatarChip user={partner} />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="truncate font-semibold text-[#1d160f]">{partner.name}</p>
-                  <span className="text-[11px] text-[#8f6f59]">
-                    {lastMessage ? formatTime(lastMessage.createdAt) : ""}
-                  </span>
+        {privateChats.length === 0 ? (
+          <EmptyState
+            copy="Los privados apareceran aqui cuando alguien acepte abrir conversacion contigo."
+            title="Aun no tienes chats privados"
+          />
+        ) : (
+          privateChats.map((chat) => {
+            const partner = getChatPartner(state, chat, currentUser.id);
+            const lastMessage = getLatestPrivateMessage(state, chat.id);
+            return (
+              <button
+                key={chat.id}
+                className="flex w-full items-center gap-3 rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 text-left shadow-[0_20px_40px_rgba(52,34,22,0.08)]"
+                onClick={() => onOpenChat(chat.id)}
+                type="button"
+              >
+                <AvatarChip user={partner} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="truncate font-semibold text-[#1d160f]">{partner.name}</p>
+                    <span className="text-[11px] text-[#8f6f59]">
+                      {lastMessage ? formatTime(lastMessage.createdAt) : ""}
+                    </span>
+                  </div>
+                  <p className="mt-1 truncate text-sm text-[#5f4b3f]">
+                    {lastMessage ? parseChatMessage(lastMessage.text).summary : "Chat listo para empezar"}
+                  </p>
                 </div>
-                <p className="mt-1 truncate text-sm text-[#5f4b3f]">
-                  {lastMessage?.text ?? "Chat listo para empezar"}
-                </p>
-              </div>
-            </button>
-          );
-        })}
+              </button>
+            );
+          })
+        )}
       </section>
     </div>
   );
@@ -2387,7 +2508,7 @@ function MobileProfileScreen({
               Crear evento
             </button>
             <button className="rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#6d5749]" onClick={onResetDemo} type="button">
-              Refrescar
+              Vaciar datos
             </button>
           </div>
         </div>
@@ -2585,12 +2706,54 @@ function MobileFeedPostCard({
   );
 }
 
+function StoryMessageCard({
+  dark,
+  state,
+  storyAttachment
+}: {
+  dark?: boolean;
+  state: PersistedState;
+  storyAttachment: StoryChatAttachment;
+}) {
+  const story = state.stories.find((entry) => entry.id === storyAttachment.storyId) ?? null;
+  const authorLabel =
+    story?.authorType === "event"
+      ? getEventById(state, story.authorId)?.title ?? "Evento"
+      : story
+        ? getUserById(state, story.authorId).name
+        : "Historia";
+
+  return (
+    <div
+      className={`mb-2 rounded-[18px] border p-2 ${
+        dark ? "border-white/10 bg-white/10 text-white" : "border-[#eadfd3] bg-[#fffaf6] text-[#1d160f]"
+      }`}
+    >
+      <div className="flex items-center gap-3">
+        <div className={`h-12 w-12 overflow-hidden rounded-[14px] ${dark ? "bg-white/10" : "bg-[#f3e7dc]"}`}>
+          {story?.imageUrl ? (
+            <img alt={authorLabel} className="h-full w-full object-cover" src={story.imageUrl} />
+          ) : null}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className={`truncate text-xs font-semibold uppercase tracking-[0.16em] ${dark ? "text-white/68" : "text-[#8f6f59]"}`}>
+            {authorLabel}
+          </p>
+          <p className="truncate text-sm font-semibold">{story?.caption || "Historia compartida"}</p>
+        </div>
+      </div>
+      <p className={`mt-2 text-xs ${dark ? "text-white/78" : "text-[#6d5749]"}`}>{storyAttachment.actionLabel}</p>
+    </div>
+  );
+}
+
 function StoryViewerOverlay({
   activeStory,
   onClose,
   onMove,
   onSendReply,
   replyDraft,
+  shouldAutoAdvance,
   setReplyDraft,
   state
 }: {
@@ -2599,6 +2762,7 @@ function StoryViewerOverlay({
   onMove: (direction: "next" | "prev") => void;
   onSendReply: (message: string, reaction?: string) => void;
   replyDraft: string;
+  shouldAutoAdvance: boolean;
   setReplyDraft: Dispatch<SetStateAction<string>>;
   state: PersistedState;
 }) {
@@ -2606,10 +2770,42 @@ function StoryViewerOverlay({
     activeStory.authorType === "user"
       ? getUserById(state, activeStory.authorId).name
       : getEventById(state, activeStory.authorId)?.title ?? "Story";
+  const [progress, setProgress] = useState(0);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    setProgress(0);
+    const startedAt = Date.now();
+    const intervalId = window.setInterval(() => {
+      const elapsed = Date.now() - startedAt;
+      const nextProgress = Math.min(elapsed / STORY_AUTO_ADVANCE_MS, 1);
+      setProgress(nextProgress);
+
+      if (elapsed >= STORY_AUTO_ADVANCE_MS) {
+        window.clearInterval(intervalId);
+        if (shouldAutoAdvance) {
+          onMove("next");
+        }
+      }
+    }, 90);
+
+    return () => window.clearInterval(intervalId);
+  }, [activeStory.id, onMove, shouldAutoAdvance]);
 
   return (
     <div className="fixed inset-0 z-[70] bg-[#120d0a] text-white">
       <div className="flex h-full flex-col">
+        <div className="px-4 pt-[max(0.6rem,env(safe-area-inset-top))]">
+          <div className="h-1 overflow-hidden rounded-full bg-white/15">
+            <div
+              className="h-full rounded-full bg-white transition-[width]"
+              style={{ width: `${progress * 100}%` }}
+            />
+          </div>
+        </div>
         <div className="flex items-center justify-between gap-3 px-4 pb-3 pt-[max(1rem,env(safe-area-inset-top))]">
           <div>
             <p className="font-semibold">{authorName}</p>
@@ -2705,7 +2901,7 @@ function MobilePrivateChatScreen({
       <div className="flex-1 space-y-3 overflow-y-auto bg-[radial-gradient(circle_at_top_left,rgba(255,107,87,0.08),transparent_24%),#efe8df] px-3 py-4">
         {messages.map((message) => {
           const mine = message.authorId === currentUser.id;
-          const parsed = parseReplyMessageText(message.text);
+          const parsed = parseChatMessage(message.text);
           const author = mine ? currentUser.name : partner.name;
           return (
             <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
@@ -2724,7 +2920,8 @@ function MobilePrivateChatScreen({
                     <p className="mt-1 text-xs text-[#5f4b3f]">{parsed.reply.snippet}</p>
                   </div>
                 ) : null}
-                <p>{parsed.body}</p>
+                {parsed.story ? <StoryMessageCard dark={mine} state={state} storyAttachment={parsed.story} /> : null}
+                {parsed.body ? <p>{parsed.body}</p> : null}
                 <p className="mt-2 text-[11px] text-[#8f6f59]">{formatTime(message.createdAt)}</p>
               </button>
             </div>
@@ -2895,7 +3092,7 @@ function MobileEventScreen({
                     message.authorId === "system"
                       ? "Sistema"
                       : getUserById(state, message.authorId).name;
-                  const parsed = parseReplyMessageText(message.text);
+                  const parsed = parseChatMessage(message.text);
                   return (
                     <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
                       <button
@@ -2922,7 +3119,8 @@ function MobileEventScreen({
                             <p className="mt-1 text-xs text-[#5f4b3f]">{parsed.reply.snippet}</p>
                           </div>
                         ) : null}
-                        <p>{parsed.body}</p>
+                        {parsed.story ? <StoryMessageCard dark={message.authorId !== "system" && mine} state={state} storyAttachment={parsed.story} /> : null}
+                        {parsed.body ? <p>{parsed.body}</p> : null}
                         <p className="mt-2 text-[11px] text-[#8f6f59]">{formatTime(message.createdAt)}</p>
                       </button>
                     </div>
@@ -3521,8 +3719,8 @@ function AuthScreen({
                 Descubre eventos y entra a su grupo antes de llegar.
               </h1>
               <p className="mt-4 max-w-2xl text-sm leading-6 text-white/76 md:text-base">
-                Esta demo ya entra con la nueva idea del producto: te apuntas a un evento, accedes
-                al chat general y desde ahi decides con quien abrir privado.
+                Crea tu cuenta, publica eventos reales y entra en sus chats para empezar a socializar
+                antes de que el plan empiece.
               </p>
               <div className="mt-6 grid gap-3 sm:grid-cols-3">
                 <InfoChip icon={<Ticket className="h-4 w-4" />} value="Eventos publicos o privados" />
@@ -3532,44 +3730,50 @@ function AuthScreen({
             </div>
 
             <div className="grid gap-3 px-5 py-5 md:grid-cols-3 md:px-7">
-              <MetricTile label="Perfiles demo" value={String(users.length)} />
-              <MetricTile label="Sin password" value="Demo" />
+              <MetricTile label="Perfiles" value={String(users.length)} />
+              <MetricTile label="Acceso" value="Sin password" />
               <MetricTile label="Registro" value="Local" />
             </div>
           </section>
 
           <div className="space-y-5">
             <SectionCard>
-              <SectionLabel>Entrar con un perfil demo</SectionLabel>
+              <SectionLabel>Entrar con una cuenta existente</SectionLabel>
               <p className="mt-3 text-sm text-[#5f4b3f]">
-                Elige un usuario para revisar el producto desde dentro al instante.
+                Si ya creaste una cuenta en este entorno, puedes entrar desde aqui al instante.
               </p>
               <div className="mt-4 grid gap-3">
-                {users.map((user) => (
-                  <button
-                    key={user.id}
-                    className="flex items-center gap-3 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4 text-left transition hover:border-[#ffb493] hover:bg-[#fff0e8]"
-                    onClick={() => onLogin(user.id)}
-                    type="button"
-                  >
-                    <AvatarChip user={user} />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate font-semibold text-[#1d160f]">{user.name}</p>
-                      <p className="truncate text-sm text-[#6d5749]">
-                        {user.title} - {user.city}
-                      </p>
-                      <p className="mt-1 truncate text-xs text-[#8f6f59]">{user.handle}</p>
-                    </div>
-                    <ArrowRight className="h-4 w-4 text-[#8f6f59]" />
-                  </button>
-                ))}
+                {users.length === 0 ? (
+                  <div className="rounded-[24px] border border-dashed border-[#eadfd3] bg-[#fffaf6] px-4 py-5 text-sm text-[#6d5749]">
+                    Aun no hay cuentas creadas. Registra la primera desde el formulario de abajo.
+                  </div>
+                ) : (
+                  users.map((user) => (
+                    <button
+                      key={user.id}
+                      className="flex items-center gap-3 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4 text-left transition hover:border-[#ffb493] hover:bg-[#fff0e8]"
+                      onClick={() => onLogin(user.id)}
+                      type="button"
+                    >
+                      <AvatarChip user={user} />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-semibold text-[#1d160f]">{user.name}</p>
+                        <p className="truncate text-sm text-[#6d5749]">
+                          {user.title} - {user.city}
+                        </p>
+                        <p className="mt-1 truncate text-xs text-[#8f6f59]">{user.handle}</p>
+                      </div>
+                      <ArrowRight className="h-4 w-4 text-[#8f6f59]" />
+                    </button>
+                  ))
+                )}
               </div>
             </SectionCard>
 
             <SectionCard>
-              <SectionLabel>Crear cuenta para la demo</SectionLabel>
+              <SectionLabel>Crear cuenta</SectionLabel>
               <p className="mt-3 text-sm text-[#5f4b3f]">
-                De momento el acceso va sin password. Creamos tu perfil local y entras directamente.
+                De momento el acceso va sin password. Creamos tu perfil y entras directamente.
               </p>
 
               {error ? (
@@ -3702,7 +3906,7 @@ function JoinedGroupsList({
                   {members} miembros - {event.city}
                 </p>
                 <p className="mt-2 line-clamp-2 text-sm text-[#5f4b3f]">
-                  {lastMessage?.text ?? event.summary}
+                  {lastMessage ? parseChatMessage(lastMessage.text).summary : event.summary}
                 </p>
               </div>
             </button>
@@ -4922,13 +5126,14 @@ function EventWorkspace({
                 </div>
                 <div className="mt-4 space-y-3">
                   {messages.map((message) => {
+                    const parsed = parseChatMessage(message.text);
                     if (message.authorId === "system") {
                       return (
                         <div
                           key={message.id}
                           className="rounded-[20px] border border-dashed border-[#f0d8ca] bg-[#fff3ec] px-4 py-3 text-sm text-[#c86730]"
                         >
-                          {message.text}
+                          {parsed.summary}
                         </div>
                       );
                     }
@@ -4940,7 +5145,8 @@ function EventWorkspace({
                       return (
                         <div key={message.id} className="flex justify-end">
                           <div className="max-w-[560px] rounded-[24px] bg-[#1d160f] px-4 py-3 text-sm text-white shadow-[0_18px_34px_rgba(29,22,15,0.14)]">
-                            <p>{message.text}</p>
+                            {parsed.story ? <StoryMessageCard dark state={state} storyAttachment={parsed.story} /> : null}
+                            {parsed.body ? <p>{parsed.body}</p> : null}
                             <p className="mt-2 text-[11px] text-white/64">
                               {formatTime(message.createdAt)}
                             </p>
@@ -4957,7 +5163,8 @@ function EventWorkspace({
                             <p className="truncate font-semibold text-[#1d160f]">{author.name}</p>
                             <span className="text-xs text-[#8f6f59]">{formatTime(message.createdAt)}</span>
                           </div>
-                          <p className="mt-1">{message.text}</p>
+                          {parsed.story ? <StoryMessageCard state={state} storyAttachment={parsed.story} /> : null}
+                          {parsed.body ? <p className="mt-1">{parsed.body}</p> : null}
                         </div>
                       </div>
                     );
@@ -5640,7 +5847,7 @@ function InboxSection({
                           </span>
                         </div>
                         <p className="mt-1 truncate text-sm text-[#6d5749]">
-                          {lastMessage?.text ?? "Chat listo para empezar"}
+                  {lastMessage ? parseChatMessage(lastMessage.text).summary : "Chat listo para empezar"}
                         </p>
                       </div>
                     </button>
@@ -5669,6 +5876,7 @@ function InboxSection({
               <div className="mt-4 space-y-3">
                 {selectedMessages.map((message) => {
                   const mine = message.authorId === currentUser.id;
+                  const parsed = parseChatMessage(message.text);
                   return (
                     <div
                       key={message.id}
@@ -5681,7 +5889,8 @@ function InboxSection({
                             : "border border-[#eadfd3] bg-[#fffaf6] text-[#5f4b3f]"
                         }`}
                       >
-                        <p>{message.text}</p>
+                        {parsed.story ? <StoryMessageCard dark={mine} state={state} storyAttachment={parsed.story} /> : null}
+                        {parsed.body ? <p>{parsed.body}</p> : null}
                         <p className={`mt-2 text-[11px] ${mine ? "text-white/64" : "text-[#8f6f59]"}`}>
                           {formatTime(message.createdAt)}
                         </p>
@@ -6089,9 +6298,9 @@ function ProfileSection({
             </section>
 
             <section className="rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
-              <SectionLabel>Cuenta y demo</SectionLabel>
+              <SectionLabel>Cuenta y datos</SectionLabel>
               <p className="mt-3 text-sm text-[#5f4b3f]">
-                Puedes cerrar sesion o resetear los datos demo para volver al estado inicial.
+                Puedes cerrar sesion o vaciar los datos guardados para volver al estado inicial.
               </p>
               <div className="mt-4 flex flex-wrap gap-3">
                 <button
@@ -6119,7 +6328,7 @@ function ProfileSection({
       </section>
 
       <SectionCard>
-        <SectionLabel>Cambiar de perfil demo</SectionLabel>
+        <SectionLabel>Cambiar de perfil</SectionLabel>
         <p className="mt-3 text-sm text-[#5f4b3f]">
           Esto sigue aqui para probar rapido aprobaciones, rechazos, amistades y privados desde
           distintos lados del flujo.
@@ -6195,7 +6404,7 @@ function LoadingScreen({
       <div className="rounded-[34px] border border-[#eadfd3] bg-white/88 px-6 py-8 text-center shadow-[0_24px_60px_rgba(52,34,22,0.08)]">
         <BrandMark />
         <p className="mt-4 text-sm text-[#6d5749]">
-          {error ?? "Cargando la demo social de eventos..."}
+          {error ?? "Cargando la plataforma social..."}
         </p>
         {error && onRetry ? (
           <button

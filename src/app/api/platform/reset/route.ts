@@ -10,7 +10,7 @@ export async function POST() {
   } catch (error) {
     return NextResponse.json(
       {
-        error: error instanceof Error ? error.message : "No se pudo reiniciar la demo."
+        error: error instanceof Error ? error.message : "No se pudieron vaciar los datos."
       },
       { status: 500 }
     );

@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { DEFAULT_STATE } from "../tindereo-data";
+import { stripSession } from "../tindereo-session";
 import type { AppDataset } from "../tindereo-types";
 
 const PLATFORM_STATE_ID = "main";
@@ -21,6 +22,22 @@ declare global {
   var __tindereoLocalPlatformState__: PlatformStateRecord | undefined;
 }
 
+const LEGACY_DEMO_USER_IDS = new Set([
+  "lucia-serrano",
+  "mateo-rivas",
+  "ines-oliver",
+  "nora-costa",
+  "diego-luna",
+  "sara-mora"
+]);
+
+const LEGACY_DEMO_EVENT_IDS = new Set([
+  "after-solar-2026",
+  "founders-brunch-circle",
+  "design-night-lab",
+  "cena-secreta-estudio"
+]);
+
 function getSupabaseUrl() {
   return process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? null;
 }
@@ -37,9 +54,20 @@ function cloneData<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+function createEmptyDataset() {
+  return cloneData(stripSession(DEFAULT_STATE));
+}
+
+function containsLegacyDemoData(data: AppDataset) {
+  return (
+    data.users.some((user) => LEGACY_DEMO_USER_IDS.has(user.id)) ||
+    data.events.some((event) => LEGACY_DEMO_EVENT_IDS.has(event.id))
+  );
+}
+
 function createInitialLocalState(): PlatformStateRecord {
   return {
-    data: cloneData(DEFAULT_STATE),
+    data: createEmptyDataset(),
     revision: 1
   };
 }
@@ -50,8 +78,10 @@ function sanitizeLocalState(value: unknown) {
   }
 
   const candidate = value as Partial<PlatformStateRecord>;
+  const nextData = cloneData((candidate.data as AppDataset | undefined) ?? createEmptyDataset());
+
   return {
-    data: cloneData((candidate.data as AppDataset | undefined) ?? DEFAULT_STATE),
+    data: containsLegacyDemoData(nextData) ? createEmptyDataset() : nextData,
     revision: Number(candidate.revision ?? 1) || 1
   } satisfies PlatformStateRecord;
 }
@@ -181,13 +211,17 @@ async function readSupabasePlatformState() {
 
   const row = Array.isArray(rows) ? rows[0] : null;
   if (row) {
+    if (containsLegacyDemoData(row.data)) {
+      return setSupabasePlatformState(createEmptyDataset());
+    }
+
     return {
       data: row.data,
       revision: Number(row.revision)
     } satisfies SupabasePlatformStateRow;
   }
 
-  return setSupabasePlatformState(DEFAULT_STATE);
+  return setSupabasePlatformState(createEmptyDataset());
 }
 
 export async function getDatasetRevision() {
@@ -225,11 +259,11 @@ export async function resetAppDataset() {
   if (!isSupabaseConfigured()) {
     const current = readLocalStateRecord();
     return writeLocalStateRecord({
-      data: cloneData(DEFAULT_STATE),
+      data: createEmptyDataset(),
       revision: current.revision + 1
     }).data;
   }
 
-  const row = await setSupabasePlatformState(DEFAULT_STATE);
+  const row = await setSupabasePlatformState(createEmptyDataset());
   return row.data;
 }

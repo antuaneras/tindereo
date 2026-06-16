@@ -262,7 +262,8 @@ export function normalizeState(state: PersistedState) {
     session: {
       ...DEFAULT_STATE.session,
       ...state.session,
-      currentUserId
+      currentUserId,
+      isAuthenticated: Boolean(state.session.isAuthenticated && currentUserId)
     },
     friendships: state.friendships ?? DEFAULT_STATE.friendships,
     eventInvites: state.eventInvites ?? DEFAULT_STATE.eventInvites,
@@ -295,15 +296,23 @@ export function normalizeState(state: PersistedState) {
 }
 
 export function getCurrentUser(state: PersistedState) {
-  return (
-    state.users.find((user) => user.id === state.session.currentUserId) ??
-    state.users[0] ??
-    DEFAULT_STATE.users[0]
-  );
+  const currentUser =
+    state.users.find((user) => user.id === state.session.currentUserId) ?? state.users[0] ?? null;
+
+  if (!currentUser) {
+    throw new Error("No hay un usuario activo todavia.");
+  }
+
+  return currentUser;
 }
 
 export function getUserById(state: PersistedState, userId: string) {
-  return state.users.find((user) => user.id === userId) ?? getCurrentUser(state);
+  const user = state.users.find((candidate) => candidate.id === userId);
+  if (user) {
+    return user;
+  }
+
+  return getCurrentUser(state);
 }
 
 export function areFriends(state: PersistedState, userAId: string, userBId: string) {
