@@ -16,7 +16,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "La accion enviada no es valida." }, { status: 400 });
     }
 
-    return NextResponse.json(runPlatformAction(body));
+    return NextResponse.json(await runPlatformAction(body));
   } catch (error) {
     return NextResponse.json(
       {

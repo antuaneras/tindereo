@@ -4,9 +4,9 @@ import { resetPlatformData } from "../../../../lib/server/tindereo-service";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export function POST() {
+export async function POST() {
   try {
-    return NextResponse.json(resetPlatformData());
+    return NextResponse.json(await resetPlatformData());
   } catch (error) {
     return NextResponse.json(
       {

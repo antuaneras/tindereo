@@ -4,9 +4,9 @@ import { getPlatformEnvelope } from "../../../lib/server/tindereo-service";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export function GET() {
+export async function GET() {
   try {
-    return NextResponse.json(getPlatformEnvelope());
+    return NextResponse.json(await getPlatformEnvelope());
   } catch (error) {
     return NextResponse.json(
       {

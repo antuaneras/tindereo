@@ -4,7 +4,7 @@ import {
   readAppDataset,
   replaceAppDataset,
   resetAppDataset
-} from "./tindereo-database";
+} from "./tindereo-store";
 import { publishPlatformUpdate } from "./tindereo-realtime";
 import type {
   AppDataset,
@@ -28,48 +28,49 @@ import {
 function buildPlatformEnvelope(
   data: AppDataset,
   meta?: PlatformDataEnvelope["meta"]
-): PlatformDataEnvelope {
-  const revision = getDatasetRevision();
-
-  return {
+): Promise<PlatformDataEnvelope> {
+  return getDatasetRevision().then((revision) => ({
     data,
     meta: {
       revision,
       ...(meta ?? {})
     }
-  };
+  }));
 }
 
-function runStateMutation(
+async function runStateMutation(
   actorId: string,
   mutation: (state: PersistedState) => PersistedState,
   metaBuilder?: (state: PersistedState) => PlatformDataEnvelope["meta"]
-): PlatformDataEnvelope {
-  const currentData = readAppDataset();
+): Promise<PlatformDataEnvelope> {
+  const currentData = await readAppDataset();
   const nextState = mutation(hydratePersistedState(currentData, { currentUserId: actorId }));
   const nextData = stripSession(nextState);
-  replaceAppDataset(nextData);
-  const payload = buildPlatformEnvelope(nextData, metaBuilder?.(nextState));
+  await replaceAppDataset(nextData);
+  const payload = await buildPlatformEnvelope(nextData, metaBuilder?.(nextState));
   publishPlatformUpdate(payload);
   return payload;
 }
 
-export function getPlatformData(): AppDataset {
+export async function getPlatformData(): Promise<AppDataset> {
   return readAppDataset();
 }
 
-export function getPlatformEnvelope(): PlatformDataEnvelope {
-  return buildPlatformEnvelope(readAppDataset());
+export async function getPlatformEnvelope(): Promise<PlatformDataEnvelope> {
+  return buildPlatformEnvelope(await readAppDataset());
 }
 
-export function resetPlatformData(): PlatformDataEnvelope {
-  const data = resetAppDataset();
-  const payload = buildPlatformEnvelope(data);
+export async function resetPlatformData(): Promise<PlatformDataEnvelope> {
+  const data = await resetAppDataset();
+  const payload = await buildPlatformEnvelope(data);
   publishPlatformUpdate(payload);
   return payload;
 }
 
-export function createEventRecord(actorId: string, input: CreateEventInput): PlatformDataEnvelope {
+export async function createEventRecord(
+  actorId: string,
+  input: CreateEventInput
+): Promise<PlatformDataEnvelope> {
   return runStateMutation(
     actorId,
     (state) => createEvent(state, actorId, input),
@@ -79,18 +80,18 @@ export function createEventRecord(actorId: string, input: CreateEventInput): Pla
   );
 }
 
-export function runPlatformAction(action: PlatformAction): PlatformDataEnvelope {
+export async function runPlatformAction(action: PlatformAction): Promise<PlatformDataEnvelope> {
   switch (action.type) {
     case "register-user": {
-      const currentData = readAppDataset();
+      const currentData = await readAppDataset();
       const nextState = registerUser(hydratePersistedState(currentData), action.input);
       const createdUser = nextState.users[0];
       if (!createdUser) {
         throw new Error("No se pudo crear el perfil.");
       }
       const nextData = stripSession(nextState);
-      replaceAppDataset(nextData);
-      const payload = buildPlatformEnvelope(nextData, {
+      await replaceAppDataset(nextData);
+      const payload = await buildPlatformEnvelope(nextData, {
         currentUserId: createdUser.id
       });
       publishPlatformUpdate(payload);

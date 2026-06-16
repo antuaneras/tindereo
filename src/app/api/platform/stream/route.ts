@@ -31,8 +31,6 @@ export function GET(request: Request) {
         controller.enqueue(encoder.encode(`event: ping\ndata: ${Date.now()}\n\n`));
       }, 15000);
 
-      send(getPlatformEnvelope());
-
       const unsubscribe = subscribeToPlatformUpdates((payload) => {
         send(payload);
       });
@@ -49,6 +47,14 @@ export function GET(request: Request) {
       };
 
       request.signal.addEventListener("abort", cleanup, { once: true });
+
+      void getPlatformEnvelope()
+        .then((payload) => {
+          send(payload);
+        })
+        .catch(() => {
+          cleanup();
+        });
     }
   });
 
