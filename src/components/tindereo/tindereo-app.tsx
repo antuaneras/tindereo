@@ -4,6 +4,7 @@ import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
+  Bell,
   CalendarDays,
   Camera,
   Check,
@@ -17,6 +18,7 @@ import {
   Image,
   MapPin,
   MessageCircle,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -25,6 +27,7 @@ import {
   Shield,
   Sparkles,
   Ticket,
+  Trash2,
   User,
   UserPlus,
   Users,
@@ -95,12 +98,17 @@ import {
   getInitials,
   getJoinedEvents,
   getLatestPrivateMessage,
+  getNotificationsForUser,
   getPendingEventInvitesForUser,
   getProfilePosts,
   getProfileStories,
   getPrivateChatsForUser,
   getPrivateMessages,
   getPrivateRequestsForUser,
+  getUnreadChatThreadCount,
+  getUnreadEventMessagesCount,
+  getUnreadNotificationCount,
+  getUnreadPrivateMessagesCount,
   getUserById,
   hasEventAccess,
   normalizeState
@@ -208,6 +216,38 @@ type CameraComposerState = {
   taggedUserIds: string[];
   target: "user" | "event";
 };
+
+type MediaEditorState =
+  | {
+      id: string;
+      caption: string;
+      imageUrl: string;
+      kind: "post";
+      scope: "user";
+    }
+  | {
+      id: string;
+      caption: string;
+      imageUrl: string;
+      kind: "story";
+      scope: "user";
+    }
+  | {
+      eventId: string;
+      id: string;
+      caption: string;
+      imageUrl: string;
+      kind: "post";
+      scope: "event";
+    }
+  | {
+      eventId: string;
+      id: string;
+      caption: string;
+      imageUrl: string;
+      kind: "story";
+      scope: "event";
+    };
 
 const CAMERA_COMPOSER_INITIAL_STATE: CameraComposerState = {
   caption: "",
@@ -405,6 +445,8 @@ export function TindereoApp() {
   const [storyViewer, setStoryViewer] = useState<StoryViewerState | null>(null);
   const [storyReplyDraft, setStoryReplyDraft] = useState("");
   const [cameraComposer, setCameraComposer] = useState<CameraComposerState | null>(null);
+  const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
+  const [mediaEditor, setMediaEditor] = useState<MediaEditorState | null>(null);
   const [uiNotice, setUiNotice] = useState<string | null>(null);
   const [mobileEventScreen, setMobileEventScreen] = useState<MobileEventScreenState | null>(null);
   const [mobilePrivateChatOpen, setMobilePrivateChatOpen] = useState(false);
@@ -669,6 +711,9 @@ export function TindereoApp() {
   const feedPosts = getFeedPosts(state, currentUser.id);
   const activeStories = getActiveStories(state, currentUser.id);
   const pendingEventInvites = getPendingEventInvitesForUser(state, currentUser.id);
+  const notifications = getNotificationsForUser(state, currentUser.id);
+  const unreadNotificationCount = getUnreadNotificationCount(state, currentUser.id);
+  const unreadChatThreadCount = getUnreadChatThreadCount(state, currentUser.id);
   const joinedCount = joinedEvents.length;
   const hostedCount = hostedEvents.length;
   const pendingApprovalsCount = hostPendingRequests.length;
@@ -979,6 +1024,143 @@ export function TindereoApp() {
     }
   };
 
+  const handleMarkThreadRead = async (scope: "event" | "private", targetId: string) => {
+    await runPlatformMutation({
+      type: "mark-thread-read",
+      actorId: state.session.currentUserId,
+      scope,
+      targetId
+    });
+  };
+
+  const handleMarkAllNotificationsRead = async () => {
+    await runPlatformMutation({
+      type: "mark-all-notifications-read",
+      actorId: state.session.currentUserId
+    });
+  };
+
+  const handleOpenNotification = async (notificationId: string) => {
+    const notification = notifications.find((item) => item.id === notificationId);
+    if (!notification) {
+      return;
+    }
+
+    await runPlatformMutation({
+      type: "mark-notification-read",
+      actorId: state.session.currentUserId,
+      notificationId
+    });
+
+    setNotificationCenterOpen(false);
+
+    if (notification.chatId) {
+      openPrivateChat(notification.chatId);
+      return;
+    }
+
+    if (notification.eventId) {
+      const tab = hasEventAccess(state, notification.eventId, currentUser.id) ? "agenda" : "discover";
+      openEvent(notification.eventId, tab);
+      return;
+    }
+
+    if (notification.fromUserId) {
+      openProfileUser(notification.fromUserId);
+    }
+  };
+
+  const handleSaveMediaEdit = async () => {
+    if (!mediaEditor) {
+      return;
+    }
+
+    let action: PlatformAction;
+
+    if (mediaEditor.scope === "user" && mediaEditor.kind === "post") {
+      action = {
+        type: "update-user-post",
+        actorId: state.session.currentUserId,
+        postId: mediaEditor.id,
+        caption: mediaEditor.caption
+      };
+    } else if (mediaEditor.scope === "user" && mediaEditor.kind === "story") {
+      action = {
+        type: "update-user-story",
+        actorId: state.session.currentUserId,
+        storyId: mediaEditor.id,
+        caption: mediaEditor.caption
+      };
+    } else if (mediaEditor.scope === "event" && mediaEditor.kind === "post") {
+      action = {
+        type: "update-event-post",
+        actorId: state.session.currentUserId,
+        eventId: mediaEditor.eventId,
+        postId: mediaEditor.id,
+        caption: mediaEditor.caption
+      };
+    } else {
+      action = {
+        type: "update-event-story",
+        actorId: state.session.currentUserId,
+        eventId: mediaEditor.eventId,
+        storyId: mediaEditor.id,
+        caption: mediaEditor.caption
+      };
+    }
+
+    const payload = await runPlatformMutation(action);
+    if (payload) {
+      setMediaEditor(null);
+      setUiNotice(mediaEditor.kind === "story" ? "Historia actualizada." : "Publicacion actualizada.");
+    }
+  };
+
+  const handleDeleteMedia = async () => {
+    if (!mediaEditor) {
+      return;
+    }
+
+    let action: PlatformAction;
+
+    if (mediaEditor.scope === "user" && mediaEditor.kind === "post") {
+      action = {
+        type: "delete-user-post",
+        actorId: state.session.currentUserId,
+        postId: mediaEditor.id
+      };
+    } else if (mediaEditor.scope === "user" && mediaEditor.kind === "story") {
+      action = {
+        type: "delete-user-story",
+        actorId: state.session.currentUserId,
+        storyId: mediaEditor.id
+      };
+    } else if (mediaEditor.scope === "event" && mediaEditor.kind === "post") {
+      action = {
+        type: "delete-event-post",
+        actorId: state.session.currentUserId,
+        eventId: mediaEditor.eventId,
+        postId: mediaEditor.id
+      };
+    } else {
+      action = {
+        type: "delete-event-story",
+        actorId: state.session.currentUserId,
+        eventId: mediaEditor.eventId,
+        storyId: mediaEditor.id
+      };
+    }
+
+    const payload = await runPlatformMutation(action);
+    if (payload) {
+      if (storyViewer?.activeStoryId === mediaEditor.id) {
+        setStoryViewer(null);
+      }
+      setMediaEditor(null);
+      setUiNotice(mediaEditor.kind === "story" ? "Historia eliminada." : "Publicacion eliminada.");
+    }
+  };
+
   const handleSwitchUser = (userId: string) => {
     setState((current) =>
       current
@@ -1001,6 +1183,8 @@ export function TindereoApp() {
     setStoryViewer(null);
     setStoryReplyDraft("");
     setPrivateReplyTarget(null);
+    setNotificationCenterOpen(false);
+    setMediaEditor(null);
   };
 
   const handleLogout = () => {
@@ -1015,6 +1199,8 @@ export function TindereoApp() {
     setStoryViewer(null);
     setProfileDrilldown(null);
     setProfileFocusUserId(null);
+    setNotificationCenterOpen(false);
+    setMediaEditor(null);
   };
 
   const handleCreateEvent = async (input: CreateEventInput) => {
@@ -1060,6 +1246,8 @@ export function TindereoApp() {
       setStoryViewer(null);
       setStoryReplyDraft("");
       setCameraComposer(null);
+      setNotificationCenterOpen(false);
+      setMediaEditor(null);
       setMobileEventScreen(null);
       setMobilePrivateChatOpen(false);
       setProfileDrilldown(null);
@@ -1312,9 +1500,12 @@ export function TindereoApp() {
     storyViewer.storyIds.length > 0
       ? state.stories.find((story) => story.id === storyViewer.activeStoryId) ?? null
       : null;
+
   const shouldHideMobileNavigation = Boolean(
     storyViewer ||
       cameraComposer ||
+      notificationCenterOpen ||
+      mediaEditor ||
       mobileEventScreen ||
       mobilePrivateChatOpen ||
       profileDrilldown ||
@@ -1323,6 +1514,16 @@ export function TindereoApp() {
 
   return (
     <div className="min-h-screen bg-[#f6efe7] text-[#1d160f]">
+      <ThreadReadEffects
+        activeTab={state.session.activeTab}
+        currentUserId={currentUser.id}
+        onMarkThreadRead={handleMarkThreadRead}
+        selectedEvent={selectedEvent}
+        selectedEventView={state.session.selectedEventView}
+        selectedPrivateChat={selectedPrivateChat}
+        state={state}
+      />
+
       <div className="md:hidden">
         <MobileAppShell
           activeStory={activeStory}
@@ -1354,6 +1555,9 @@ export function TindereoApp() {
           onChangePrivateDraft={setPrivateDraft}
           onCreateEvent={(input) => void handleCreateEvent(input)}
           onGoToCreate={() => navigateToTab("host")}
+          onMarkAllNotificationsRead={() => void handleMarkAllNotificationsRead()}
+          onOpenNotification={(notificationId) => void handleOpenNotification(notificationId)}
+          onOpenNotifications={() => setNotificationCenterOpen(true)}
           onOpenCamera={openCameraComposer}
           onOpenEvent={(eventId, tab) => openEvent(eventId, tab)}
           onOpenPrivateChat={openPrivateChat}
@@ -1382,6 +1586,8 @@ export function TindereoApp() {
           onUploadCameraFile={handleCameraFileChange}
           pendingApprovalsCount={pendingApprovalsCount}
           pendingEventInvites={pendingEventInvites}
+          notifications={notifications}
+          notificationCenterOpen={notificationCenterOpen}
           privateChats={privateChats}
           privateDraft={privateDraft}
           privateReplyTarget={privateReplyTarget}
@@ -1394,7 +1600,16 @@ export function TindereoApp() {
           state={state}
           storyReplyDraft={storyReplyDraft}
           storyViewer={storyViewer}
+          unreadChatThreadCount={unreadChatThreadCount}
+          unreadNotificationCount={unreadNotificationCount}
           uiNotice={uiNotice}
+          mediaEditor={mediaEditor}
+          onCloseMediaEditor={() => setMediaEditor(null)}
+          onCloseNotifications={() => setNotificationCenterOpen(false)}
+          onDeleteMedia={() => void handleDeleteMedia()}
+          onOpenMediaEditor={setMediaEditor}
+          onSaveMediaEdit={() => void handleSaveMediaEdit()}
+          setMediaEditor={setMediaEditor}
         />
       </div>
 
@@ -1577,6 +1792,19 @@ export function TindereoApp() {
           </div>
         ) : null}
 
+        {state.session.activeTab === "search" ? (
+          <SearchHubSection
+            currentUser={currentUser}
+            onOpenEvent={(eventId) =>
+              openEvent(eventId, hasEventAccess(state, eventId, currentUser.id) ? "agenda" : "discover")
+            }
+            onOpenProfileUser={openProfileUser}
+            searchTerm={searchTerm}
+            setSearchTerm={setSearchTerm}
+            state={state}
+          />
+        ) : null}
+
         {state.session.activeTab === "agenda" ? (
           <div className="space-y-5">
             <section className="rounded-[30px] border border-[#eadfd3] bg-white/88 p-4 shadow-[0_24px_60px_rgba(52,34,22,0.08)] md:p-5">
@@ -1736,9 +1964,78 @@ export function TindereoApp() {
         hidden={shouldHideMobileNavigation}
         onChange={navigateToTab}
         onOpenCamera={() => openCameraComposer()}
+        unreadChatThreadCount={unreadChatThreadCount}
       />
     </div>
   );
+}
+
+function ThreadReadEffects({
+  activeTab,
+  currentUserId,
+  onMarkThreadRead,
+  selectedEvent,
+  selectedEventView,
+  selectedPrivateChat,
+  state
+}: {
+  activeTab: AppTab;
+  currentUserId: string;
+  onMarkThreadRead: (scope: "event" | "private", targetId: string) => Promise<void>;
+  selectedEvent: EventItem | null;
+  selectedEventView: EventDetailTab;
+  selectedPrivateChat: PrivateChat | null;
+  state: PersistedState;
+}) {
+  const lastReadSignatureRef = useRef<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!selectedPrivateChat || activeTab !== "inbox") {
+      return;
+    }
+
+    const lastMessage = getPrivateMessages(state, selectedPrivateChat.id).slice(-1)[0];
+    if (!lastMessage) {
+      return;
+    }
+
+    const signature = `private:${selectedPrivateChat.id}:${lastMessage.createdAt}:${currentUserId}`;
+    if (lastReadSignatureRef.current.private === signature) {
+      return;
+    }
+
+    lastReadSignatureRef.current.private = signature;
+    void onMarkThreadRead("private", selectedPrivateChat.id);
+  }, [activeTab, currentUserId, onMarkThreadRead, selectedPrivateChat, state]);
+
+  useEffect(() => {
+    if (!selectedEvent || selectedEventView !== "chat") {
+      return;
+    }
+
+    if (!hasEventAccess(state, selectedEvent.id, currentUserId)) {
+      return;
+    }
+
+    if (activeTab !== "agenda" && activeTab !== "discover" && activeTab !== "search") {
+      return;
+    }
+
+    const lastMessage = getEventMessages(state, selectedEvent.id).slice(-1)[0];
+    if (!lastMessage) {
+      return;
+    }
+
+    const signature = `event:${selectedEvent.id}:${lastMessage.createdAt}:${currentUserId}`;
+    if (lastReadSignatureRef.current.event === signature) {
+      return;
+    }
+
+    lastReadSignatureRef.current.event = signature;
+    void onMarkThreadRead("event", selectedEvent.id);
+  }, [activeTab, currentUserId, onMarkThreadRead, selectedEvent, selectedEventView, state]);
+
+  return null;
 }
 
 function MobileAppShell({
@@ -1769,8 +2066,12 @@ function MobileAppShell({
   onChangePrivateDraft,
   onCreateEvent,
   onGoToCreate,
+  onMarkAllNotificationsRead,
+  onOpenNotification,
+  onOpenNotifications,
   onOpenCamera,
   onOpenEvent,
+  onOpenMediaEditor,
   onOpenPrivateChat,
   onOpenProfileDrilldown,
   onOpenProfileUser,
@@ -1793,8 +2094,14 @@ function MobileAppShell({
   onTogglePostLike,
   onUpdateCameraComposer,
   onUploadCameraFile,
+  onCloseMediaEditor,
+  onCloseNotifications,
+  onDeleteMedia,
+  onSaveMediaEdit,
   pendingApprovalsCount,
   pendingEventInvites,
+  notifications,
+  notificationCenterOpen,
   privateChats,
   privateDraft,
   privateReplyTarget,
@@ -1807,7 +2114,11 @@ function MobileAppShell({
   state,
   storyReplyDraft,
   storyViewer,
-  uiNotice
+  unreadChatThreadCount,
+  unreadNotificationCount,
+  uiNotice,
+  mediaEditor,
+  setMediaEditor
 }: {
   activeStory: StoryItem | null;
   cameraComposer: CameraComposerState | null;
@@ -1836,8 +2147,12 @@ function MobileAppShell({
   onChangePrivateDraft: (value: string) => void;
   onCreateEvent: (input: CreateEventInput) => void;
   onGoToCreate: () => void;
+  onMarkAllNotificationsRead: () => void;
+  onOpenNotification: (notificationId: string) => void;
+  onOpenNotifications: () => void;
   onOpenCamera: (draft?: Partial<CameraComposerState>) => void;
   onOpenEvent: (eventId: string, tab: AppTab) => void;
+  onOpenMediaEditor: Dispatch<SetStateAction<MediaEditorState | null>>;
   onOpenPrivateChat: (chatId: string) => void;
   onOpenProfileDrilldown: (detail: ProfileDrilldown) => void;
   onOpenProfileUser: (userId: string) => void;
@@ -1860,8 +2175,14 @@ function MobileAppShell({
   onTogglePostLike: (postId: string) => void;
   onUpdateCameraComposer: Dispatch<SetStateAction<CameraComposerState | null>>;
   onUploadCameraFile: (file: File | null) => void;
+  onCloseMediaEditor: () => void;
+  onCloseNotifications: () => void;
+  onDeleteMedia: () => void;
+  onSaveMediaEdit: () => void;
   pendingApprovalsCount: number;
   pendingEventInvites: EventInvite[];
+  notifications: ReturnType<typeof getNotificationsForUser>;
+  notificationCenterOpen: boolean;
   privateChats: ReturnType<typeof getPrivateChatsForUser>;
   privateDraft: string;
   privateReplyTarget: ReplyTarget | null;
@@ -1874,7 +2195,11 @@ function MobileAppShell({
   state: PersistedState;
   storyReplyDraft: string;
   storyViewer: StoryViewerState | null;
+  unreadChatThreadCount: number;
+  unreadNotificationCount: number;
   uiNotice: string | null;
+  mediaEditor: MediaEditorState | null;
+  setMediaEditor: Dispatch<SetStateAction<MediaEditorState | null>>;
 }) {
   const activeStories = getActiveStories(state, currentUser.id);
   const feedPosts = getFeedPosts(state, currentUser.id);
@@ -1887,6 +2212,18 @@ function MobileAppShell({
   const incomingRequests = privateRequests.filter(
     (request) => request.toUserId === currentUser.id && request.status === "pending"
   );
+  const mobileTabLabel =
+    state.session.activeTab === "discover"
+      ? "Inicio"
+      : state.session.activeTab === "search"
+        ? "Buscar"
+        : state.session.activeTab === "agenda"
+          ? "Eventos"
+          : state.session.activeTab === "inbox"
+            ? "Chats"
+            : state.session.activeTab === "profile"
+              ? "Perfil"
+              : "Crear";
 
   if (cameraComposer) {
     return (
@@ -1902,17 +2239,44 @@ function MobileAppShell({
     );
   }
 
+  if (notificationCenterOpen) {
+    return (
+      <NotificationCenterSheet
+        notifications={notifications}
+        onClose={onCloseNotifications}
+        onMarkAllRead={onMarkAllNotificationsRead}
+        onOpenNotification={onOpenNotification}
+      />
+    );
+  }
+
   if (storyViewer && activeStory) {
     return (
       <StoryViewerOverlay
         activeStory={activeStory}
         onClose={closeStoryViewer}
         onMove={onMoveStory}
+        onOpenMediaEditor={onOpenMediaEditor}
         onSendReply={onSendStoryReply}
         shouldAutoAdvance={storyViewer.storyIds.length > 1}
         replyDraft={storyReplyDraft}
         setReplyDraft={setStoryReplyDraft}
         state={state}
+        currentUserId={currentUser.id}
+      />
+    );
+  }
+
+  if (mediaEditor) {
+    return (
+      <MediaEditorSheet
+        editor={mediaEditor}
+        onChange={(caption) =>
+          setMediaEditor((current) => (current ? { ...current, caption } : current))
+        }
+        onClose={onCloseMediaEditor}
+        onDelete={onDeleteMedia}
+        onSave={onSaveMediaEdit}
       />
     );
   }
@@ -1967,6 +2331,7 @@ function MobileAppShell({
         onChangeView={onChangeEventView}
         onOpenCamera={(draft) => onOpenCamera({ eventId: selectedEvent.id, target: "event", ...draft })}
         onOpenPrivateChat={onOpenPrivateChat}
+        onOpenMediaEditor={onOpenMediaEditor}
         onOpenProfileUser={onOpenProfileUser}
         onOpenStory={onOpenStory}
         onQuickPrivateRequest={(targetUserId) => onSendPrivateRequest(selectedEvent.id, targetUserId)}
@@ -2001,7 +2366,13 @@ function MobileAppShell({
   }
 
   return (
-    <div className="min-h-screen px-3 pb-28 pt-3">
+    <div className="min-h-screen px-3 pb-28 pt-[calc(env(safe-area-inset-top)+1rem)]">
+      <MobileTopBar
+        notificationCount={unreadNotificationCount}
+        onOpenNotifications={onOpenNotifications}
+        title={mobileTabLabel}
+      />
+
       {uiNotice ? (
         <div className="mb-3 rounded-[22px] border border-[#eadfd3] bg-white/90 px-4 py-3 text-sm text-[#5f4b3f] shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
           {uiNotice}
@@ -2021,6 +2392,17 @@ function MobileAppShell({
           posts={feedPosts}
           state={state}
           stories={activeStories}
+        />
+      ) : null}
+
+      {state.session.activeTab === "search" ? (
+        <MobileSearchScreen
+          currentUser={currentUser}
+          onOpenEvent={(eventId) => onOpenEvent(eventId, hasEventAccess(state, eventId, currentUser.id) ? "agenda" : "discover")}
+          onOpenProfileUser={onOpenProfileUser}
+          searchTerm={searchTerm}
+          setSearchTerm={setSearchTerm}
+          state={state}
         />
       ) : null}
 
@@ -2048,6 +2430,7 @@ function MobileAppShell({
           onRespondPrivateRequest={onRespondPrivateRequest}
           privateChats={privateChats}
           state={state}
+          unreadChatThreadCount={unreadChatThreadCount}
         />
       ) : null}
 
@@ -2060,6 +2443,7 @@ function MobileAppShell({
           joinedCount={joinedCount}
           onOpenCreateEvent={onGoToCreate}
           onOpenDetail={onOpenProfileDrilldown}
+          onOpenMediaEditor={onOpenMediaEditor}
           onOpenProfileUser={onOpenProfileUser}
           onOpenStory={onOpenStory}
           onResetDemo={onResetDemo}
@@ -2090,6 +2474,179 @@ function MobileAppShell({
           Sincronizando cambios...
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function MobileTopBar({
+  notificationCount,
+  onOpenNotifications,
+  title
+}: {
+  notificationCount: number;
+  onOpenNotifications: () => void;
+  title: string;
+}) {
+  return (
+    <div className="mb-4 flex items-center justify-between gap-3 px-1">
+      <div className="rounded-full border border-[#eadfd3] bg-white/90 px-4 py-2 text-sm font-semibold text-[#6d5749]">
+        {title}
+      </div>
+      <button
+        className="relative inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-[#eadfd3] bg-white/92 text-[#1d160f] shadow-[0_14px_30px_rgba(52,34,22,0.08)]"
+        onClick={onOpenNotifications}
+        type="button"
+      >
+        <Bell className="h-5 w-5" />
+        {notificationCount > 0 ? (
+          <span className="absolute right-1.5 top-1.5 inline-flex min-w-5 items-center justify-center rounded-full bg-[#ff6b57] px-1.5 py-1 text-[10px] font-bold text-white">
+            {notificationCount > 9 ? "9+" : notificationCount}
+          </span>
+        ) : null}
+      </button>
+    </div>
+  );
+}
+
+function NotificationCenterSheet({
+  notifications,
+  onClose,
+  onMarkAllRead,
+  onOpenNotification
+}: {
+  notifications: ReturnType<typeof getNotificationsForUser>;
+  onClose: () => void;
+  onMarkAllRead: () => void;
+  onOpenNotification: (notificationId: string) => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[70] bg-[#f6efe7] px-3 pb-6 pt-[calc(env(safe-area-inset-top)+1rem)]">
+      <div className="mb-4 flex items-center gap-3">
+        <button
+          className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-[#1d160f] shadow-[0_12px_24px_rgba(52,34,22,0.08)]"
+          onClick={onClose}
+          type="button"
+        >
+          <ChevronLeft className="h-5 w-5" />
+        </button>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">
+            Notificaciones
+          </p>
+          <h2 className="text-2xl font-black tracking-tight text-[#1d160f]">Actividad reciente</h2>
+        </div>
+        {notifications.some((notification) => !notification.readAt) ? (
+          <button
+            className="rounded-full border border-[#eadfd3] bg-white px-4 py-2 text-sm font-semibold text-[#6d5749]"
+            onClick={onMarkAllRead}
+            type="button"
+          >
+            Marcar todo
+          </button>
+        ) : null}
+      </div>
+
+      <div className="space-y-3 overflow-y-auto pb-8">
+        {notifications.length === 0 ? (
+          <EmptyState
+            copy="Cuando lleguen solicitudes, mensajes o nuevas historias, las veras aqui."
+            title="Todavia no hay actividad"
+          />
+        ) : (
+          notifications.map((notification) => (
+            <button
+              key={notification.id}
+              className={`w-full rounded-[24px] border p-4 text-left shadow-[0_20px_40px_rgba(52,34,22,0.08)] ${
+                notification.readAt
+                  ? "border-[#eadfd3] bg-white/85"
+                  : "border-[#ffcfbb] bg-[#fff6f1]"
+              }`}
+              onClick={() => onOpenNotification(notification.id)}
+              type="button"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="font-semibold text-[#1d160f]">{notification.title}</p>
+                  <p className="mt-1 text-sm leading-6 text-[#5f4b3f]">{notification.body}</p>
+                </div>
+                {!notification.readAt ? (
+                  <span className="mt-1 inline-flex h-2.5 w-2.5 rounded-full bg-[#ff6b57]" />
+                ) : null}
+              </div>
+              <p className="mt-3 text-xs font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
+                {formatRelativeTime(notification.createdAt)}
+              </p>
+            </button>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MediaEditorSheet({
+  editor,
+  onChange,
+  onClose,
+  onDelete,
+  onSave
+}: {
+  editor: MediaEditorState;
+  onChange: (caption: string) => void;
+  onClose: () => void;
+  onDelete: () => void;
+  onSave: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[72] bg-[#f6efe7] px-3 pb-6 pt-[calc(env(safe-area-inset-top)+1rem)]">
+      <div className="mb-4 flex items-center gap-3">
+        <button
+          className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-[#1d160f] shadow-[0_12px_24px_rgba(52,34,22,0.08)]"
+          onClick={onClose}
+          type="button"
+        >
+          <ChevronLeft className="h-5 w-5" />
+        </button>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">
+            Editar
+          </p>
+          <h2 className="text-2xl font-black tracking-tight text-[#1d160f]">
+            {editor.kind === "story" ? "Tu historia" : "Tu publicacion"}
+          </h2>
+        </div>
+      </div>
+
+      <div className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+        <img alt="Contenido" className="h-64 w-full rounded-[22px] object-cover" src={editor.imageUrl} />
+        <label className="mt-4 grid gap-2">
+          <span className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+            Texto
+          </span>
+          <textarea
+            className="min-h-[120px] resize-none rounded-[18px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm text-[#1d160f] outline-none"
+            onChange={(event) => onChange(event.target.value)}
+            placeholder="Escribe el pie de foto o texto de la historia"
+            value={editor.caption}
+          />
+        </label>
+        <div className="mt-4 flex gap-2">
+          <button
+            className="flex-1 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+            onClick={onSave}
+            type="button"
+          >
+            Guardar cambios
+          </button>
+          <button
+            className="rounded-full border border-[#ffcfbb] bg-[#fff4ed] px-4 py-3 text-sm font-semibold text-[#b14a20]"
+            onClick={onDelete}
+            type="button"
+          >
+            Eliminar
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2199,6 +2756,258 @@ function MobileHomeScreen({
   );
 }
 
+function MobileSearchScreen({
+  currentUser,
+  onOpenEvent,
+  onOpenProfileUser,
+  searchTerm,
+  setSearchTerm,
+  state
+}: {
+  currentUser: PlatformUser;
+  onOpenEvent: (eventId: string) => void;
+  onOpenProfileUser: (userId: string) => void;
+  searchTerm: string;
+  setSearchTerm: Dispatch<SetStateAction<string>>;
+  state: PersistedState;
+}) {
+  const normalizedSearch = searchTerm.trim().toLowerCase();
+  const people = state.users
+    .filter((user) => {
+      if (user.id === currentUser.id) {
+        return false;
+      }
+
+      const haystack = `${user.name} ${user.handle} ${user.city} ${user.bio}`.toLowerCase();
+      return normalizedSearch === "" || haystack.includes(normalizedSearch);
+    })
+    .slice()
+    .sort((left, right) => left.name.localeCompare(right.name));
+  const events = getDiscoverFeedEvents(state, currentUser.id).filter((event) => {
+    const haystack = `${event.title} ${event.city} ${event.venue} ${event.tags.join(" ")}`.toLowerCase();
+    return normalizedSearch === "" || haystack.includes(normalizedSearch);
+  });
+
+  return (
+    <div className="space-y-4">
+      <section className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+        <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">Buscar</p>
+        <h1 className="mt-2 text-2xl font-black tracking-tight text-[#1d160f]">
+          Personas y eventos
+        </h1>
+        <label className="mt-4 flex items-center gap-2 rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3">
+          <Search className="h-4 w-4 text-[#8f6f59]" />
+          <input
+            className="w-full border-none bg-transparent p-0 text-sm text-[#1d160f] outline-none"
+            onChange={(event) => setSearchTerm(event.target.value)}
+            placeholder="Busca por nombre, @handle, ciudad o plan..."
+            value={searchTerm}
+          />
+        </label>
+      </section>
+
+      <section className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">Personas</p>
+          <span className="text-xs text-[#8f6f59]">{people.length} visibles</span>
+        </div>
+        <div className="mt-3 space-y-3">
+          {people.length === 0 ? (
+            <EmptyState
+              copy="Prueba otra busqueda o empieza a crear perfiles reales desde el login."
+              title="No hay personas con ese filtro"
+            />
+          ) : (
+            people.slice(0, 10).map((user) => (
+              <button
+                key={user.id}
+                className="flex w-full items-center gap-3 rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] p-3 text-left"
+                onClick={() => onOpenProfileUser(user.id)}
+                type="button"
+              >
+                <AvatarChip user={user} />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-semibold text-[#1d160f]">{user.name}</p>
+                  <p className="truncate text-sm text-[#8f6f59]">{user.handle} - {user.city}</p>
+                </div>
+                <ArrowRight className="h-4 w-4 text-[#8f6f59]" />
+              </button>
+            ))
+          )}
+        </div>
+      </section>
+
+      <section className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">Eventos</p>
+          <span className="text-xs text-[#8f6f59]">{events.length} resultados</span>
+        </div>
+        <div className="mt-3 space-y-3">
+          {events.length === 0 ? (
+            <EmptyState
+              copy="Todavia no hay eventos que encajen con esta busqueda."
+              title="Sin eventos para ese filtro"
+            />
+          ) : (
+            events.slice(0, 10).map((event) => {
+              const access = getEventAccessState(state, event.id, currentUser.id);
+              return (
+                <button
+                  key={event.id}
+                  className="flex w-full items-center gap-3 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-3 text-left"
+                  onClick={() => onOpenEvent(event.id)}
+                  type="button"
+                >
+                  <div className="h-16 w-16 overflow-hidden rounded-[18px] border border-[#eadfd3]">
+                    <img alt={event.title} className="h-full w-full object-cover" src={event.coverImage} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="truncate font-semibold text-[#1d160f]">{event.title}</p>
+                      <AccessBadge access={access.kind} />
+                    </div>
+                    <p className="mt-1 truncate text-sm text-[#8f6f59]">
+                      {event.city} - {formatEventDateRange(event)}
+                    </p>
+                    <p className="mt-2 line-clamp-2 text-sm text-[#5f4b3f]">{event.summary}</p>
+                  </div>
+                </button>
+              );
+            })
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function SearchHubSection({
+  currentUser,
+  onOpenEvent,
+  onOpenProfileUser,
+  searchTerm,
+  setSearchTerm,
+  state
+}: {
+  currentUser: PlatformUser;
+  onOpenEvent: (eventId: string) => void;
+  onOpenProfileUser: (userId: string) => void;
+  searchTerm: string;
+  setSearchTerm: Dispatch<SetStateAction<string>>;
+  state: PersistedState;
+}) {
+  const normalizedSearch = searchTerm.trim().toLowerCase();
+  const people = state.users
+    .filter((user) => {
+      if (user.id === currentUser.id) {
+        return false;
+      }
+
+      const haystack = `${user.name} ${user.handle} ${user.city} ${user.bio}`.toLowerCase();
+      return normalizedSearch === "" || haystack.includes(normalizedSearch);
+    })
+    .slice()
+    .sort((left, right) => left.name.localeCompare(right.name));
+  const events = getDiscoverFeedEvents(state, currentUser.id).filter((event) => {
+    const haystack = `${event.title} ${event.city} ${event.venue} ${event.tags.join(" ")}`.toLowerCase();
+    return normalizedSearch === "" || haystack.includes(normalizedSearch);
+  });
+
+  return (
+    <div className="space-y-5">
+      <section className="rounded-[30px] border border-[#eadfd3] bg-white/88 p-5 shadow-[0_24px_60px_rgba(52,34,22,0.08)]">
+        <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">Buscar</p>
+        <h1 className="mt-2 text-3xl font-black tracking-tight text-[#1d160f]">
+          Encuentra gente y eventos
+        </h1>
+        <label className="mt-4 flex items-center gap-2 rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3">
+          <Search className="h-4 w-4 text-[#8f6f59]" />
+          <input
+            className="w-full border-none bg-transparent p-0 text-sm text-[#1d160f] outline-none"
+            onChange={(event) => setSearchTerm(event.target.value)}
+            placeholder="Nombre, @handle, ciudad o plan..."
+            value={searchTerm}
+          />
+        </label>
+      </section>
+
+      <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+        <SectionCard>
+          <div className="flex items-center justify-between gap-3">
+            <SectionLabel>Personas</SectionLabel>
+            <span className="text-sm text-[#8f6f59]">{people.length} resultados</span>
+          </div>
+          <div className="mt-4 space-y-3">
+            {people.length === 0 ? (
+              <EmptyState
+                copy="No hay personas con ese filtro ahora mismo."
+                title="Sin resultados"
+              />
+            ) : (
+              people.slice(0, 12).map((user) => (
+                <button
+                  key={user.id}
+                  className="flex w-full items-center gap-3 rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] p-4 text-left"
+                  onClick={() => onOpenProfileUser(user.id)}
+                  type="button"
+                >
+                  <AvatarChip user={user} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-semibold text-[#1d160f]">{user.name}</p>
+                    <p className="truncate text-sm text-[#6d5749]">{user.handle} - {user.city}</p>
+                  </div>
+                  <ArrowRight className="h-4 w-4 text-[#8f6f59]" />
+                </button>
+              ))
+            )}
+          </div>
+        </SectionCard>
+
+        <SectionCard>
+          <div className="flex items-center justify-between gap-3">
+            <SectionLabel>Eventos</SectionLabel>
+            <span className="text-sm text-[#8f6f59]">{events.length} resultados</span>
+          </div>
+          <div className="mt-4 space-y-3">
+            {events.length === 0 ? (
+              <EmptyState
+                copy="Prueba otra busqueda o crea tu primer evento."
+                title="Sin eventos para ese filtro"
+              />
+            ) : (
+              events.slice(0, 12).map((event) => {
+                const access = getEventAccessState(state, event.id, currentUser.id);
+                return (
+                  <button
+                    key={event.id}
+                    className="flex w-full items-center gap-3 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4 text-left"
+                    onClick={() => onOpenEvent(event.id)}
+                    type="button"
+                  >
+                    <div className="h-20 w-20 overflow-hidden rounded-[22px] border border-[#eadfd3]">
+                      <img alt={event.title} className="h-full w-full object-cover" src={event.coverImage} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="truncate font-semibold text-[#1d160f]">{event.title}</p>
+                        <AccessBadge access={access.kind} />
+                      </div>
+                      <p className="mt-1 text-sm text-[#6d5749]">
+                        {event.city} - {formatEventDateRange(event)}
+                      </p>
+                      <p className="mt-2 line-clamp-2 text-sm leading-6 text-[#5f4b3f]">{event.summary}</p>
+                    </div>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </SectionCard>
+      </div>
+    </div>
+  );
+}
+
 function MobileEventsScreen({
   currentUser,
   discoverEvents,
@@ -2289,35 +3098,62 @@ function MobileEventsScreen({
           collection.map((event) => {
             const lastMessage = getEventMessages(state, event.id).slice(-1)[0] ?? null;
             const isJoined = hasEventAccess(state, event.id, currentUser.id);
+            const unreadCount = isJoined ? getUnreadEventMessagesCount(state, currentUser.id, event.id) : 0;
+            const access = getEventAccessState(state, event.id, currentUser.id);
             return (
-              <button
+              <div
                 key={event.id}
-                className="flex w-full items-center gap-3 rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 text-left shadow-[0_20px_40px_rgba(52,34,22,0.08)]"
-                onClick={() => onOpenEvent(event.id)}
-                type="button"
+                className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]"
               >
-                <div className="h-16 w-16 overflow-hidden rounded-[20px] border border-[#eadfd3] bg-[#f4e3d8]">
-                  <img alt={event.title} className="h-full w-full object-cover" src={event.coverImage} />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="truncate font-semibold text-[#1d160f]">{event.title}</p>
-                    <span className="text-[11px] text-[#8f6f59]">
-                      {formatTime(lastMessage?.createdAt ?? event.startsAt)}
-                    </span>
+                <button
+                  className="flex w-full items-center gap-3 text-left"
+                  onClick={() => onOpenEvent(event.id)}
+                  type="button"
+                >
+                  <div className="h-16 w-16 overflow-hidden rounded-[20px] border border-[#eadfd3] bg-[#f4e3d8]">
+                    <img alt={event.title} className="h-full w-full object-cover" src={event.coverImage} />
                   </div>
-                  <p className="mt-1 text-xs text-[#8f6f59]">
-                    {getEventGuestCount(state, event.id)} asistentes - {event.city}
-                  </p>
-                  <p className="mt-2 truncate text-sm text-[#5f4b3f]">
-                    {isJoined
-                      ? lastMessage
-                        ? parseChatMessage(lastMessage.text).summary
-                        : event.summary
-                      : event.summary}
-                  </p>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="truncate font-semibold text-[#1d160f]">{event.title}</p>
+                      <span className="text-[11px] text-[#8f6f59]">
+                        {formatTime(lastMessage?.createdAt ?? event.startsAt)}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-[#8f6f59]">
+                      {getEventGuestCount(state, event.id)} asistentes - {event.city}
+                    </p>
+                    <p className="mt-2 truncate text-sm text-[#5f4b3f]">
+                      {isJoined
+                        ? lastMessage
+                          ? parseChatMessage(lastMessage.text).summary
+                          : event.summary
+                        : event.summary}
+                    </p>
+                  </div>
+                </button>
+                <div className="mt-4 flex items-center justify-between gap-3">
+                  {isJoined ? (
+                    <div className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-[#fffaf6] px-3 py-2 text-xs font-semibold text-[#6d5749]">
+                      <MessageCircle className="h-3.5 w-3.5" />
+                      {unreadCount > 0 ? `${unreadCount} nuevos` : "Al dia"}
+                    </div>
+                  ) : (
+                    <AccessBadge access={access.kind} />
+                  )}
+                  <button
+                    className={`rounded-full px-4 py-3 text-sm font-semibold ${
+                      isJoined
+                        ? "border border-[#eadfd3] bg-white text-[#6d5749]"
+                        : "bg-gradient-to-r from-[#ff6b57] to-[#f08a24] text-white shadow-[0_16px_30px_rgba(240,138,36,0.22)]"
+                    }`}
+                    onClick={() => onOpenEvent(event.id)}
+                    type="button"
+                  >
+                    {isJoined ? "Abrir chat" : access.kind === "pending" ? "Ver solicitud" : "Pedir acceso"}
+                  </button>
                 </div>
-              </button>
+              </div>
             );
           })
         )}
@@ -2333,7 +3169,8 @@ function MobileInboxScreen({
   onOpenProfileUser,
   onRespondPrivateRequest,
   privateChats,
-  state
+  state,
+  unreadChatThreadCount
 }: {
   currentUser: PlatformUser;
   incomingRequests: ReturnType<typeof getPrivateRequestsForUser>;
@@ -2342,14 +3179,22 @@ function MobileInboxScreen({
   onRespondPrivateRequest: (requestId: string, accept: boolean) => void;
   privateChats: ReturnType<typeof getPrivateChatsForUser>;
   state: PersistedState;
+  unreadChatThreadCount: number;
 }) {
   return (
     <div className="space-y-4">
       <section className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
-        <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">Chats</p>
-        <h1 className="mt-2 text-2xl font-black tracking-tight text-[#1d160f]">
-          Conversaciones privadas
-        </h1>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">Chats</p>
+            <h1 className="mt-2 text-2xl font-black tracking-tight text-[#1d160f]">
+              Conversaciones privadas
+            </h1>
+          </div>
+          <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-3 py-2 text-xs font-semibold text-[#6d5749]">
+            {unreadChatThreadCount} pendientes
+          </div>
+        </div>
       </section>
 
       {incomingRequests.length > 0 ? (
@@ -2401,6 +3246,7 @@ function MobileInboxScreen({
           privateChats.map((chat) => {
             const partner = getChatPartner(state, chat, currentUser.id);
             const lastMessage = getLatestPrivateMessage(state, chat.id);
+            const unreadCount = getUnreadPrivateMessagesCount(state, currentUser.id, chat.id);
             return (
               <button
                 key={chat.id}
@@ -2412,9 +3258,16 @@ function MobileInboxScreen({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
                     <p className="truncate font-semibold text-[#1d160f]">{partner.name}</p>
-                    <span className="text-[11px] text-[#8f6f59]">
-                      {lastMessage ? formatTime(lastMessage.createdAt) : ""}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      {unreadCount > 0 ? (
+                        <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-[#ff6b57] px-2 py-1 text-[10px] font-bold text-white">
+                          {unreadCount}
+                        </span>
+                      ) : null}
+                      <span className="text-[11px] text-[#8f6f59]">
+                        {lastMessage ? formatTime(lastMessage.createdAt) : ""}
+                      </span>
+                    </div>
                   </div>
                   <p className="mt-1 truncate text-sm text-[#5f4b3f]">
                     {lastMessage ? parseChatMessage(lastMessage.text).summary : "Chat listo para empezar"}
@@ -2437,6 +3290,7 @@ function MobileProfileScreen({
   joinedCount,
   onOpenCreateEvent,
   onOpenDetail,
+  onOpenMediaEditor,
   onOpenProfileUser,
   onOpenStory,
   onResetDemo,
@@ -2455,6 +3309,7 @@ function MobileProfileScreen({
   joinedCount: number;
   onOpenCreateEvent: () => void;
   onOpenDetail: (detail: ProfileDrilldown) => void;
+  onOpenMediaEditor: Dispatch<SetStateAction<MediaEditorState | null>>;
   onOpenProfileUser: (userId: string) => void;
   onOpenStory: (storyId: string, stories: StoryItem[]) => void;
   onResetDemo: () => void;
@@ -2519,16 +3374,35 @@ function MobileProfileScreen({
           <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">Historias</p>
           <div className="mt-3 flex gap-3 overflow-x-auto pb-1">
             {profileStories.map((story) => (
-              <button key={story.id} className="w-[86px] flex-none text-left" onClick={() => onOpenStory(story.id, profileStories)} type="button">
-                <div className="rounded-[24px] bg-[linear-gradient(135deg,#ff6b57,#f08a24)] p-[2px]">
-                  <div className="h-[110px] overflow-hidden rounded-[22px] border border-white/70">
-                    <img alt={currentUser.name} className="h-full w-full object-cover" src={story.imageUrl} />
+              <div key={story.id} className="w-[118px] flex-none text-left">
+                <button className="w-full text-left" onClick={() => onOpenStory(story.id, profileStories)} type="button">
+                  <div className="rounded-[24px] bg-[linear-gradient(135deg,#ff6b57,#f08a24)] p-[2px]">
+                    <div className="h-[110px] overflow-hidden rounded-[22px] border border-white/70">
+                      <img alt={currentUser.name} className="h-full w-full object-cover" src={story.imageUrl} />
+                    </div>
                   </div>
+                  <p className="mt-2 truncate text-xs font-semibold text-[#1d160f]">
+                    {story.caption || "Historia"}
+                  </p>
+                </button>
+                <div className="mt-2 flex gap-2">
+                  <button
+                    className="flex-1 rounded-full border border-[#eadfd3] bg-white px-3 py-2 text-[11px] font-semibold text-[#6d5749]"
+                    onClick={() =>
+                      onOpenMediaEditor({
+                        id: story.id,
+                        caption: story.caption,
+                        imageUrl: story.imageUrl,
+                        kind: "story",
+                        scope: "user"
+                      })
+                    }
+                    type="button"
+                  >
+                    Editar
+                  </button>
                 </div>
-                <p className="mt-2 truncate text-xs font-semibold text-[#1d160f]">
-                  {story.caption || "Historia"}
-                </p>
-              </button>
+              </div>
             ))}
           </div>
         </section>
@@ -2537,8 +3411,23 @@ function MobileProfileScreen({
       {profilePosts.length > 0 ? (
         <section className="grid grid-cols-3 gap-2">
           {profilePosts.map((post) => (
-            <div key={post.id} className="overflow-hidden rounded-[22px] border border-[#eadfd3] bg-white/92">
-              <img alt={currentUser.name} className="h-28 w-full object-cover" src={post.imageUrl} />
+            <div key={post.id} className="overflow-hidden rounded-[22px] border border-[#eadfd3] bg-white/92 p-2">
+              <img alt={currentUser.name} className="h-28 w-full rounded-[18px] object-cover" src={post.imageUrl} />
+              <button
+                className="mt-2 w-full rounded-full border border-[#eadfd3] bg-white px-3 py-2 text-[11px] font-semibold text-[#6d5749]"
+                onClick={() =>
+                  onOpenMediaEditor({
+                    id: post.id,
+                    caption: post.caption,
+                    imageUrl: post.imageUrl,
+                    kind: "post",
+                    scope: "user"
+                  })
+                }
+                type="button"
+              >
+                Editar
+              </button>
             </div>
           ))}
         </section>
@@ -2749,8 +3638,10 @@ function StoryMessageCard({
 
 function StoryViewerOverlay({
   activeStory,
+  currentUserId,
   onClose,
   onMove,
+  onOpenMediaEditor,
   onSendReply,
   replyDraft,
   shouldAutoAdvance,
@@ -2758,8 +3649,10 @@ function StoryViewerOverlay({
   state
 }: {
   activeStory: StoryItem;
+  currentUserId: string;
   onClose: () => void;
   onMove: (direction: "next" | "prev") => void;
+  onOpenMediaEditor: Dispatch<SetStateAction<MediaEditorState | null>>;
   onSendReply: (message: string, reaction?: string) => void;
   replyDraft: string;
   shouldAutoAdvance: boolean;
@@ -2770,6 +3663,10 @@ function StoryViewerOverlay({
     activeStory.authorType === "user"
       ? getUserById(state, activeStory.authorId).name
       : getEventById(state, activeStory.authorId)?.title ?? "Story";
+  const editable =
+    activeStory.authorType === "user"
+      ? activeStory.authorId === currentUserId
+      : getEventById(state, activeStory.authorId)?.hostId === currentUserId;
   const [progress, setProgress] = useState(0);
 
   useEffect(() => {
@@ -2824,6 +3721,36 @@ function StoryViewerOverlay({
           </div>
         </div>
         <div className="space-y-3 border-t border-white/10 bg-[#120d0a] px-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] pt-4">
+          {editable ? (
+            <div className="flex flex-wrap gap-2">
+              <button
+                className="rounded-full bg-white/10 px-3 py-2 text-sm font-semibold"
+                onClick={() =>
+                  onOpenMediaEditor(
+                    activeStory.authorType === "user"
+                      ? {
+                          id: activeStory.id,
+                          caption: activeStory.caption,
+                          imageUrl: activeStory.imageUrl,
+                          kind: "story",
+                          scope: "user"
+                        }
+                      : {
+                          id: activeStory.id,
+                          caption: activeStory.caption,
+                          imageUrl: activeStory.imageUrl,
+                          kind: "story",
+                          scope: "event",
+                          eventId: activeStory.authorId
+                        }
+                  )
+                }
+                type="button"
+              >
+                Editar historia
+              </button>
+            </div>
+          ) : null}
           <div className="flex flex-wrap gap-2">
             {[
               { id: "love", label: "Like" },
@@ -2967,6 +3894,7 @@ function MobileEventScreen({
   onChangeView,
   onOpenCamera,
   onOpenPrivateChat,
+  onOpenMediaEditor,
   onOpenProfileUser,
   onOpenStory,
   onQuickPrivateRequest,
@@ -2988,6 +3916,7 @@ function MobileEventScreen({
   onChangeView: (view: EventDetailTab) => void;
   onOpenCamera: (draft?: Partial<CameraComposerState>) => void;
   onOpenPrivateChat: (chatId: string) => void;
+  onOpenMediaEditor: Dispatch<SetStateAction<MediaEditorState | null>>;
   onOpenProfileUser: (userId: string) => void;
   onOpenStory: (storyId: string, stories: StoryItem[]) => void;
   onQuickPrivateRequest: (targetUserId: string) => void;
@@ -3247,9 +4176,29 @@ function MobileEventScreen({
               ) : null}
 
               {eventPosts.map((post) => (
-                <div key={post.id} className="overflow-hidden rounded-[28px] border border-[#eadfd3] bg-white/92 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+                <div key={post.id} className="overflow-hidden rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
                   <img alt={event.title} className="h-[280px] w-full object-cover" src={post.imageUrl} />
-                  <p className="p-4 text-sm text-[#5f4b3f]">{post.caption}</p>
+                  <p className="pt-4 text-sm text-[#5f4b3f]">{post.caption}</p>
+                  {event.hostId === currentUser.id ? (
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        className="rounded-full border border-[#eadfd3] bg-white px-4 py-2 text-sm font-semibold text-[#6d5749]"
+                        onClick={() =>
+                          onOpenMediaEditor({
+                            id: post.id,
+                            caption: post.caption,
+                            imageUrl: post.imageUrl,
+                            kind: "post",
+                            scope: "event",
+                            eventId: event.id
+                          })
+                        }
+                        type="button"
+                      >
+                        Editar publicacion
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -3704,85 +4653,62 @@ function AuthScreen({
   onRegister: () => void;
   users: PlatformUser[];
 }) {
+  const [showRegister, setShowRegister] = useState(users.length === 0);
+
   return (
     <div className="min-h-screen bg-[#f6efe7] px-4 py-5 text-[#1d160f] md:px-6 md:py-8">
-      <main className="mx-auto max-w-[1120px] space-y-5">
+      <main className="mx-auto max-w-[560px] space-y-5">
         <BrandMark />
 
-        <div className="grid gap-5 xl:grid-cols-[1.02fr_0.98fr]">
-          <section className="overflow-hidden rounded-[34px] border border-[#eadfd3] bg-white/88 shadow-[0_24px_60px_rgba(52,34,22,0.08)]">
-            <div className="bg-[radial-gradient(circle_at_top_left,#ffd8c7,transparent_38%),linear-gradient(135deg,#1d160f,#463126_52%,#ff8d66_140%)] px-5 py-6 text-white md:px-7 md:py-8">
-              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-white/70">
-                Acceso
-              </p>
-              <h1 className="mt-3 max-w-xl text-3xl font-black tracking-tight md:text-5xl">
-                Descubre eventos y entra a su grupo antes de llegar.
-              </h1>
-              <p className="mt-4 max-w-2xl text-sm leading-6 text-white/76 md:text-base">
-                Crea tu cuenta, publica eventos reales y entra en sus chats para empezar a socializar
-                antes de que el plan empiece.
-              </p>
-              <div className="mt-6 grid gap-3 sm:grid-cols-3">
-                <InfoChip icon={<Ticket className="h-4 w-4" />} value="Eventos publicos o privados" />
-                <InfoChip icon={<MessageCircle className="h-4 w-4" />} value="Chats de grupo por evento" />
-                <InfoChip icon={<Users className="h-4 w-4" />} value="Privados solo si aceptan" />
+        <SectionCard>
+          <SectionLabel>Login</SectionLabel>
+          <div className="mt-4 grid gap-3">
+            {users.length === 0 ? (
+              <div className="rounded-[24px] border border-dashed border-[#eadfd3] bg-[#fffaf6] px-4 py-5 text-sm text-[#6d5749]">
+                Aun no hay cuentas. Crea la primera desde el boton de registro.
               </div>
-            </div>
-
-            <div className="grid gap-3 px-5 py-5 md:grid-cols-3 md:px-7">
-              <MetricTile label="Perfiles" value={String(users.length)} />
-              <MetricTile label="Acceso" value="Sin password" />
-              <MetricTile label="Registro" value="Local" />
-            </div>
-          </section>
-
-          <div className="space-y-5">
-            <SectionCard>
-              <SectionLabel>Entrar con una cuenta existente</SectionLabel>
-              <p className="mt-3 text-sm text-[#5f4b3f]">
-                Si ya creaste una cuenta en este entorno, puedes entrar desde aqui al instante.
-              </p>
-              <div className="mt-4 grid gap-3">
-                {users.length === 0 ? (
-                  <div className="rounded-[24px] border border-dashed border-[#eadfd3] bg-[#fffaf6] px-4 py-5 text-sm text-[#6d5749]">
-                    Aun no hay cuentas creadas. Registra la primera desde el formulario de abajo.
+            ) : (
+              users.map((user) => (
+                <button
+                  key={user.id}
+                  className="flex items-center gap-3 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4 text-left transition hover:border-[#ffb493] hover:bg-[#fff0e8]"
+                  onClick={() => onLogin(user.id)}
+                  type="button"
+                >
+                  <AvatarChip user={user} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-semibold text-[#1d160f]">{user.name}</p>
+                    <p className="truncate text-sm text-[#6d5749]">
+                      {user.handle} - {user.city}
+                    </p>
                   </div>
-                ) : (
-                  users.map((user) => (
-                    <button
-                      key={user.id}
-                      className="flex items-center gap-3 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4 text-left transition hover:border-[#ffb493] hover:bg-[#fff0e8]"
-                      onClick={() => onLogin(user.id)}
-                      type="button"
-                    >
-                      <AvatarChip user={user} />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate font-semibold text-[#1d160f]">{user.name}</p>
-                        <p className="truncate text-sm text-[#6d5749]">
-                          {user.title} - {user.city}
-                        </p>
-                        <p className="mt-1 truncate text-xs text-[#8f6f59]">{user.handle}</p>
-                      </div>
-                      <ArrowRight className="h-4 w-4 text-[#8f6f59]" />
-                    </button>
-                  ))
-                )}
+                  <ArrowRight className="h-4 w-4 text-[#8f6f59]" />
+                </button>
+              ))
+            )}
+          </div>
+          <div className="mt-4">
+            <button
+              className="w-full rounded-full border border-[#eadfd3] bg-white px-5 py-3 text-sm font-semibold text-[#6d5749]"
+              onClick={() => setShowRegister((current) => !current)}
+              type="button"
+            >
+              {showRegister ? "Ocultar registro" : "Registrarse"}
+            </button>
+          </div>
+        </SectionCard>
+
+        {showRegister ? (
+          <SectionCard>
+            <SectionLabel>Registro</SectionLabel>
+
+            {error ? (
+              <div className="mt-4 rounded-[22px] border border-[#ffcfbb] bg-[#fff4ed] px-4 py-3 text-sm text-[#b14a20]">
+                {error}
               </div>
-            </SectionCard>
+            ) : null}
 
-            <SectionCard>
-              <SectionLabel>Crear cuenta</SectionLabel>
-              <p className="mt-3 text-sm text-[#5f4b3f]">
-                De momento el acceso va sin password. Creamos tu perfil y entras directamente.
-              </p>
-
-              {error ? (
-                <div className="mt-4 rounded-[22px] border border-[#ffcfbb] bg-[#fff4ed] px-4 py-3 text-sm text-[#b14a20]">
-                  {error}
-                </div>
-              ) : null}
-
-              <div className="mt-4 grid gap-3">
+            <div className="mt-4 grid gap-3">
                 <label className="grid gap-2">
                   <span className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
                     Nombre
@@ -3834,19 +4760,18 @@ function AuthScreen({
                 </label>
               </div>
 
-              <div className="mt-4 flex justify-end">
-                <button
-                  className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] px-5 py-3 text-sm font-semibold text-white shadow-[0_18px_35px_rgba(240,138,36,0.28)] disabled:cursor-not-allowed disabled:opacity-60"
-                  disabled={isSubmitting}
-                  onClick={onRegister}
-                  type="button"
-                >
-                  {isSubmitting ? "Creando perfil..." : "Crear cuenta y entrar"}
-                </button>
-              </div>
-            </SectionCard>
-          </div>
-        </div>
+            <div className="mt-4 flex justify-end">
+              <button
+                className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] px-5 py-3 text-sm font-semibold text-white shadow-[0_18px_35px_rgba(240,138,36,0.28)] disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={isSubmitting}
+                onClick={onRegister}
+                type="button"
+              >
+                {isSubmitting ? "Creando perfil..." : "Crear cuenta y entrar"}
+              </button>
+            </div>
+          </SectionCard>
+        ) : null}
       </main>
     </div>
   );
@@ -3954,18 +4879,25 @@ function MobileNavigation({
   activeTab,
   hidden,
   onChange,
-  onOpenCamera
+  onOpenCamera,
+  unreadChatThreadCount
 }: {
   activeTab: AppTab;
   hidden?: boolean;
   onChange: (tab: AppTab) => void;
   onOpenCamera: () => void;
+  unreadChatThreadCount: number;
 }) {
   const items = [
     {
       id: "discover" as const,
       label: "Inicio",
       icon: <Compass className="h-4 w-4" />
+    },
+    {
+      id: "search" as const,
+      label: "Buscar",
+      icon: <Search className="h-4 w-4" />
     },
     {
       id: "agenda" as const,
@@ -3990,10 +4922,10 @@ function MobileNavigation({
 
   return (
     <div className="md:hidden">
-      <div className="h-[92px]" />
+      <div className="h-[104px]" />
       <nav className="fixed inset-x-0 bottom-0 z-50 border-t border-[#eadfd3] bg-[rgba(249,244,238,0.96)] backdrop-blur-xl">
-        <div className="mx-auto grid max-w-[520px] grid-cols-[1fr_1fr_auto_1fr_1fr] items-center gap-1 px-2 pb-[calc(env(safe-area-inset-bottom)+0.85rem)] pt-3">
-          {items.slice(0, 2).map((item) => {
+        <div className="relative mx-auto grid max-w-[560px] grid-cols-6 items-center gap-1 px-2 pb-[calc(env(safe-area-inset-bottom)+0.85rem)] pt-3">
+          {items.slice(0, 3).map((item) => {
             const active = item.id === activeTab;
             return (
               <button
@@ -4004,12 +4936,14 @@ function MobileNavigation({
                 onClick={() => onChange(item.id)}
                 type="button"
               >
-                <span
-                  className={`inline-flex h-11 w-11 items-center justify-center rounded-2xl ${
-                    active ? "bg-[#fff0e8]" : "bg-transparent"
-                  }`}
-                >
-                  {item.icon}
+                <span className="relative inline-flex">
+                  <span
+                    className={`inline-flex h-11 w-11 items-center justify-center rounded-2xl ${
+                      active ? "bg-[#fff0e8]" : "bg-transparent"
+                    }`}
+                  >
+                    {item.icon}
+                  </span>
                 </span>
                 <span className="truncate">{item.label}</span>
               </button>
@@ -4022,7 +4956,7 @@ function MobileNavigation({
           >
             <Camera className="h-5 w-5" />
           </button>
-          {items.slice(2).map((item) => {
+          {items.slice(3).map((item) => {
             const active = item.id === activeTab;
             return (
               <button
@@ -4033,12 +4967,19 @@ function MobileNavigation({
                 onClick={() => onChange(item.id)}
                 type="button"
               >
-                <span
-                  className={`inline-flex h-11 w-11 items-center justify-center rounded-2xl ${
-                    active ? "bg-[#fff0e8]" : "bg-transparent"
-                  }`}
-                >
-                  {item.icon}
+                <span className="relative inline-flex">
+                  <span
+                    className={`inline-flex h-11 w-11 items-center justify-center rounded-2xl ${
+                      active ? "bg-[#fff0e8]" : "bg-transparent"
+                    }`}
+                  >
+                    {item.icon}
+                  </span>
+                  {item.id === "inbox" && unreadChatThreadCount > 0 ? (
+                    <span className="absolute -right-1 top-0 inline-flex min-w-5 items-center justify-center rounded-full bg-[#ff6b57] px-1.5 py-1 text-[10px] font-bold text-white">
+                      {unreadChatThreadCount > 9 ? "9+" : unreadChatThreadCount}
+                    </span>
+                  ) : null}
                 </span>
                 <span className="truncate">{item.label}</span>
               </button>
@@ -6540,6 +7481,11 @@ function buildNavItems() {
       id: "discover" as const,
       label: "Inicio",
       icon: <Compass className="h-4 w-4" />
+    },
+    {
+      id: "search" as const,
+      label: "Buscar",
+      icon: <Search className="h-4 w-4" />
     },
     {
       id: "agenda" as const,

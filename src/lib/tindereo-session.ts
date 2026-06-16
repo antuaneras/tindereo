@@ -61,6 +61,7 @@ export function hydratePersistedState(
     DEFAULT_STATE.session.currentUserId;
 
   return {
+    ...DEFAULT_STATE,
     ...data,
     session: {
       ...createSessionState(fallbackUserId),

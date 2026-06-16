@@ -75,5 +75,7 @@ export const DEFAULT_STATE: PersistedState = {
   friendships: [],
   eventInvites: [],
   socialPosts: [],
-  stories: []
+  stories: [],
+  conversationReadStates: [],
+  notifications: []
 };

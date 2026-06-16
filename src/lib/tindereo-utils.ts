@@ -4,6 +4,9 @@ import {
   EVENT_COVER_BY_CATEGORY
 } from "@/lib/tindereo-data";
 import type {
+  AppNotification,
+  ConversationReadState,
+  ConversationScope,
   CreateEventInput,
   EventAccessState,
   EventInvite,
@@ -17,6 +20,7 @@ import type {
   Friendship,
   PersistedState,
   PlatformUser,
+  NotificationKind,
   RegisterUserInput,
   PrivateChat,
   PrivateChatRequest,
@@ -41,6 +45,85 @@ function sortEventsByStart(events: EventItem[]) {
 
 function buildId(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 8)}-${Date.now().toString(36)}`;
+}
+
+function createNotification(
+  userId: string,
+  kind: NotificationKind,
+  title: string,
+  body: string,
+  extra?: Partial<Omit<AppNotification, "id" | "userId" | "kind" | "title" | "body" | "createdAt">>
+): AppNotification {
+  return {
+    id: buildId("notification"),
+    userId,
+    kind,
+    title,
+    body,
+    createdAt: new Date().toISOString(),
+    ...(extra ?? {})
+  };
+}
+
+function prependNotifications(state: PersistedState, notifications: AppNotification[]) {
+  if (notifications.length === 0) {
+    return state;
+  }
+
+  return {
+    ...state,
+    notifications: [...notifications, ...state.notifications]
+  };
+}
+
+function markNotificationsAsRead(
+  notifications: AppNotification[],
+  userId: string,
+  matcher: (notification: AppNotification) => boolean,
+  readAt: string
+) {
+  return notifications.map((notification) =>
+    notification.userId === userId && !notification.readAt && matcher(notification)
+      ? {
+          ...notification,
+          readAt
+        }
+      : notification
+  );
+}
+
+function upsertConversationReadState(
+  states: ConversationReadState[],
+  userId: string,
+  scope: ConversationScope,
+  targetId: string,
+  lastReadAt: string
+) {
+  const existing = states.find(
+    (entry) => entry.userId === userId && entry.scope === scope && entry.targetId === targetId
+  );
+
+  if (!existing) {
+    return [
+      ...states,
+      {
+        id: buildId("read"),
+        userId,
+        scope,
+        targetId,
+        lastReadAt
+      }
+    ];
+  }
+
+  return states.map((entry) =>
+    entry.id === existing.id
+      ? {
+          ...entry,
+          lastReadAt
+        }
+      : entry
+  );
 }
 
 function slugify(value: string) {
@@ -197,6 +280,8 @@ function isPersistedState(value: unknown): value is PersistedState {
     Array.isArray(candidate.eventInvites) &&
     Array.isArray(candidate.socialPosts) &&
     Array.isArray(candidate.stories) &&
+    Array.isArray(candidate.conversationReadStates) &&
+    Array.isArray(candidate.notifications) &&
     (!firstEvent ||
       (typeof firstEvent.visibility === "string" &&
         typeof firstEvent.createdAt === "string" &&
@@ -268,7 +353,10 @@ export function normalizeState(state: PersistedState) {
     friendships: state.friendships ?? DEFAULT_STATE.friendships,
     eventInvites: state.eventInvites ?? DEFAULT_STATE.eventInvites,
     socialPosts: state.socialPosts ?? DEFAULT_STATE.socialPosts,
-    stories: state.stories ?? DEFAULT_STATE.stories
+    stories: state.stories ?? DEFAULT_STATE.stories,
+    conversationReadStates:
+      state.conversationReadStates ?? DEFAULT_STATE.conversationReadStates,
+    notifications: state.notifications ?? DEFAULT_STATE.notifications
   };
 
   const joinedEvents = getJoinedEvents(provisionalState, currentUserId);
@@ -465,6 +553,30 @@ export function getPendingEventInvitesForUser(state: PersistedState, userId: str
   );
 }
 
+export function getNotificationsForUser(state: PersistedState, userId: string) {
+  return state.notifications
+    .filter((notification) => notification.userId === userId)
+    .slice()
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+export function getUnreadNotificationCount(state: PersistedState, userId: string) {
+  return getNotificationsForUser(state, userId).filter((notification) => !notification.readAt).length;
+}
+
+export function getConversationReadState(
+  state: PersistedState,
+  userId: string,
+  scope: ConversationScope,
+  targetId: string
+) {
+  return (
+    state.conversationReadStates.find(
+      (entry) => entry.userId === userId && entry.scope === scope && entry.targetId === targetId
+    ) ?? null
+  );
+}
+
 export function getEventInvitableFriends(state: PersistedState, eventId: string, userId: string) {
   const friendIds = new Set(getFriends(state, userId).map((friend) => friend.id));
   const invitedIds = new Set(
@@ -573,6 +685,19 @@ export function getEventMessages(state: PersistedState, eventId: string) {
   return sortByCreatedAtAsc(state.groupMessages.filter((message) => message.eventId === eventId));
 }
 
+export function getUnreadEventMessagesCount(
+  state: PersistedState,
+  userId: string,
+  eventId: string
+) {
+  const readState = getConversationReadState(state, userId, "event", eventId);
+  const lastReadAt = readState?.lastReadAt ?? "";
+
+  return getEventMessages(state, eventId).filter(
+    (message) => message.authorId !== userId && message.createdAt > lastReadAt
+  ).length;
+}
+
 export function postEventMessage(
   state: PersistedState,
   eventId: string,
@@ -593,10 +718,30 @@ export function postEventMessage(
     createdAt: new Date().toISOString()
   };
 
-  return {
+  const nextState: PersistedState = {
     ...state,
     groupMessages: [...state.groupMessages, nextMessage]
   };
+  const event = getEventById(state, eventId);
+
+  if (!event) {
+    return nextState;
+  };
+
+  const author = getUserById(state, authorId);
+  const preview = trimmed.length > 96 ? `${trimmed.slice(0, 93)}...` : trimmed;
+  const recipientIds = getEventMembers(nextState, eventId)
+    .map((member) => member.id)
+    .filter((memberId) => memberId !== authorId);
+
+  return prependNotifications(
+    nextState,
+    recipientIds.map((userId) =>
+      createNotification(userId, "group-message", event.title, `${author.name}: ${preview}`, {
+        eventId
+      })
+    )
+  );
 }
 
 export function requestEventAccess(state: PersistedState, eventId: string, userId: string) {
@@ -618,10 +763,24 @@ export function requestEventAccess(state: PersistedState, eventId: string, userI
     requestedAt: new Date().toISOString()
   };
 
-  return {
+  const nextState: PersistedState = {
     ...state,
     memberships: [...state.memberships, nextMembership]
   };
+  const requester = getUserById(state, userId);
+
+  return prependNotifications(nextState, [
+    createNotification(
+      event.hostId,
+      "event-request",
+      `Solicitud para ${event.title}`,
+      `${requester.name} quiere entrar en tu evento.`,
+      {
+        eventId,
+        fromUserId: userId
+      }
+    )
+  ]);
 }
 
 export function respondToEventAccess(
@@ -658,10 +817,26 @@ export function respondToEventAccess(
   });
 
   if (!accept) {
-    return {
-      ...state,
-      memberships: updatedMemberships
-    };
+    return prependNotifications(
+      {
+        ...state,
+        memberships: updatedMemberships
+      },
+      [
+        createNotification(
+          membership.userId,
+          "event-request-response",
+          accept ? `Acceso aceptado en ${event.title}` : `Acceso rechazado en ${event.title}`,
+          accept
+            ? "Ya puedes entrar al chat general del evento."
+            : "El creador no ha aceptado tu solicitud por ahora.",
+          {
+            eventId: membership.eventId,
+            fromUserId: hostId
+          }
+        )
+      ]
+    );
   }
 
   const approvedUser = getUserById(state, membership.userId);
@@ -674,11 +849,24 @@ export function respondToEventAccess(
     createdAt: respondedAt
   };
 
-  return {
+  const nextState: PersistedState = {
     ...state,
     memberships: updatedMemberships,
     groupMessages: [...state.groupMessages, systemMessage]
   };
+
+  return prependNotifications(nextState, [
+    createNotification(
+      membership.userId,
+      "event-request-response",
+      `Acceso aceptado en ${event.title}`,
+      "Ya puedes entrar al chat general del evento.",
+      {
+        eventId: membership.eventId,
+        fromUserId: hostId
+      }
+    )
+  ]);
 }
 
 export function leaveEvent(state: PersistedState, eventId: string, userId: string) {
@@ -733,10 +921,23 @@ export function toggleFriendship(state: PersistedState, actorId: string, targetU
     createdAt: new Date().toISOString()
   };
 
-  return {
+  const nextState: PersistedState = {
     ...state,
     friendships: [...state.friendships, nextFriendship]
   };
+  const actor = getUserById(state, actorId);
+
+  return prependNotifications(nextState, [
+    createNotification(
+      targetUserId,
+      "friendship",
+      `${actor.name} te ha agregado`,
+      "Ahora podeis veros como amigos dentro de la app.",
+      {
+        fromUserId: actorId
+      }
+    )
+  ]);
 }
 
 export function sendEventInvite(
@@ -778,10 +979,24 @@ export function sendEventInvite(
     createdAt: new Date().toISOString()
   };
 
-  return {
+  const nextState: PersistedState = {
     ...state,
     eventInvites: [nextInvite, ...state.eventInvites]
   };
+  const actor = getUserById(state, actorId);
+
+  return prependNotifications(nextState, [
+    createNotification(
+      targetUserId,
+      "event-invite",
+      `${actor.name} te ha invitado a ${event.title}`,
+      "Puedes aceptar la invitacion y entrar directamente al evento.",
+      {
+        eventId,
+        fromUserId: actorId
+      }
+    )
+  ]);
 }
 
 export function respondToEventInvite(
@@ -807,18 +1022,48 @@ export function respondToEventInvite(
   );
 
   if (!accept) {
-    return {
-      ...state,
-      eventInvites: nextInvites
-    };
+    return prependNotifications(
+      {
+        ...state,
+        eventInvites: nextInvites
+      },
+      [
+        createNotification(
+          invite.fromUserId,
+          "event-invite-response",
+          accept ? "Invitacion aceptada" : "Invitacion rechazada",
+          accept
+            ? `${getUserById(state, actorId).name} ha aceptado tu invitacion.`
+            : `${getUserById(state, actorId).name} ha rechazado tu invitacion.`,
+          {
+            eventId: invite.eventId,
+            fromUserId: actorId
+          }
+        )
+      ]
+    );
   }
 
   const event = getEventById(state, invite.eventId);
   if (!event) {
-    return {
-      ...state,
-      eventInvites: nextInvites
-    };
+    return prependNotifications(
+      {
+        ...state,
+        eventInvites: nextInvites
+      },
+      [
+        createNotification(
+          invite.fromUserId,
+          "event-invite-response",
+          "Invitacion aceptada",
+          `${getUserById(state, actorId).name} ha aceptado tu invitacion.`,
+          {
+            eventId: invite.eventId,
+            fromUserId: actorId
+          }
+        )
+      ]
+    );
   }
 
   const existingMembership = getEventRequest(state, invite.eventId, actorId);
@@ -833,11 +1078,25 @@ export function respondToEventInvite(
         : membership
     );
 
-    return {
-      ...state,
-      eventInvites: nextInvites,
-      memberships
-    };
+    return prependNotifications(
+      {
+        ...state,
+        eventInvites: nextInvites,
+        memberships
+      },
+      [
+        createNotification(
+          invite.fromUserId,
+          "event-invite-response",
+          "Invitacion aceptada",
+          `${getUserById(state, actorId).name} ha aceptado tu invitacion.`,
+          {
+            eventId: invite.eventId,
+            fromUserId: actorId
+          }
+        )
+      ]
+    );
   }
 
   const nextMembership: EventMembership = {
@@ -859,12 +1118,26 @@ export function respondToEventInvite(
     createdAt: respondedAt
   };
 
-  return {
-    ...state,
-    eventInvites: nextInvites,
-    memberships: [...state.memberships, nextMembership],
-    groupMessages: [...state.groupMessages, systemMessage]
-  };
+  return prependNotifications(
+    {
+      ...state,
+      eventInvites: nextInvites,
+      memberships: [...state.memberships, nextMembership],
+      groupMessages: [...state.groupMessages, systemMessage]
+    },
+    [
+      createNotification(
+        invite.fromUserId,
+        "event-invite-response",
+        "Invitacion aceptada",
+        `${user.name} ha aceptado tu invitacion.`,
+        {
+          eventId: invite.eventId,
+          fromUserId: actorId
+        }
+      )
+    ]
+  );
 }
 
 function createMediaPost(
@@ -889,10 +1162,56 @@ function createMediaPost(
     createdAt: new Date().toISOString()
   };
 
-  return {
+  const nextState: PersistedState = {
     ...state,
     socialPosts: [nextPost, ...state.socialPosts]
   };
+
+  if (authorType === "user") {
+    const author = getUserById(state, authorId);
+    const recipientIds = getFriends(state, authorId).map((friend) => friend.id);
+    return prependNotifications(
+      nextState,
+      recipientIds.map((userId) =>
+        createNotification(
+          userId,
+          "post",
+          `${author.name} ha subido una publicacion`,
+          trimmedCaption || "Entra para ver la nueva foto.",
+          {
+            fromUserId: authorId,
+            postId: nextPost.id
+          }
+        )
+      )
+    );
+  }
+
+  const event = getEventById(state, authorId);
+  if (!event) {
+    return nextState;
+  }
+
+  const recipientIds = getEventMembers(nextState, authorId)
+    .map((member) => member.id)
+    .filter((memberId) => memberId !== event.hostId);
+
+  return prependNotifications(
+    nextState,
+    recipientIds.map((userId) =>
+      createNotification(
+        userId,
+        "post",
+        `${event.title} ha publicado una foto`,
+        trimmedCaption || "Ya hay contenido nuevo dentro del evento.",
+        {
+          eventId: event.id,
+          fromUserId: event.hostId,
+          postId: nextPost.id
+        }
+      )
+    )
+  );
 }
 
 function createStoryEntry(
@@ -920,10 +1239,56 @@ function createStoryEntry(
     expiresAt
   };
 
-  return {
+  const nextState: PersistedState = {
     ...state,
     stories: [nextStory, ...state.stories]
   };
+
+  if (authorType === "user") {
+    const author = getUserById(state, authorId);
+    const recipientIds = getFriends(state, authorId).map((friend) => friend.id);
+    return prependNotifications(
+      nextState,
+      recipientIds.map((userId) =>
+        createNotification(
+          userId,
+          "story",
+          `${author.name} ha subido una historia`,
+          trimmedCaption || "Toca para ver su historia antes de que desaparezca.",
+          {
+            fromUserId: authorId,
+            storyId: nextStory.id
+          }
+        )
+      )
+    );
+  }
+
+  const event = getEventById(state, authorId);
+  if (!event) {
+    return nextState;
+  }
+
+  const recipientIds = getEventMembers(nextState, authorId)
+    .map((member) => member.id)
+    .filter((memberId) => memberId !== event.hostId);
+
+  return prependNotifications(
+    nextState,
+    recipientIds.map((userId) =>
+      createNotification(
+        userId,
+        "story",
+        `${event.title} ha subido una historia`,
+        trimmedCaption || "Ya tienes una historia nueva dentro del evento.",
+        {
+          eventId: event.id,
+          fromUserId: event.hostId,
+          storyId: nextStory.id
+        }
+      )
+    )
+  );
 }
 
 export function createUserPost(
@@ -972,6 +1337,249 @@ export function createEventStory(
   }
 
   return createStoryEntry(state, "event", eventId, imageUrl, caption);
+}
+
+function updateMediaPostEntry(
+  state: PersistedState,
+  matcher: (post: SocialPost) => boolean,
+  caption: string
+) {
+  const trimmedCaption = caption.trim();
+
+  return {
+    ...state,
+    socialPosts: state.socialPosts.map((post) =>
+      matcher(post)
+        ? {
+            ...post,
+            caption: trimmedCaption
+          }
+        : post
+    )
+  };
+}
+
+function deleteMediaPostEntry(state: PersistedState, matcher: (post: SocialPost) => boolean) {
+  const removedPostIds = new Set(
+    state.socialPosts.filter((post) => matcher(post)).map((post) => post.id)
+  );
+
+  return {
+    ...state,
+    socialPosts: state.socialPosts.filter((post) => !matcher(post)),
+    notifications: state.notifications.filter(
+      (notification) => !notification.postId || !removedPostIds.has(notification.postId)
+    )
+  };
+}
+
+function updateStoryEntryRecord(
+  state: PersistedState,
+  matcher: (story: StoryItem) => boolean,
+  caption: string
+) {
+  const trimmedCaption = caption.trim();
+
+  return {
+    ...state,
+    stories: state.stories.map((story) =>
+      matcher(story)
+        ? {
+            ...story,
+            caption: trimmedCaption
+          }
+        : story
+    )
+  };
+}
+
+function deleteStoryEntryRecord(state: PersistedState, matcher: (story: StoryItem) => boolean) {
+  const removedStoryIds = new Set(state.stories.filter((story) => matcher(story)).map((story) => story.id));
+
+  return {
+    ...state,
+    stories: state.stories.filter((story) => !matcher(story)),
+    notifications: state.notifications.filter(
+      (notification) => !notification.storyId || !removedStoryIds.has(notification.storyId)
+    )
+  };
+}
+
+export function updateUserPost(
+  state: PersistedState,
+  actorId: string,
+  postId: string,
+  caption: string
+) {
+  return updateMediaPostEntry(
+    state,
+    (post) => post.id === postId && post.authorType === "user" && post.authorId === actorId,
+    caption
+  );
+}
+
+export function deleteUserPost(state: PersistedState, actorId: string, postId: string) {
+  return deleteMediaPostEntry(
+    state,
+    (post) => post.id === postId && post.authorType === "user" && post.authorId === actorId
+  );
+}
+
+export function updateUserStory(
+  state: PersistedState,
+  actorId: string,
+  storyId: string,
+  caption: string
+) {
+  return updateStoryEntryRecord(
+    state,
+    (story) => story.id === storyId && story.authorType === "user" && story.authorId === actorId,
+    caption
+  );
+}
+
+export function deleteUserStory(state: PersistedState, actorId: string, storyId: string) {
+  return deleteStoryEntryRecord(
+    state,
+    (story) => story.id === storyId && story.authorType === "user" && story.authorId === actorId
+  );
+}
+
+export function updateEventPost(
+  state: PersistedState,
+  actorId: string,
+  eventId: string,
+  postId: string,
+  caption: string
+) {
+  const event = getEventById(state, eventId);
+  if (!event || event.hostId !== actorId) {
+    return state;
+  }
+
+  return updateMediaPostEntry(
+    state,
+    (post) => post.id === postId && post.authorType === "event" && post.authorId === eventId,
+    caption
+  );
+}
+
+export function deleteEventPost(
+  state: PersistedState,
+  actorId: string,
+  eventId: string,
+  postId: string
+) {
+  const event = getEventById(state, eventId);
+  if (!event || event.hostId !== actorId) {
+    return state;
+  }
+
+  return deleteMediaPostEntry(
+    state,
+    (post) => post.id === postId && post.authorType === "event" && post.authorId === eventId
+  );
+}
+
+export function updateEventStory(
+  state: PersistedState,
+  actorId: string,
+  eventId: string,
+  storyId: string,
+  caption: string
+) {
+  const event = getEventById(state, eventId);
+  if (!event || event.hostId !== actorId) {
+    return state;
+  }
+
+  return updateStoryEntryRecord(
+    state,
+    (story) => story.id === storyId && story.authorType === "event" && story.authorId === eventId,
+    caption
+  );
+}
+
+export function deleteEventStory(
+  state: PersistedState,
+  actorId: string,
+  eventId: string,
+  storyId: string
+) {
+  const event = getEventById(state, eventId);
+  if (!event || event.hostId !== actorId) {
+    return state;
+  }
+
+  return deleteStoryEntryRecord(
+    state,
+    (story) => story.id === storyId && story.authorType === "event" && story.authorId === eventId
+  );
+}
+
+export function markThreadRead(
+  state: PersistedState,
+  userId: string,
+  scope: ConversationScope,
+  targetId: string
+) {
+  const lastReadAt =
+    scope === "event"
+      ? getEventMessages(state, targetId).slice(-1)[0]?.createdAt
+      : getPrivateMessages(state, targetId).slice(-1)[0]?.createdAt;
+
+  if (!lastReadAt) {
+    return state;
+  }
+
+  const conversationReadStates = upsertConversationReadState(
+    state.conversationReadStates,
+    userId,
+    scope,
+    targetId,
+    lastReadAt
+  );
+  const notifications = markNotificationsAsRead(
+    state.notifications,
+    userId,
+    (notification) =>
+      (scope === "event" && notification.eventId === targetId) ||
+      (scope === "private" && notification.chatId === targetId),
+    lastReadAt
+  );
+
+  return {
+    ...state,
+    conversationReadStates,
+    notifications
+  };
+}
+
+export function markNotificationRead(
+  state: PersistedState,
+  userId: string,
+  notificationId: string
+) {
+  return {
+    ...state,
+    notifications: state.notifications.map((notification) =>
+      notification.id === notificationId && notification.userId === userId && !notification.readAt
+        ? {
+            ...notification,
+            readAt: new Date().toISOString()
+          }
+        : notification
+    )
+  };
+}
+
+export function markAllNotificationsRead(state: PersistedState, userId: string) {
+  const readAt = new Date().toISOString();
+
+  return {
+    ...state,
+    notifications: markNotificationsAsRead(state.notifications, userId, () => true, readAt)
+  };
 }
 
 export function getCategoryMeta(category: EventItem["category"]) {
@@ -1125,6 +1733,19 @@ export function getPrivateMessages(state: PersistedState, chatId: string) {
   return sortByCreatedAtAsc(state.privateMessages.filter((message) => message.chatId === chatId));
 }
 
+export function getUnreadPrivateMessagesCount(
+  state: PersistedState,
+  userId: string,
+  chatId: string
+) {
+  const readState = getConversationReadState(state, userId, "private", chatId);
+  const lastReadAt = readState?.lastReadAt ?? "";
+
+  return getPrivateMessages(state, chatId).filter(
+    (message) => message.authorId !== userId && message.createdAt > lastReadAt
+  ).length;
+}
+
 export function getLatestPrivateMessage(state: PersistedState, chatId: string) {
   return getPrivateMessages(state, chatId).slice(-1)[0] ?? null;
 }
@@ -1138,6 +1759,17 @@ export function getPrivateChatsForUser(state: PersistedState, userId: string) {
       const rightLast = getLatestPrivateMessage(state, right.id)?.createdAt ?? right.createdAt;
       return rightLast.localeCompare(leftLast);
     });
+}
+
+export function getUnreadChatThreadCount(state: PersistedState, userId: string) {
+  const unreadEventThreads = getJoinedEvents(state, userId).filter(
+    (event) => getUnreadEventMessagesCount(state, userId, event.id) > 0
+  ).length;
+  const unreadPrivateThreads = getPrivateChatsForUser(state, userId).filter(
+    (chat) => getUnreadPrivateMessagesCount(state, userId, chat.id) > 0
+  ).length;
+
+  return unreadEventThreads + unreadPrivateThreads;
 }
 
 export function getPrivateRequestsForUser(state: PersistedState, userId: string) {
@@ -1228,10 +1860,25 @@ export function sendPrivateChatRequest(
     createdAt: new Date().toISOString()
   };
 
-  return {
+  const nextState: PersistedState = {
     ...state,
     privateChatRequests: [...state.privateChatRequests, nextRequest]
   };
+  const sender = getUserById(state, fromUserId);
+  const event = getEventById(state, eventId);
+
+  return prependNotifications(nextState, [
+    createNotification(
+      toUserId,
+      "private-request",
+      `${sender.name} quiere hablar contigo`,
+      event ? `${sender.name} te ha escrito desde ${event.title}.` : message,
+      {
+        eventId,
+        fromUserId
+      }
+    )
+  ]);
 }
 
 export function respondToPrivateChatRequest(
@@ -1259,18 +1906,49 @@ export function respondToPrivateChatRequest(
   });
 
   if (!accept) {
-    return {
-      ...state,
-      privateChatRequests: updatedRequests
-    };
+    return prependNotifications(
+      {
+        ...state,
+        privateChatRequests: updatedRequests
+      },
+      [
+        createNotification(
+          request.fromUserId,
+          "private-request-response",
+          accept ? "Solicitud privada aceptada" : "Solicitud privada rechazada",
+          accept
+            ? `${getUserById(state, responderId).name} ha aceptado hablar contigo.`
+            : `${getUserById(state, responderId).name} ha rechazado la solicitud privada.`,
+          {
+            eventId: request.eventId,
+            fromUserId: responderId
+          }
+        )
+      ]
+    );
   }
 
   const existingChat = findPairChat(state, request.fromUserId, request.toUserId);
   if (existingChat) {
-    return {
-      ...state,
-      privateChatRequests: updatedRequests
-    };
+    return prependNotifications(
+      {
+        ...state,
+        privateChatRequests: updatedRequests
+      },
+      [
+        createNotification(
+          request.fromUserId,
+          "private-request-response",
+          "Solicitud privada aceptada",
+          `${getUserById(state, responderId).name} ha aceptado hablar contigo.`,
+          {
+            chatId: existingChat.id,
+            eventId: request.eventId,
+            fromUserId: responderId
+          }
+        )
+      ]
+    );
   }
 
   const chatId = buildId("chat");
@@ -1289,12 +1967,27 @@ export function respondToPrivateChatRequest(
     createdAt: respondedAt
   };
 
-  return {
-    ...state,
-    privateChatRequests: updatedRequests,
-    privateChats: [...state.privateChats, nextChat],
-    privateMessages: [...state.privateMessages, welcomeMessage]
-  };
+  return prependNotifications(
+    {
+      ...state,
+      privateChatRequests: updatedRequests,
+      privateChats: [...state.privateChats, nextChat],
+      privateMessages: [...state.privateMessages, welcomeMessage]
+    },
+    [
+      createNotification(
+        request.fromUserId,
+        "private-request-response",
+        "Solicitud privada aceptada",
+        `${getUserById(state, responderId).name} ha aceptado hablar contigo.`,
+        {
+          chatId,
+          eventId: request.eventId,
+          fromUserId: responderId
+        }
+      )
+    ]
+  );
 }
 
 export function sendPrivateMessage(
@@ -1309,7 +2002,7 @@ export function sendPrivateMessage(
     return state;
   }
 
-  return {
+  const nextState: PersistedState = {
     ...state,
     privateMessages: [
       ...state.privateMessages,
@@ -1322,6 +2015,21 @@ export function sendPrivateMessage(
       }
     ]
   };
+  const partnerId = chat.participantIds.find((participantId) => participantId !== authorId);
+  if (!partnerId) {
+    return nextState;
+  }
+
+  const author = getUserById(state, authorId);
+  const preview = trimmed.length > 96 ? `${trimmed.slice(0, 93)}...` : trimmed;
+
+  return prependNotifications(nextState, [
+    createNotification(partnerId, "private-message", author.name, preview, {
+      chatId,
+      eventId: chat.originEventId,
+      fromUserId: authorId
+    })
+  ]);
 }
 
 export function getChatPartner(state: PersistedState, chat: PrivateChat, userId: string) {

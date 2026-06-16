@@ -19,7 +19,14 @@ import {
   createEvent,
   createUserPost,
   createUserStory,
+  deleteEventPost,
+  deleteEventStory,
+  deleteUserPost,
+  deleteUserStory,
   leaveEvent,
+  markAllNotificationsRead,
+  markNotificationRead,
+  markThreadRead,
   postEventMessage,
   registerUser,
   requestEventAccess,
@@ -29,7 +36,11 @@ import {
   sendPrivateChatRequest,
   sendEventInvite,
   sendPrivateMessage,
-  toggleFriendship
+  toggleFriendship,
+  updateEventPost,
+  updateEventStory,
+  updateUserPost,
+  updateUserStory
 } from "../tindereo-utils";
 
 function buildPlatformEnvelope(
@@ -139,6 +150,22 @@ export async function runPlatformAction(action: PlatformAction): Promise<Platfor
       return runStateMutation(action.actorId, (state) =>
         createUserStory(state, action.actorId, action.imageUrl, action.caption)
       );
+    case "update-user-post":
+      return runStateMutation(action.actorId, (state) =>
+        updateUserPost(state, action.actorId, action.postId, action.caption)
+      );
+    case "delete-user-post":
+      return runStateMutation(action.actorId, (state) =>
+        deleteUserPost(state, action.actorId, action.postId)
+      );
+    case "update-user-story":
+      return runStateMutation(action.actorId, (state) =>
+        updateUserStory(state, action.actorId, action.storyId, action.caption)
+      );
+    case "delete-user-story":
+      return runStateMutation(action.actorId, (state) =>
+        deleteUserStory(state, action.actorId, action.storyId)
+      );
     case "create-event-post":
       return runStateMutation(action.actorId, (state) =>
         createEventPost(state, action.actorId, action.eventId, action.imageUrl, action.caption)
@@ -146,6 +173,22 @@ export async function runPlatformAction(action: PlatformAction): Promise<Platfor
     case "create-event-story":
       return runStateMutation(action.actorId, (state) =>
         createEventStory(state, action.actorId, action.eventId, action.imageUrl, action.caption)
+      );
+    case "update-event-post":
+      return runStateMutation(action.actorId, (state) =>
+        updateEventPost(state, action.actorId, action.eventId, action.postId, action.caption)
+      );
+    case "delete-event-post":
+      return runStateMutation(action.actorId, (state) =>
+        deleteEventPost(state, action.actorId, action.eventId, action.postId)
+      );
+    case "update-event-story":
+      return runStateMutation(action.actorId, (state) =>
+        updateEventStory(state, action.actorId, action.eventId, action.storyId, action.caption)
+      );
+    case "delete-event-story":
+      return runStateMutation(action.actorId, (state) =>
+        deleteEventStory(state, action.actorId, action.eventId, action.storyId)
       );
     case "send-group-message":
       return runStateMutation(action.actorId, (state) =>
@@ -168,6 +211,18 @@ export async function runPlatformAction(action: PlatformAction): Promise<Platfor
     case "send-private-message":
       return runStateMutation(action.actorId, (state) =>
         sendPrivateMessage(state, action.chatId, action.actorId, action.text)
+      );
+    case "mark-thread-read":
+      return runStateMutation(action.actorId, (state) =>
+        markThreadRead(state, action.actorId, action.scope, action.targetId)
+      );
+    case "mark-notification-read":
+      return runStateMutation(action.actorId, (state) =>
+        markNotificationRead(state, action.actorId, action.notificationId)
+      );
+    case "mark-all-notifications-read":
+      return runStateMutation(action.actorId, (state) =>
+        markAllNotificationsRead(state, action.actorId)
       );
     default: {
       const exhaustiveCheck: never = action;

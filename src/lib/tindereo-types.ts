@@ -1,4 +1,4 @@
-export type AppTab = "discover" | "agenda" | "inbox" | "profile" | "host";
+export type AppTab = "discover" | "search" | "agenda" | "inbox" | "profile" | "host";
 
 export type EventDetailTab = "overview" | "chat" | "people";
 
@@ -17,6 +17,21 @@ export type PrivateChatRequestStatus = "pending" | "accepted" | "rejected";
 export type SocialAuthorType = "user" | "event";
 
 export type EventInviteStatus = "pending" | "accepted" | "declined";
+
+export type ConversationScope = "event" | "private";
+
+export type NotificationKind =
+  | "friendship"
+  | "event-invite"
+  | "event-invite-response"
+  | "event-request"
+  | "event-request-response"
+  | "private-request"
+  | "private-request-response"
+  | "story"
+  | "post"
+  | "group-message"
+  | "private-message";
 
 export interface PlatformUser {
   id: string;
@@ -139,6 +154,29 @@ export interface StoryItem {
   expiresAt: string;
 }
 
+export interface ConversationReadState {
+  id: string;
+  userId: string;
+  scope: ConversationScope;
+  targetId: string;
+  lastReadAt: string;
+}
+
+export interface AppNotification {
+  id: string;
+  userId: string;
+  kind: NotificationKind;
+  title: string;
+  body: string;
+  createdAt: string;
+  readAt?: string;
+  eventId?: string;
+  chatId?: string;
+  fromUserId?: string;
+  postId?: string;
+  storyId?: string;
+}
+
 export interface SessionState {
   isAuthenticated: boolean;
   currentUserId: string;
@@ -160,6 +198,8 @@ export interface AppDataset {
   eventInvites: EventInvite[];
   socialPosts: SocialPost[];
   stories: StoryItem[];
+  conversationReadStates: ConversationReadState[];
+  notifications: AppNotification[];
 }
 
 export interface PersistedState extends AppDataset {
@@ -203,8 +243,16 @@ export type PlatformAction =
   | { type: "respond-event-invite"; actorId: string; inviteId: string; accept: boolean }
   | { type: "create-user-post"; actorId: string; imageUrl: string; caption: string }
   | { type: "create-user-story"; actorId: string; imageUrl: string; caption: string }
+  | { type: "update-user-post"; actorId: string; postId: string; caption: string }
+  | { type: "delete-user-post"; actorId: string; postId: string }
+  | { type: "update-user-story"; actorId: string; storyId: string; caption: string }
+  | { type: "delete-user-story"; actorId: string; storyId: string }
   | { type: "create-event-post"; actorId: string; eventId: string; imageUrl: string; caption: string }
   | { type: "create-event-story"; actorId: string; eventId: string; imageUrl: string; caption: string }
+  | { type: "update-event-post"; actorId: string; eventId: string; postId: string; caption: string }
+  | { type: "delete-event-post"; actorId: string; eventId: string; postId: string }
+  | { type: "update-event-story"; actorId: string; eventId: string; storyId: string; caption: string }
+  | { type: "delete-event-story"; actorId: string; eventId: string; storyId: string }
   | {
       type: "send-private-request";
       actorId: string;
@@ -213,7 +261,10 @@ export type PlatformAction =
       message: string;
     }
   | { type: "respond-private-request"; actorId: string; requestId: string; accept: boolean }
-  | { type: "send-private-message"; actorId: string; chatId: string; text: string };
+  | { type: "send-private-message"; actorId: string; chatId: string; text: string }
+  | { type: "mark-thread-read"; actorId: string; scope: ConversationScope; targetId: string }
+  | { type: "mark-notification-read"; actorId: string; notificationId: string }
+  | { type: "mark-all-notifications-read"; actorId: string };
 
 export interface PlatformDataEnvelope {
   data: AppDataset;

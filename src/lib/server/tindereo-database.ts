@@ -333,7 +333,9 @@ export function readAppDataset(): AppDataset {
     friendships: [],
     eventInvites: [],
     socialPosts: [],
-    stories: []
+    stories: [],
+    conversationReadStates: [],
+    notifications: []
   };
 }
 
