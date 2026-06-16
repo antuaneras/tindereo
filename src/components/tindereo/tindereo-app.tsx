@@ -2910,6 +2910,26 @@ function MobileEventScreen({
         </>
       ) : (
         <div className="flex-1 overflow-y-auto px-3 py-4">
+          <div className="mb-4 flex gap-2">
+            {[
+              { id: "overview" as const, label: "Detalles" },
+              { id: "people" as const, label: "Miembros" },
+              { id: "chat" as const, label: "Chat" }
+            ].map((item) => (
+              <button
+                key={item.id}
+                className={`rounded-full px-4 py-3 text-sm font-semibold ${
+                  view === item.id
+                    ? "bg-[#1d160f] text-white"
+                    : "border border-[#eadfd3] bg-white text-[#6d5749]"
+                }`}
+                onClick={() => onChangeView(item.id)}
+                type="button"
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
           {view === "overview" ? (
             <div className="space-y-4">
               <section className="overflow-hidden rounded-[28px] border border-[#eadfd3] bg-white/92 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
