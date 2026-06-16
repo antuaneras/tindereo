@@ -5,13 +5,13 @@ import {
 } from "@/lib/tindereo-data";
 import type {
   CreateEventInput,
+  EventAccessState,
   EventConnectionState,
   EventDetailTab,
   EventGroupMessage,
+  EventHealthStatus,
   EventItem,
   EventMembership,
-  OrganizerLead,
-  OrganizerLeadInput,
   PersistedState,
   PlatformUser,
   PrivateChat,
@@ -23,7 +23,7 @@ function cloneState<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-function sortByDateAsc<T extends { createdAt: string }>(items: T[]) {
+function sortByCreatedAtAsc<T extends { createdAt: string }>(items: T[]) {
   return items.slice().sort((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
@@ -51,6 +51,9 @@ function isPersistedState(value: unknown): value is PersistedState {
   }
 
   const candidate = value as PersistedState;
+  const firstEvent = candidate.events?.[0];
+  const firstMembership = candidate.memberships?.[0];
+
   return (
     typeof candidate.session?.currentUserId === "string" &&
     Array.isArray(candidate.users) &&
@@ -60,19 +63,25 @@ function isPersistedState(value: unknown): value is PersistedState {
     Array.isArray(candidate.privateChatRequests) &&
     Array.isArray(candidate.privateChats) &&
     Array.isArray(candidate.privateMessages) &&
-    Array.isArray(candidate.organizerLeads)
+    (!firstEvent ||
+      (typeof firstEvent.visibility === "string" &&
+        typeof firstEvent.createdAt === "string" &&
+        typeof firstEvent.minimumGuestsRequired === "number")) &&
+    (!firstMembership ||
+      (typeof firstMembership.status === "string" &&
+        typeof firstMembership.requestedAt === "string"))
   );
 }
 
 function findPairChat(state: PersistedState, userAId: string, userBId: string) {
   return (
-    state.privateChats.find((chat) => {
-      return chat.participantIds.includes(userAId) && chat.participantIds.includes(userBId);
-    }) ?? null
+    state.privateChats.find(
+      (chat) => chat.participantIds.includes(userAId) && chat.participantIds.includes(userBId)
+    ) ?? null
   );
 }
 
-function findLatestRequest(
+function findLatestPrivateRequest(
   state: PersistedState,
   eventId: string,
   userAId: string,
@@ -125,55 +134,78 @@ export function getEventById(state: PersistedState, eventId: string | null) {
     return sortEventsByStart(state.events)[0] ?? null;
   }
 
-  return state.events.find((event) => event.id === eventId) ?? sortEventsByStart(state.events)[0] ?? null;
-}
-
-export function getDiscoverFeedEvents(state: PersistedState) {
-  return sortEventsByStart(state.events);
-}
-
-export function getMembership(state: PersistedState, eventId: string, userId: string) {
   return (
-    state.memberships.find((membership) => membership.eventId === eventId && membership.userId === userId) ??
-    null
+    state.events.find((event) => event.id === eventId) ?? sortEventsByStart(state.events)[0] ?? null
   );
 }
 
-export function hasJoinedEvent(state: PersistedState, eventId: string, userId: string) {
-  return Boolean(getMembership(state, eventId, userId));
+export function isEventHost(state: PersistedState, eventId: string, userId: string) {
+  return getEventById(state, eventId)?.hostId === userId;
+}
+
+export function getEventRequest(state: PersistedState, eventId: string, userId: string) {
+  return (
+    state.memberships.find(
+      (membership) => membership.eventId === eventId && membership.userId === userId
+    ) ?? null
+  );
+}
+
+export function getDiscoverFeedEvents(state: PersistedState, userId: string) {
+  return sortEventsByStart(
+    state.events.filter(
+      (event) =>
+        event.visibility === "public" ||
+        event.hostId === userId ||
+        getEventRequest(state, event.id, userId)?.status === "approved"
+    )
+  );
+}
+
+export function getHostedEvents(state: PersistedState, userId: string) {
+  return sortEventsByStart(state.events.filter((event) => event.hostId === userId));
 }
 
 export function getJoinedEvents(state: PersistedState, userId: string) {
-  const joinedIds = new Set(
-    state.memberships
-      .filter((membership) => membership.userId === userId)
-      .map((membership) => membership.eventId)
+  return sortEventsByStart(
+    state.events.filter((event) => {
+      if (event.hostId === userId) {
+        return true;
+      }
+
+      return getEventRequest(state, event.id, userId)?.status === "approved";
+    })
   );
-
-  return sortEventsByStart(state.events.filter((event) => joinedIds.has(event.id)));
 }
 
-export function getHostedEvents(state: PersistedState, organizerId: string) {
-  return sortEventsByStart(state.events.filter((event) => event.hostId === organizerId));
-}
-
-export function getEventGuestCount(state: PersistedState, eventId: string) {
-  const event = getEventById(state, eventId);
-  if (!event) {
-    return 0;
+export function getEventAccessState(
+  state: PersistedState,
+  eventId: string,
+  userId: string
+): EventAccessState {
+  if (isEventHost(state, eventId, userId)) {
+    return { kind: "host" };
   }
 
-  const joinedVisible = state.memberships.filter((membership) => membership.eventId === eventId).length;
-  return event.baseGuestCount + joinedVisible;
-}
-
-export function getEventAttendanceRatio(state: PersistedState, eventId: string) {
-  const event = getEventById(state, eventId);
-  if (!event) {
-    return 0;
+  const membership = getEventRequest(state, eventId, userId);
+  if (!membership) {
+    return { kind: "available" };
   }
 
-  return Math.min(1, getEventGuestCount(state, eventId) / event.capacity);
+  if (membership.status === "approved") {
+    return { kind: "approved", membership };
+  }
+
+  if (membership.status === "pending") {
+    return { kind: "pending", membership };
+  }
+
+  return { kind: "rejected", membership };
+}
+
+export function hasEventAccess(state: PersistedState, eventId: string, userId: string) {
+  const access = getEventAccessState(state, eventId, userId);
+  return access.kind === "host" || access.kind === "approved";
 }
 
 export function getEventMembers(state: PersistedState, eventId: string) {
@@ -186,116 +218,238 @@ export function getEventMembers(state: PersistedState, eventId: string) {
   const host = getUserById(state, event.hostId);
   map.set(host.id, host);
 
-  for (const membership of state.memberships.filter((item) => item.eventId === eventId)) {
+  for (const membership of state.memberships.filter(
+    (item) => item.eventId === eventId && item.status === "approved"
+  )) {
     const user = getUserById(state, membership.userId);
     map.set(user.id, user);
   }
 
-  return [...map.values()].sort((left, right) => {
-    if (left.role !== right.role) {
-      return left.role === "organizer" ? -1 : 1;
-    }
-
-    return left.name.localeCompare(right.name);
-  });
+  return [...map.values()].sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export function getEventMessages(state: PersistedState, eventId: string) {
-  return sortByDateAsc(state.groupMessages.filter((message) => message.eventId === eventId));
-}
-
-export function getPrivateMessages(state: PersistedState, chatId: string) {
-  return sortByDateAsc(state.privateMessages.filter((message) => message.chatId === chatId));
-}
-
-export function getLatestPrivateMessage(state: PersistedState, chatId: string) {
-  return getPrivateMessages(state, chatId).slice(-1)[0] ?? null;
-}
-
-export function getPrivateChatsForUser(state: PersistedState, userId: string) {
-  return state.privateChats
-    .filter((chat) => chat.participantIds.includes(userId))
+export function getEventPendingRequests(state: PersistedState, eventId: string) {
+  return state.memberships
+    .filter((membership) => membership.eventId === eventId && membership.status === "pending")
     .slice()
-    .sort((left, right) => {
-      const leftLast = getLatestPrivateMessage(state, left.id)?.createdAt ?? left.createdAt;
-      const rightLast = getLatestPrivateMessage(state, right.id)?.createdAt ?? right.createdAt;
-      return rightLast.localeCompare(leftLast);
-    });
+    .sort((left, right) => right.requestedAt.localeCompare(left.requestedAt));
 }
 
-export function getPrivateRequestsForUser(state: PersistedState, userId: string) {
-  return state.privateChatRequests
-    .filter((request) => request.fromUserId === userId || request.toUserId === userId)
+export function getHostPendingRequests(state: PersistedState, userId: string) {
+  const hostedIds = new Set(getHostedEvents(state, userId).map((event) => event.id));
+  return state.memberships
+    .filter((membership) => hostedIds.has(membership.eventId) && membership.status === "pending")
     .slice()
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    .sort((left, right) => right.requestedAt.localeCompare(left.requestedAt));
 }
 
-export function getIncomingPendingRequests(state: PersistedState, userId: string) {
-  return getPrivateRequestsForUser(state, userId).filter(
-    (request) => request.toUserId === userId && request.status === "pending"
+export function getEventGuestCount(state: PersistedState, eventId: string) {
+  const event = getEventById(state, eventId);
+  if (!event) {
+    return 0;
+  }
+
+  const approvedCount = state.memberships.filter(
+    (membership) => membership.eventId === eventId && membership.status === "approved"
+  ).length;
+
+  return event.baseGuestCount + approvedCount;
+}
+
+export function getEventPendingCount(state: PersistedState, eventId: string) {
+  return getEventPendingRequests(state, eventId).length;
+}
+
+export function getEventAttendanceRatio(state: PersistedState, eventId: string) {
+  const event = getEventById(state, eventId);
+  if (!event) {
+    return 0;
+  }
+
+  return Math.min(1, getEventGuestCount(state, eventId) / event.capacity);
+}
+
+export function getEventHealth(state: PersistedState, eventId: string): EventHealthStatus {
+  const event = getEventById(state, eventId);
+  if (!event) {
+    return "building";
+  }
+
+  if (getEventGuestCount(state, eventId) >= event.minimumGuestsRequired) {
+    return "confirmed";
+  }
+
+  const deadline = new Date(event.createdAt).getTime() + event.validationWindowDays * 24 * 60 * 60 * 1000;
+  return Date.now() <= deadline ? "building" : "at-risk";
+}
+
+export function getEventDeadlineLabel(event: EventItem) {
+  const deadline = new Date(
+    new Date(event.createdAt).getTime() + event.validationWindowDays * 24 * 60 * 60 * 1000
   );
+
+  return new Intl.DateTimeFormat("es-ES", {
+    day: "numeric",
+    month: "short"
+  }).format(deadline);
 }
 
-export function getOutgoingPendingRequests(state: PersistedState, userId: string) {
-  return getPrivateRequestsForUser(state, userId).filter(
-    (request) => request.fromUserId === userId && request.status === "pending"
-  );
-}
-
-export function getEventConnectionState(
-  state: PersistedState,
-  eventId: string,
-  currentUserId: string,
-  targetUserId: string
-): EventConnectionState {
-  if (currentUserId === targetUserId) {
-    return { kind: "self" };
-  }
-
-  const chat = findPairChat(state, currentUserId, targetUserId);
-  if (chat) {
-    return { kind: "chat", chat };
-  }
-
-  const request = findLatestRequest(state, eventId, currentUserId, targetUserId);
-  if (!request) {
-    return { kind: "available" };
-  }
-
-  if (request.status === "pending") {
-    if (request.toUserId === currentUserId) {
-      return { kind: "incoming-request", request };
-    }
-
-    return { kind: "outgoing-request", request };
-  }
-
-  if (request.status === "rejected") {
+export function getEventRequirementSummary(state: PersistedState, eventId: string) {
+  const event = getEventById(state, eventId);
+  if (!event) {
     return {
-      kind: "rejected",
-      request,
-      by: request.toUserId === currentUserId ? "me" : "them"
+      confirmedCount: 0,
+      remainingCount: 0,
+      health: "building" as EventHealthStatus
     };
   }
 
-  return { kind: "available" };
+  const confirmedCount = getEventGuestCount(state, eventId);
+  return {
+    confirmedCount,
+    remainingCount: Math.max(0, event.minimumGuestsRequired - confirmedCount),
+    health: getEventHealth(state, eventId)
+  };
 }
 
-export function getOrganizerMetrics(state: PersistedState, organizerId: string) {
-  const events = getHostedEvents(state, organizerId);
-  const totalGuests = events.reduce((total, event) => total + getEventGuestCount(state, event.id), 0);
-  const totalMessages = events.reduce((total, event) => total + getEventMessages(state, event.id).length, 0);
-  const openLeads = state.organizerLeads.filter((lead) => lead.status === "pending").length;
-  const privateConnections = state.privateChats.filter((chat) =>
-    events.some((event) => event.id === chat.originEventId)
-  ).length;
+export function getEventMessages(state: PersistedState, eventId: string) {
+  return sortByCreatedAtAsc(state.groupMessages.filter((message) => message.eventId === eventId));
+}
+
+export function postEventMessage(
+  state: PersistedState,
+  eventId: string,
+  authorId: string,
+  text: string
+) {
+  const trimmed = text.trim();
+  if (!trimmed || !hasEventAccess(state, eventId, authorId)) {
+    return state;
+  }
+
+  const nextMessage: EventGroupMessage = {
+    id: buildId("group"),
+    eventId,
+    authorId,
+    text: trimmed,
+    kind: "text",
+    createdAt: new Date().toISOString()
+  };
 
   return {
-    publishedEvents: events.length,
-    totalGuests,
-    totalMessages,
-    openLeads,
-    privateConnections
+    ...state,
+    groupMessages: [...state.groupMessages, nextMessage]
+  };
+}
+
+export function requestEventAccess(state: PersistedState, eventId: string, userId: string) {
+  const event = getEventById(state, eventId);
+  if (!event || event.hostId === userId || getEventRequest(state, eventId, userId)) {
+    return state;
+  }
+
+  const guestCount = getEventGuestCount(state, eventId);
+  if (guestCount >= event.capacity) {
+    return state;
+  }
+
+  const nextMembership: EventMembership = {
+    id: buildId("membership"),
+    eventId,
+    userId,
+    status: "pending",
+    requestedAt: new Date().toISOString()
+  };
+
+  return {
+    ...state,
+    memberships: [...state.memberships, nextMembership]
+  };
+}
+
+export function respondToEventAccess(
+  state: PersistedState,
+  membershipId: string,
+  hostId: string,
+  accept: boolean
+) {
+  const membership = state.memberships.find((item) => item.id === membershipId);
+  if (!membership || membership.status !== "pending") {
+    return state;
+  }
+
+  const event = getEventById(state, membership.eventId);
+  if (!event || event.hostId !== hostId) {
+    return state;
+  }
+
+  if (accept && getEventGuestCount(state, membership.eventId) >= event.capacity) {
+    return state;
+  }
+
+  const respondedAt = new Date().toISOString();
+  const updatedMemberships: EventMembership[] = state.memberships.map((item) => {
+    if (item.id !== membershipId) {
+      return item;
+    }
+
+    return {
+      ...item,
+      status: accept ? "approved" : "rejected",
+      respondedAt
+    };
+  });
+
+  if (!accept) {
+    return {
+      ...state,
+      memberships: updatedMemberships
+    };
+  }
+
+  const approvedUser = getUserById(state, membership.userId);
+  const systemMessage: EventGroupMessage = {
+    id: buildId("group"),
+    eventId: membership.eventId,
+    authorId: "system",
+    text: `${approvedUser.name} ha sido aprobado y ya puede entrar al chat general.`,
+    kind: "system",
+    createdAt: respondedAt
+  };
+
+  return {
+    ...state,
+    memberships: updatedMemberships,
+    groupMessages: [...state.groupMessages, systemMessage]
+  };
+}
+
+export function leaveEvent(state: PersistedState, eventId: string, userId: string) {
+  const event = getEventById(state, eventId);
+  if (!event || event.hostId === userId) {
+    return state;
+  }
+
+  const membership = getEventRequest(state, eventId, userId);
+  if (!membership || membership.status !== "approved") {
+    return state;
+  }
+
+  const user = getUserById(state, userId);
+  const createdAt = new Date().toISOString();
+  const systemMessage: EventGroupMessage = {
+    id: buildId("group"),
+    eventId,
+    authorId: "system",
+    text: `${user.name} ha salido del evento.`,
+    kind: "system",
+    createdAt
+  };
+
+  return {
+    ...state,
+    memberships: state.memberships.filter((item) => item.id !== membership.id),
+    groupMessages: [...state.groupMessages, systemMessage]
   };
 }
 
@@ -367,97 +521,79 @@ export function getInitials(name: string) {
     .toUpperCase();
 }
 
-export function getChatPartner(state: PersistedState, chat: PrivateChat, userId: string) {
-  const partnerId = chat.participantIds.find((participantId) => participantId !== userId) ?? userId;
-  return getUserById(state, partnerId);
+export function getPrivateMessages(state: PersistedState, chatId: string) {
+  return sortByCreatedAtAsc(state.privateMessages.filter((message) => message.chatId === chatId));
 }
 
-export function joinEvent(state: PersistedState, eventId: string, userId: string) {
-  if (hasJoinedEvent(state, eventId, userId)) {
-    return state;
-  }
-
-  const event = getEventById(state, eventId);
-  if (!event) {
-    return state;
-  }
-
-  if (getEventGuestCount(state, eventId) >= event.capacity) {
-    return state;
-  }
-
-  const user = getUserById(state, userId);
-  const createdAt = new Date().toISOString();
-  const membership: EventMembership = {
-    id: buildId("membership"),
-    eventId,
-    userId,
-    joinedAt: createdAt
-  };
-  const systemMessage: EventGroupMessage = {
-    id: buildId("group"),
-    eventId,
-    authorId: "system",
-    text: `${user.name} se ha unido al chat general del evento.`,
-    kind: "system",
-    createdAt
-  };
-
-  return {
-    ...state,
-    memberships: [...state.memberships, membership],
-    groupMessages: [...state.groupMessages, systemMessage]
-  };
+export function getLatestPrivateMessage(state: PersistedState, chatId: string) {
+  return getPrivateMessages(state, chatId).slice(-1)[0] ?? null;
 }
 
-export function leaveEvent(state: PersistedState, eventId: string, userId: string) {
-  const membership = getMembership(state, eventId, userId);
-  if (!membership) {
-    return state;
-  }
-
-  const user = getUserById(state, userId);
-  const createdAt = new Date().toISOString();
-  const systemMessage: EventGroupMessage = {
-    id: buildId("group"),
-    eventId,
-    authorId: "system",
-    text: `${user.name} ha salido del evento.`,
-    kind: "system",
-    createdAt
-  };
-
-  return {
-    ...state,
-    memberships: state.memberships.filter((item) => item.id !== membership.id),
-    groupMessages: [...state.groupMessages, systemMessage]
-  };
+export function getPrivateChatsForUser(state: PersistedState, userId: string) {
+  return state.privateChats
+    .filter((chat) => chat.participantIds.includes(userId))
+    .slice()
+    .sort((left, right) => {
+      const leftLast = getLatestPrivateMessage(state, left.id)?.createdAt ?? left.createdAt;
+      const rightLast = getLatestPrivateMessage(state, right.id)?.createdAt ?? right.createdAt;
+      return rightLast.localeCompare(leftLast);
+    });
 }
 
-export function postEventMessage(
+export function getPrivateRequestsForUser(state: PersistedState, userId: string) {
+  return state.privateChatRequests
+    .filter((request) => request.fromUserId === userId || request.toUserId === userId)
+    .slice()
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+export function getIncomingPendingRequests(state: PersistedState, userId: string) {
+  return getPrivateRequestsForUser(state, userId).filter(
+    (request) => request.toUserId === userId && request.status === "pending"
+  );
+}
+
+export function getEventConnectionState(
   state: PersistedState,
   eventId: string,
-  authorId: string,
-  text: string
-) {
-  const trimmed = text.trim();
-  if (!trimmed || !hasJoinedEvent(state, eventId, authorId)) {
-    return state;
+  currentUserId: string,
+  targetUserId: string
+): EventConnectionState {
+  if (currentUserId === targetUserId) {
+    return { kind: "self" };
   }
 
-  const nextMessage: EventGroupMessage = {
-    id: buildId("group"),
-    eventId,
-    authorId,
-    text: trimmed,
-    kind: "text",
-    createdAt: new Date().toISOString()
-  };
+  if (!hasEventAccess(state, eventId, currentUserId) || !hasEventAccess(state, eventId, targetUserId)) {
+    return { kind: "available" };
+  }
 
-  return {
-    ...state,
-    groupMessages: [...state.groupMessages, nextMessage]
-  };
+  const chat = findPairChat(state, currentUserId, targetUserId);
+  if (chat) {
+    return { kind: "chat", chat };
+  }
+
+  const request = findLatestPrivateRequest(state, eventId, currentUserId, targetUserId);
+  if (!request) {
+    return { kind: "available" };
+  }
+
+  if (request.status === "pending") {
+    if (request.toUserId === currentUserId) {
+      return { kind: "incoming-request", request };
+    }
+
+    return { kind: "outgoing-request", request };
+  }
+
+  if (request.status === "rejected") {
+    return {
+      kind: "rejected",
+      request,
+      by: request.toUserId === currentUserId ? "me" : "them"
+    };
+  }
+
+  return { kind: "available" };
 }
 
 export function sendPrivateChatRequest(
@@ -468,7 +604,12 @@ export function sendPrivateChatRequest(
   message: string
 ) {
   const trimmed = message.trim();
-  if (!trimmed || fromUserId === toUserId) {
+  if (
+    !trimmed ||
+    fromUserId === toUserId ||
+    !hasEventAccess(state, eventId, fromUserId) ||
+    !hasEventAccess(state, eventId, toUserId)
+  ) {
     return state;
   }
 
@@ -544,7 +685,7 @@ export function respondToPrivateChatRequest(
     id: buildId("private"),
     chatId,
     authorId: responderId,
-    text: "Solicitud aceptada. Ya podemos hablar por privado por aqui.",
+    text: "Solicitud aceptada. Ya podeis hablar por privado por aqui.",
     createdAt: respondedAt
   };
 
@@ -583,12 +724,13 @@ export function sendPrivateMessage(
   };
 }
 
-export function createEvent(state: PersistedState, organizerId: string, input: CreateEventInput) {
-  const organizer = getUserById(state, organizerId);
-  if (organizer.role !== "organizer") {
-    return state;
-  }
+export function getChatPartner(state: PersistedState, chat: PrivateChat, userId: string) {
+  const partnerId = chat.participantIds.find((participantId) => participantId !== userId) ?? userId;
+  return getUserById(state, partnerId);
+}
 
+export function createEvent(state: PersistedState, userId: string, input: CreateEventInput) {
+  const creator = getUserById(state, userId);
   const title = input.title.trim();
   const summary = input.summary.trim();
   const description = input.description.trim();
@@ -600,30 +742,31 @@ export function createEvent(state: PersistedState, organizerId: string, input: C
   const slug = state.events.some((event) => event.slug === baseSlug)
     ? `${baseSlug}-${Date.now().toString(36)}`
     : baseSlug;
-  const id = `event-${slug}`;
-
   const nextEvent: EventItem = {
-    id,
+    id: `event-${slug}`,
     slug,
     title,
     category: input.category,
-    city: input.city.trim() || organizer.city,
+    visibility: input.visibility,
+    city: input.city.trim() || creator.city,
     venue: input.venue.trim() || "Venue pendiente",
     coverImage: input.coverImage?.trim() || EVENT_COVER_BY_CATEGORY[input.category],
     startsAt: input.startsAt,
     endsAt: input.endsAt,
+    createdAt: new Date().toISOString(),
     priceLabel: input.priceLabel.trim() || "Precio por confirmar",
-    capacity: Number(input.capacity) || 80,
+    capacity: Number(input.capacity) || 40,
     baseGuestCount: 0,
-    waitlistCount: 0,
-    hostId: organizerId,
+    hostId: userId,
     summary,
     description,
     highlights: input.highlights.filter(Boolean).slice(0, 3),
     tags: input.tags.filter(Boolean).slice(0, 5),
     dressCode: input.dressCode.trim() || "Casual",
     conversationPrompt:
-      "Presentate en el chat general y cuenta con quien te gustaria conectar antes del evento."
+      "Presentate y cuenta que clase de gente te gustaria tener cerca antes de que empiece el evento.",
+    minimumGuestsRequired: 4,
+    validationWindowDays: 7
   };
 
   return {
@@ -637,37 +780,28 @@ export function createEvent(state: PersistedState, organizerId: string, input: C
   };
 }
 
-export function submitOrganizerLead(
-  state: PersistedState,
-  userId: string,
-  input: OrganizerLeadInput
-) {
-  const existingLead = state.organizerLeads.find(
-    (lead) => lead.fromUserId === userId && lead.status === "pending"
+export function getHostMetrics(state: PersistedState, userId: string) {
+  const hostedEvents = getHostedEvents(state, userId);
+  const confirmedGuests = hostedEvents.reduce(
+    (total, event) => total + getEventGuestCount(state, event.id),
+    0
   );
-  if (existingLead) {
-    return state;
-  }
-
-  const companyName = input.companyName.trim();
-  const concept = input.concept.trim();
-  const message = input.message.trim();
-  if (!companyName || !concept || !message) {
-    return state;
-  }
-
-  const nextLead: OrganizerLead = {
-    id: buildId("lead"),
-    fromUserId: userId,
-    companyName,
-    concept,
-    message,
-    status: "pending",
-    createdAt: new Date().toISOString()
-  };
+  const pendingApprovals = hostedEvents.reduce(
+    (total, event) => total + getEventPendingCount(state, event.id),
+    0
+  );
+  const confirmedEvents = hostedEvents.filter(
+    (event) => getEventHealth(state, event.id) === "confirmed"
+  ).length;
+  const atRiskEvents = hostedEvents.filter(
+    (event) => getEventHealth(state, event.id) === "at-risk"
+  ).length;
 
   return {
-    ...state,
-    organizerLeads: [...state.organizerLeads, nextLead]
+    publishedEvents: hostedEvents.length,
+    confirmedGuests,
+    pendingApprovals,
+    confirmedEvents,
+    atRiskEvents
   };
 }

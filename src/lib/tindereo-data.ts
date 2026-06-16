@@ -5,8 +5,7 @@ import type {
 } from "@/lib/tindereo-types";
 
 export const APP_NAME = "Tindereo";
-export const APP_TAGLINE = "Eventos que conectan antes de que empiecen";
-export const ORGANIZER_CONTACT_EMAIL = "hola@tindereo.app";
+export const APP_TAGLINE = "Eventos que conectan antes de empezar";
 
 export const EVENT_CATEGORY_META: Record<
   EventCategory,
@@ -66,13 +65,12 @@ export const DEMO_USERS: PlatformUser[] = [
     id: "lucia-serrano",
     name: "Lucia Serrano",
     handle: "@luciagoesout",
-    role: "attendee",
     city: "Madrid",
     title: "Brand strategist",
     company: "North Studio",
     bio:
-      "Me gustan los eventos con buen ritmo, gente curiosa y conversaciones que siguen despues del plan.",
-    tagline: "Llego por el evento, me quedo por la comunidad.",
+      "Me gustan los eventos con ritmo, gente curiosa y conversaciones que siguen despues del plan.",
+    tagline: "Creo eventos pequenos, me apunto a los buenos y cuido mucho la comunidad.",
     avatar:
       "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=600&q=80",
     coverImage:
@@ -84,7 +82,6 @@ export const DEMO_USERS: PlatformUser[] = [
     id: "mateo-rivas",
     name: "Mateo Rivas",
     handle: "@mateo.builds",
-    role: "attendee",
     city: "Madrid",
     title: "Growth lead",
     company: "Itera Labs",
@@ -102,7 +99,6 @@ export const DEMO_USERS: PlatformUser[] = [
     id: "ines-oliver",
     name: "Ines Oliver",
     handle: "@ineslayers",
-    role: "attendee",
     city: "Barcelona",
     title: "Creative producer",
     company: "Frame House",
@@ -120,7 +116,6 @@ export const DEMO_USERS: PlatformUser[] = [
     id: "nora-costa",
     name: "Nora Costa",
     handle: "@noraonfilm",
-    role: "attendee",
     city: "Lisboa",
     title: "Photographer",
     company: "Freelance",
@@ -138,13 +133,12 @@ export const DEMO_USERS: PlatformUser[] = [
     id: "diego-luna",
     name: "Diego Luna",
     handle: "@diegospeaks",
-    role: "attendee",
     city: "Valencia",
     title: "Founder",
     company: "Scene Ops",
     bio:
       "Soy de los que llega pronto, habla con todo el mundo y acaba proponiendo el siguiente plan antes de irse.",
-    tagline: "Si hay energia buena, me apunto.",
+    tagline: "Si hay energia buena, me apunto y tambien la organizo.",
     avatar:
       "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?auto=format&fit=crop&w=600&q=80",
     coverImage:
@@ -156,7 +150,6 @@ export const DEMO_USERS: PlatformUser[] = [
     id: "sara-mora",
     name: "Sara Mora",
     handle: "@saramora.jpg",
-    role: "attendee",
     city: "Madrid",
     title: "Art director",
     company: "Mono Studio",
@@ -169,42 +162,6 @@ export const DEMO_USERS: PlatformUser[] = [
       "https://images.unsplash.com/photo-1529156069898-49953e39b3ac?auto=format&fit=crop&w=1400&q=80",
     interests: ["Art", "Editorial", "Dinner clubs", "Creative tech", "House"],
     verified: false
-  },
-  {
-    id: "clara-vidal",
-    name: "Clara Vidal",
-    handle: "@clarahosts",
-    role: "organizer",
-    city: "Madrid",
-    title: "Head of Experiences",
-    company: "After Social Club",
-    bio:
-      "Diseno eventos donde la conversacion empieza antes de llegar al venue y sigue mucho despues.",
-    tagline: "Organizo experiencias pensadas para conectar.",
-    avatar:
-      "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?auto=format&fit=crop&w=600&q=80",
-    coverImage:
-      "https://images.unsplash.com/photo-1511578314322-379afb476865?auto=format&fit=crop&w=1400&q=80",
-    interests: ["Community", "Music", "Operations", "Partnerships", "Hospitality"],
-    verified: true
-  },
-  {
-    id: "raul-ibarra",
-    name: "Raul Ibarra",
-    handle: "@raulbuildslive",
-    role: "organizer",
-    city: "Madrid",
-    title: "Creative events lead",
-    company: "Open Table Sessions",
-    bio:
-      "Me obsesiona que el evento empiece antes y acabe despues. Por eso el chat y la comunidad importan tanto como el venue.",
-    tagline: "Produccion limpia, comunidad fuerte.",
-    avatar:
-      "https://images.unsplash.com/photo-1504593811423-6dd665756598?auto=format&fit=crop&w=600&q=80",
-    coverImage:
-      "https://images.unsplash.com/photo-1529156069898-49953e39b3ac?auto=format&fit=crop&w=1400&q=80",
-    interests: ["Community design", "Partnerships", "Art", "Panels", "Food"],
-    verified: true
   }
 ];
 
@@ -223,184 +180,219 @@ export const DEFAULT_STATE: PersistedState = {
       slug: "after-solar-2026",
       title: "After Solar Rooftop Session",
       category: "music",
+      visibility: "public",
       city: "Madrid",
       venue: "La Marina Rooftop",
       coverImage:
         "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?auto=format&fit=crop&w=1600&q=80",
       startsAt: "2026-06-19T20:30:00+02:00",
       endsAt: "2026-06-20T02:30:00+02:00",
+      createdAt: "2026-06-09T18:00:00+02:00",
       priceLabel: "Desde 18 EUR",
-      capacity: 260,
-      baseGuestCount: 142,
-      waitlistCount: 18,
-      hostId: "clara-vidal",
-      summary: "Rooftop al atardecer con DJ set, mesa larga y grupo general para romper el hielo antes de llegar.",
+      capacity: 140,
+      baseGuestCount: 2,
+      hostId: "lucia-serrano",
+      summary:
+        "Rooftop al atardecer con DJ set y admision moderada para que la comunidad se forme antes de subir.",
       description:
-        "Una noche pensada para mezclar musica, energia social y una comunidad que se activa dias antes. Cuando te unes, entras al chat general del evento para presentarte, ver quien va y proponer mini planes antes de subir.",
+        "Lucia ha abierto este evento como publico, pero mantiene aprobacion manual para cuidar el tono del grupo. En cuanto te aprueban, entras al chat general para presentarte y proponer mini planes antes de llegar.",
       highlights: [
-        "Chat general activo desde el momento en que te unes",
-        "Guest list con perfiles visibles para detectar afinidad",
-        "Solicitud de chat privado entre asistentes"
+        "Solicitud de acceso antes de entrar al evento",
+        "Chat general solo para asistentes aprobados",
+        "Privados entre personas que se aceptan"
       ],
       tags: ["Rooftop", "DJ set", "Comunidad", "Madrid", "Sunset"],
       dressCode: "Summer city",
       conversationPrompt:
-        "Comparte en el chat general que te ha traido al evento y con que tipo de gente te gustaria conectar."
+        "Cuenta que te trae al evento y con que tipo de gente te gustaria cruzarte antes del set fuerte.",
+      minimumGuestsRequired: 4,
+      validationWindowDays: 7
     },
     {
       id: "founders-brunch-circle",
       slug: "founders-brunch-circle",
       title: "Founders Brunch Circle",
       category: "networking",
+      visibility: "public",
       city: "Madrid",
       venue: "Casa Numa",
       coverImage:
         "https://images.unsplash.com/photo-1511578314322-379afb476865?auto=format&fit=crop&w=1600&q=80",
-      startsAt: "2026-06-21T11:00:00+02:00",
-      endsAt: "2026-06-21T14:30:00+02:00",
+      startsAt: "2026-06-22T11:00:00+02:00",
+      endsAt: "2026-06-22T14:30:00+02:00",
+      createdAt: "2026-06-14T10:15:00+02:00",
       priceLabel: "Reserva 24 EUR",
-      capacity: 90,
-      baseGuestCount: 48,
-      waitlistCount: 6,
-      hostId: "clara-vidal",
-      summary: "Brunch curado para perfiles de producto, growth y operaciones que quieren conocerse antes del domingo.",
+      capacity: 60,
+      baseGuestCount: 1,
+      hostId: "diego-luna",
+      summary:
+        "Brunch curado para perfiles de producto, growth y operaciones con acceso via solicitud.",
       description:
-        "El objetivo no es intercambiar tarjetas. Es llegar al brunch habiendo abierto ya un par de conversaciones utiles y saber a quien quieres saludar primero.",
+        "El objetivo no es intercambiar tarjetas. Es llegar al brunch habiendo abierto ya un par de conversaciones utiles. Diego revisa quien entra para mantener las mesas equilibradas y el grupo manejable.",
       highlights: [
-        "Mesas de presentacion y dinamicas ligeras",
-        "Chat general con prompts para romper el hielo",
-        "Espacio para abrir chats privados post evento"
+        "Moderacion de asistentes por parte del creador",
+        "Grupo previo con prompts para romper el hielo",
+        "Objetivo minimo de 4 asistentes confirmados en 7 dias"
       ],
       tags: ["Brunch", "Networking", "Producto", "Founders"],
       dressCode: "Smart casual",
       conversationPrompt:
-        "Cuenta en una frase que estas construyendo o que tipo de gente te gustaria conocer en el brunch."
+        "Presentate con una frase sobre lo que estas construyendo y que tipo de gente te gustaria conocer.",
+      minimumGuestsRequired: 4,
+      validationWindowDays: 7
     },
     {
       id: "design-night-lab",
       slug: "design-night-lab",
       title: "Design Night Lab",
       category: "creative",
+      visibility: "public",
       city: "Madrid",
       venue: "Taller Cero",
       coverImage:
         "https://images.unsplash.com/photo-1517048676732-d65bc937f952?auto=format&fit=crop&w=1600&q=80",
-      startsAt: "2026-06-26T19:30:00+02:00",
-      endsAt: "2026-06-26T23:30:00+02:00",
+      startsAt: "2026-06-27T19:30:00+02:00",
+      endsAt: "2026-06-27T23:30:00+02:00",
+      createdAt: "2026-06-02T09:00:00+02:00",
       priceLabel: "Invitacion + 12 EUR",
-      capacity: 70,
-      baseGuestCount: 27,
-      waitlistCount: 0,
-      hostId: "raul-ibarra",
-      summary: "Mesa redonda, visuales y after para gente de diseño, contenido y direccion creativa.",
+      capacity: 40,
+      baseGuestCount: 1,
+      hostId: "sara-mora",
+      summary:
+        "Mesa redonda, visuales y after para gente de diseno, contenido y direccion creativa.",
       description:
-        "Un evento para perfiles visuales que quieren hablar con calma antes de verse. El chat general funciona como precalentamiento creativo y despues queda abierto el canal privado entre quien conecte.",
+        "Sara ha montado un plan muy cuidado, pero a una semana de vida aun no alcanza el minimo deseado. La app lo marca para que el creador vea rapido si necesita mover mas invitaciones o activar promo.",
       highlights: [
-        "Visual review en vivo y lightning talks",
-        "Lista de asistentes con perfiles visibles",
+        "Estado de viabilidad visible para el creador",
+        "Grupo previo para presentaciones creativas",
         "Chats privados persistentes despues del evento"
       ],
       tags: ["Design", "Creative", "Visual culture", "Afterwork"],
       dressCode: "Expressive casual",
       conversationPrompt:
-        "Presentate con la referencia visual o proyecto que mas te apetece comentar esa noche."
+        "Comparte la referencia visual o proyecto que mas te apetece comentar esa noche.",
+      minimumGuestsRequired: 4,
+      validationWindowDays: 7
     },
     {
-      id: "run-club-rio",
-      slug: "run-club-rio",
-      title: "Run Club Rio + Coffee",
-      category: "wellness",
+      id: "cena-secreta-estudio",
+      slug: "cena-secreta-estudio",
+      title: "Cena Secreta de Estudio",
+      category: "food",
+      visibility: "private",
       city: "Madrid",
-      venue: "Madrid Rio",
+      venue: "Location privada en Chamberi",
       coverImage:
-        "https://images.unsplash.com/photo-1483721310020-03333e577078?auto=format&fit=crop&w=1600&q=80",
-      startsAt: "2026-06-28T09:00:00+02:00",
-      endsAt: "2026-06-28T11:30:00+02:00",
-      priceLabel: "Gratis con RSVP",
-      capacity: 120,
-      baseGuestCount: 63,
-      waitlistCount: 0,
-      hostId: "raul-ibarra",
-      summary: "Carrera suave, cafe y comunidad para gente que quiere socializar desde un plan mas ligero.",
+        "https://images.unsplash.com/photo-1414235077428-338989a2e8c0?auto=format&fit=crop&w=1600&q=80",
+      startsAt: "2026-06-24T21:00:00+02:00",
+      endsAt: "2026-06-25T00:30:00+02:00",
+      createdAt: "2026-06-13T12:40:00+02:00",
+      priceLabel: "65 EUR menu cerrado",
+      capacity: 16,
+      baseGuestCount: 0,
+      hostId: "lucia-serrano",
+      summary:
+        "Cena pequena, privada y con aprobacion manual para mezclar perfiles de marca, arte y hospitality.",
       description:
-        "Perfecto para conocer a la gente antes del domingo. Entras, te unes al chat general y ya sabes quien corre a tu ritmo o quien se apunta al cafe despues.",
+        "Este evento no aparece al publico general. Solo lo ve quien lo crea y quien ya tenga acceso. Lucia revisa cada solicitud para mantener el formato intimo y el equilibrio de la mesa.",
       highlights: [
-        "Pace groups de 5K y 8K",
-        "Coffee social despues de correr",
-        "Solicitud de chat privado entre asistentes"
+        "Evento privado con aprobacion del creador",
+        "Chat general de mesa solo para confirmados",
+        "Seguimiento claro del minimo de 4 plazas"
       ],
-      tags: ["Running", "Coffee", "Community", "Morning plans"],
-      dressCode: "Sport casual",
+      tags: ["Dinner club", "Privado", "Comunidad", "Madrid"],
+      dressCode: "Elevated casual",
       conversationPrompt:
-        "Escribe tu ritmo, si te quedas al cafe y con quien te gustaria coincidir para conoceros."
+        "Cuenta por que te gustaria sentarte en esta mesa y que tipo de conversacion te atrae.",
+      minimumGuestsRequired: 4,
+      validationWindowDays: 7
     }
   ],
   memberships: [
     {
-      id: "membership-after-lucia",
-      eventId: "after-solar-2026",
-      userId: "lucia-serrano",
-      joinedAt: "2026-06-15T18:10:00+02:00"
-    },
-    {
       id: "membership-after-mateo",
       eventId: "after-solar-2026",
       userId: "mateo-rivas",
-      joinedAt: "2026-06-15T18:20:00+02:00"
+      status: "approved",
+      requestedAt: "2026-06-10T11:00:00+02:00",
+      respondedAt: "2026-06-10T12:10:00+02:00"
     },
     {
-      id: "membership-after-ines",
+      id: "membership-after-nora",
       eventId: "after-solar-2026",
-      userId: "ines-oliver",
-      joinedAt: "2026-06-15T18:32:00+02:00"
-    },
-    {
-      id: "membership-after-diego",
-      eventId: "after-solar-2026",
-      userId: "diego-luna",
-      joinedAt: "2026-06-15T18:40:00+02:00"
+      userId: "nora-costa",
+      status: "approved",
+      requestedAt: "2026-06-10T12:00:00+02:00",
+      respondedAt: "2026-06-10T13:20:00+02:00"
     },
     {
       id: "membership-after-sara",
       eventId: "after-solar-2026",
       userId: "sara-mora",
-      joinedAt: "2026-06-15T18:48:00+02:00"
+      status: "pending",
+      requestedAt: "2026-06-15T18:42:00+02:00"
+    },
+    {
+      id: "membership-after-diego",
+      eventId: "after-solar-2026",
+      userId: "diego-luna",
+      status: "rejected",
+      requestedAt: "2026-06-12T19:05:00+02:00",
+      respondedAt: "2026-06-12T21:30:00+02:00"
     },
     {
       id: "membership-brunch-lucia",
       eventId: "founders-brunch-circle",
       userId: "lucia-serrano",
-      joinedAt: "2026-06-15T12:08:00+02:00"
+      status: "approved",
+      requestedAt: "2026-06-14T12:08:00+02:00",
+      respondedAt: "2026-06-14T12:40:00+02:00"
     },
     {
-      id: "membership-brunch-ines",
+      id: "membership-brunch-mateo",
       eventId: "founders-brunch-circle",
-      userId: "ines-oliver",
-      joinedAt: "2026-06-15T12:12:00+02:00"
+      userId: "mateo-rivas",
+      status: "approved",
+      requestedAt: "2026-06-14T12:15:00+02:00",
+      respondedAt: "2026-06-14T13:05:00+02:00"
     },
     {
       id: "membership-brunch-nora",
       eventId: "founders-brunch-circle",
       userId: "nora-costa",
-      joinedAt: "2026-06-15T12:15:00+02:00"
+      status: "pending",
+      requestedAt: "2026-06-15T08:55:00+02:00"
     },
     {
-      id: "membership-design-mateo",
+      id: "membership-design-ines",
       eventId: "design-night-lab",
+      userId: "ines-oliver",
+      status: "approved",
+      requestedAt: "2026-06-03T19:10:00+02:00",
+      respondedAt: "2026-06-03T19:45:00+02:00"
+    },
+    {
+      id: "membership-design-nora",
+      eventId: "design-night-lab",
+      userId: "nora-costa",
+      status: "rejected",
+      requestedAt: "2026-06-05T16:10:00+02:00",
+      respondedAt: "2026-06-05T18:00:00+02:00"
+    },
+    {
+      id: "membership-secret-ines",
+      eventId: "cena-secreta-estudio",
+      userId: "ines-oliver",
+      status: "approved",
+      requestedAt: "2026-06-13T14:00:00+02:00",
+      respondedAt: "2026-06-13T15:10:00+02:00"
+    },
+    {
+      id: "membership-secret-mateo",
+      eventId: "cena-secreta-estudio",
       userId: "mateo-rivas",
-      joinedAt: "2026-06-15T19:10:00+02:00"
-    },
-    {
-      id: "membership-design-sara",
-      eventId: "design-night-lab",
-      userId: "sara-mora",
-      joinedAt: "2026-06-15T19:20:00+02:00"
-    },
-    {
-      id: "membership-run-diego",
-      eventId: "run-club-rio",
-      userId: "diego-luna",
-      joinedAt: "2026-06-15T20:04:00+02:00"
+      status: "pending",
+      requestedAt: "2026-06-15T11:05:00+02:00"
     }
   ],
   groupMessages: [
@@ -408,15 +400,15 @@ export const DEFAULT_STATE: PersistedState = {
       id: "group-after-1",
       eventId: "after-solar-2026",
       authorId: "system",
-      text: "El chat general ya esta abierto. Presentaos y decid con quien os gustaria coincidir al llegar.",
+      text: "Grupo abierto. Presentaos y contad con quien os gustaria cruzaros antes de llegar.",
       kind: "system",
-      createdAt: "2026-06-15T18:00:00+02:00"
+      createdAt: "2026-06-10T12:12:00+02:00"
     },
     {
       id: "group-after-2",
       eventId: "after-solar-2026",
       authorId: "mateo-rivas",
-      text: "Yo llegare pronto. Si alguien quiere empezar en la terraza, me apunto.",
+      text: "Yo llegare pronto. Si alguien quiere empezar arriba y luego bajar a pista, me apunto.",
       kind: "text",
       createdAt: "2026-06-15T18:42:00+02:00"
     },
@@ -424,54 +416,44 @@ export const DEFAULT_STATE: PersistedState = {
       id: "group-after-3",
       eventId: "after-solar-2026",
       authorId: "lucia-serrano",
-      text: "Busco gente que este mas por conocer y charlar un rato antes del set fuerte.",
+      text: "Me apetece que la gente llegue con ganas de hablar un rato antes del set fuerte.",
       kind: "text",
       createdAt: "2026-06-15T18:46:00+02:00"
-    },
-    {
-      id: "group-after-4",
-      eventId: "after-solar-2026",
-      authorId: "ines-oliver",
-      text: "Yo voy con dos amigas un rato y luego me pierdo por la pista. Feliz de saludar a gente nueva.",
-      kind: "text",
-      createdAt: "2026-06-15T18:49:00+02:00"
     },
     {
       id: "group-brunch-1",
       eventId: "founders-brunch-circle",
       authorId: "system",
-      text: "Usad este chat para contar que estais construyendo y reservar vuestra primera conversacion.",
+      text: "Usad el grupo para contar que estais construyendo y reservar la primera conversacion.",
       kind: "system",
-      createdAt: "2026-06-15T12:00:00+02:00"
+      createdAt: "2026-06-14T12:40:00+02:00"
     },
     {
       id: "group-brunch-2",
       eventId: "founders-brunch-circle",
-      authorId: "nora-costa",
-      text: "Yo voy desde Lisboa y me interesa mucho conocer gente de producto y marca.",
-      kind: "text",
-      createdAt: "2026-06-15T12:22:00+02:00"
-    },
-    {
-      id: "group-brunch-3",
-      eventId: "founders-brunch-circle",
       authorId: "lucia-serrano",
-      text: "Si alguien esta montando comunidad o experiencias, tengo mil ganas de hablar.",
+      text: "Si alguien trabaja comunidad o experiencias, tengo mil ganas de cruzarme.",
       kind: "text",
       createdAt: "2026-06-15T12:24:00+02:00"
+    },
+    {
+      id: "group-secret-1",
+      eventId: "cena-secreta-estudio",
+      authorId: "system",
+      text: "Mesa privada abierta. Usad este chat para calentar la cena y compartir por que os apetece venir.",
+      kind: "system",
+      createdAt: "2026-06-13T15:12:00+02:00"
+    },
+    {
+      id: "group-secret-2",
+      eventId: "cena-secreta-estudio",
+      authorId: "ines-oliver",
+      text: "Yo llevo tiempo queriendo una mesa pequena donde la gente vaya de verdad a conversar.",
+      kind: "text",
+      createdAt: "2026-06-13T19:10:00+02:00"
     }
   ],
   privateChatRequests: [
-    {
-      id: "request-mateo-lucia-after",
-      eventId: "after-solar-2026",
-      fromUserId: "mateo-rivas",
-      toUserId: "lucia-serrano",
-      message:
-        "He visto que tambien te interesan comunidad y eventos. Si te apetece, abrimos chat y nos ubicamos antes de subir.",
-      status: "pending",
-      createdAt: "2026-06-15T19:15:00+02:00"
-    },
     {
       id: "request-lucia-ines-after",
       eventId: "after-solar-2026",
@@ -525,18 +507,6 @@ export const DEFAULT_STATE: PersistedState = {
       authorId: "ines-oliver",
       text: "Perfecto. Te escribo por aqui cuando suba y asi nos ubicamos.",
       createdAt: "2026-06-15T19:08:00+02:00"
-    }
-  ],
-  organizerLeads: [
-    {
-      id: "lead-sara",
-      fromUserId: "sara-mora",
-      companyName: "Mono Studio",
-      concept: "Cenas creativas para gente de arte y moda",
-      message:
-        "No quiero montar eventos abiertos sin curacion. Me gustaria hablar con vosotros para activar un perfil organizador.",
-      status: "pending",
-      createdAt: "2026-06-15T17:40:00+02:00"
     }
   ]
 };

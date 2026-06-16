@@ -2,21 +2,22 @@ export type AppTab = "discover" | "agenda" | "inbox" | "profile" | "host";
 
 export type EventDetailTab = "overview" | "chat" | "people";
 
-export type UserRole = "attendee" | "organizer";
-
 export type EventCategory = "music" | "networking" | "food" | "creative" | "wellness";
+
+export type EventVisibility = "public" | "private";
+
+export type EventAttendanceStatus = "pending" | "approved" | "rejected";
+
+export type EventHealthStatus = "building" | "confirmed" | "at-risk";
 
 export type GroupMessageKind = "text" | "system";
 
 export type PrivateChatRequestStatus = "pending" | "accepted" | "rejected";
 
-export type OrganizerLeadStatus = "pending" | "contacted";
-
 export interface PlatformUser {
   id: string;
   name: string;
   handle: string;
-  role: UserRole;
   city: string;
   title: string;
   company?: string;
@@ -33,15 +34,16 @@ export interface EventItem {
   slug: string;
   title: string;
   category: EventCategory;
+  visibility: EventVisibility;
   city: string;
   venue: string;
   coverImage: string;
   startsAt: string;
   endsAt: string;
+  createdAt: string;
   priceLabel: string;
   capacity: number;
   baseGuestCount: number;
-  waitlistCount: number;
   hostId: string;
   summary: string;
   description: string;
@@ -49,13 +51,17 @@ export interface EventItem {
   tags: string[];
   dressCode: string;
   conversationPrompt: string;
+  minimumGuestsRequired: number;
+  validationWindowDays: number;
 }
 
 export interface EventMembership {
   id: string;
   eventId: string;
   userId: string;
-  joinedAt: string;
+  status: EventAttendanceStatus;
+  requestedAt: string;
+  respondedAt?: string;
 }
 
 export interface EventGroupMessage {
@@ -94,16 +100,6 @@ export interface PrivateMessage {
   createdAt: string;
 }
 
-export interface OrganizerLead {
-  id: string;
-  fromUserId: string;
-  companyName: string;
-  concept: string;
-  message: string;
-  status: OrganizerLeadStatus;
-  createdAt: string;
-}
-
 export interface SessionState {
   currentUserId: string;
   activeTab: AppTab;
@@ -121,12 +117,12 @@ export interface PersistedState {
   privateChatRequests: PrivateChatRequest[];
   privateChats: PrivateChat[];
   privateMessages: PrivateMessage[];
-  organizerLeads: OrganizerLead[];
 }
 
 export interface CreateEventInput {
   title: string;
   category: EventCategory;
+  visibility: EventVisibility;
   city: string;
   venue: string;
   startsAt: string;
@@ -141,11 +137,12 @@ export interface CreateEventInput {
   coverImage?: string;
 }
 
-export interface OrganizerLeadInput {
-  companyName: string;
-  concept: string;
-  message: string;
-}
+export type EventAccessState =
+  | { kind: "host" }
+  | { kind: "approved"; membership: EventMembership }
+  | { kind: "pending"; membership: EventMembership }
+  | { kind: "rejected"; membership: EventMembership }
+  | { kind: "available" };
 
 export type EventConnectionState =
   | { kind: "self" }

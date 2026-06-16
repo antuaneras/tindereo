@@ -8,6 +8,7 @@ import {
   CalendarDays,
   Check,
   ChevronRight,
+  Clock3,
   Compass,
   Inbox,
   MapPin,
@@ -23,25 +24,18 @@ import {
   X
 } from "lucide-react";
 import { OrganizerDashboard } from "@/components/tindereo/organizer-dashboard";
-import {
-  APP_NAME,
-  APP_TAGLINE,
-  EVENT_CATEGORY_OPTIONS,
-  ORGANIZER_CONTACT_EMAIL
-} from "@/lib/tindereo-data";
+import { APP_NAME, APP_TAGLINE, EVENT_CATEGORY_OPTIONS } from "@/lib/tindereo-data";
 import type {
   AppTab,
   CreateEventInput,
   EventCategory,
   EventDetailTab,
-  OrganizerLeadInput,
   PersistedState,
   PlatformUser
 } from "@/lib/tindereo-types";
 import {
   createEvent,
   createInitialState,
-  formatEventDate,
   formatEventDateRange,
   formatRelativeTime,
   formatTime,
@@ -49,12 +43,19 @@ import {
   getChatPartner,
   getCurrentUser,
   getDiscoverFeedEvents,
+  getEventAccessState,
   getEventAttendanceRatio,
   getEventById,
   getEventConnectionState,
+  getEventDeadlineLabel,
   getEventGuestCount,
+  getEventHealth,
   getEventMembers,
   getEventMessages,
+  getEventPendingCount,
+  getEventPendingRequests,
+  getEventRequirementSummary,
+  getHostPendingRequests,
   getHostedEvents,
   getIncomingPendingRequests,
   getInitials,
@@ -64,24 +65,19 @@ import {
   getPrivateMessages,
   getPrivateRequestsForUser,
   getUserById,
-  hasJoinedEvent,
-  joinEvent,
+  hasEventAccess,
+  isEventHost,
   leaveEvent,
   postEventMessage,
   readPersistedState,
+  requestEventAccess,
+  respondToEventAccess,
   respondToPrivateChatRequest,
   sendPrivateChatRequest,
-  sendPrivateMessage,
-  submitOrganizerLead
+  sendPrivateMessage
 } from "@/lib/tindereo-utils";
 
-const STORAGE_KEY = "tindereo-events-demo-v1";
-
-const EMPTY_LEAD_FORM: OrganizerLeadInput = {
-  companyName: "",
-  concept: "",
-  message: ""
-};
+const STORAGE_KEY = "tindereo-events-demo-v2";
 
 export function TindereoApp() {
   const [state, setState] = useState<PersistedState | null>(null);
@@ -91,7 +87,6 @@ export function TindereoApp() {
   const [requestDrafts, setRequestDrafts] = useState<Record<string, string>>({});
   const [selectedAttendeeByEvent, setSelectedAttendeeByEvent] = useState<Record<string, string>>({});
   const [privateDraft, setPrivateDraft] = useState("");
-  const [leadForm, setLeadForm] = useState<OrganizerLeadInput>(EMPTY_LEAD_FORM);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -114,31 +109,32 @@ export function TindereoApp() {
   }
 
   const currentUser = getCurrentUser(state);
-  const discoverEvents = getDiscoverFeedEvents(state);
+  const discoverEvents = getDiscoverFeedEvents(state, currentUser.id);
   const joinedEvents = getJoinedEvents(state, currentUser.id);
+  const hostedEvents = getHostedEvents(state, currentUser.id);
+  const hostPendingRequests = getHostPendingRequests(state, currentUser.id);
   const filteredEvents = discoverEvents.filter((event) => {
     const matchesCategory = categoryFilter === "all" || event.category === categoryFilter;
     const haystack = `${event.title} ${event.city} ${event.venue} ${event.tags.join(" ")}`.toLowerCase();
     const matchesSearch = searchTerm.trim() === "" || haystack.includes(searchTerm.toLowerCase());
     return matchesCategory && matchesSearch;
   });
-  const discoverSelection = pickEvent(filteredEvents, state.session.selectedEventId) ??
+  const discoverSelection =
+    pickEvent(filteredEvents, state.session.selectedEventId) ??
     pickEvent(discoverEvents, state.session.selectedEventId) ??
     discoverEvents[0] ??
     null;
   const agendaSelection = pickEvent(joinedEvents, state.session.selectedEventId) ?? joinedEvents[0] ?? null;
-  const activeEvent =
-    (state.session.activeTab === "agenda" ? agendaSelection : discoverSelection) ??
-    getEventById(state, state.session.selectedEventId);
-  const incomingRequests = getIncomingPendingRequests(state, currentUser.id);
+  const incomingPrivateRequests = getIncomingPendingRequests(state, currentUser.id);
   const privateChats = getPrivateChatsForUser(state, currentUser.id);
   const selectedPrivateChat =
     privateChats.find((chat) => chat.id === state.session.selectedPrivateChatId) ??
     privateChats[0] ??
     null;
   const joinedCount = joinedEvents.length;
-  const requestCount = incomingRequests.length;
-  const chatCount = privateChats.length;
+  const hostedCount = hostedEvents.length;
+  const pendingApprovalsCount = hostPendingRequests.length;
+  const privateRequestCount = incomingPrivateRequests.length;
 
   const updateSession = (patch: Partial<PersistedState["session"]>) => {
     setState((current) =>
@@ -169,22 +165,19 @@ export function TindereoApp() {
     });
   };
 
-  const handleJoinEvent = (eventId: string) => {
+  const handleRequestEventAccess = (eventId: string) => {
+    setState((current) =>
+      current ? requestEventAccess(current, eventId, current.session.currentUserId) : current
+    );
+  };
+
+  const handleRespondEventAccess = (membershipId: string, accept: boolean) => {
     setState((current) => {
       if (!current) {
         return current;
       }
 
-      const next = joinEvent(current, eventId, current.session.currentUserId);
-      return {
-        ...next,
-        session: {
-          ...next.session,
-          activeTab: "agenda",
-          selectedEventId: eventId,
-          selectedEventView: "chat"
-        }
-      };
+      return respondToEventAccess(current, membershipId, current.session.currentUserId, accept);
     });
   };
 
@@ -201,7 +194,11 @@ export function TindereoApp() {
         session: {
           ...next.session,
           activeTab: nextJoined.length > 0 ? "agenda" : "discover",
-          selectedEventId: nextJoined[0]?.id ?? discoverEvents[0]?.id ?? next.events[0]?.id ?? null,
+          selectedEventId:
+            nextJoined[0]?.id ??
+            getDiscoverFeedEvents(next, next.session.currentUserId)[0]?.id ??
+            next.events[0]?.id ??
+            null,
           selectedEventView: "overview"
         }
       };
@@ -242,7 +239,7 @@ export function TindereoApp() {
     setRequestDrafts((current) => ({ ...current, [draftKey]: "" }));
   };
 
-  const handleRespondRequest = (requestId: string, accept: boolean) => {
+  const handleRespondPrivateRequest = (requestId: string, accept: boolean) => {
     setState((current) => {
       if (!current) {
         return current;
@@ -293,23 +290,26 @@ export function TindereoApp() {
         return current;
       }
 
-      const nextChats = getPrivateChatsForUser(
-        {
-          ...current,
-          session: {
-            ...current.session,
-            currentUserId: userId
-          }
-        },
-        userId
-      );
-
-      return {
+      const provisionalState = {
         ...current,
         session: {
           ...current.session,
+          currentUserId: userId
+        }
+      };
+      const nextChats = getPrivateChatsForUser(provisionalState, userId);
+      const nextDiscover = getDiscoverFeedEvents(provisionalState, userId);
+      const nextJoined = getJoinedEvents(provisionalState, userId);
+      const selectedEventId =
+        nextJoined[0]?.id ?? nextDiscover[0]?.id ?? provisionalState.events[0]?.id ?? null;
+
+      return {
+        ...provisionalState,
+        session: {
+          ...provisionalState.session,
           currentUserId: userId,
-          selectedPrivateChatId: nextChats[0]?.id ?? null
+          selectedPrivateChatId: nextChats[0]?.id ?? null,
+          selectedEventId
         }
       };
     });
@@ -332,17 +332,6 @@ export function TindereoApp() {
     });
   };
 
-  const handleSubmitOrganizerLead = () => {
-    if (!leadForm.companyName.trim() || !leadForm.concept.trim() || !leadForm.message.trim()) {
-      return;
-    }
-
-    setState((current) =>
-      current ? submitOrganizerLead(current, current.session.currentUserId, leadForm) : current
-    );
-    setLeadForm(EMPTY_LEAD_FORM);
-  };
-
   const handleResetDemo = () => {
     setState(createInitialState());
     setSearchTerm("");
@@ -351,7 +340,6 @@ export function TindereoApp() {
     setRequestDrafts({});
     setSelectedAttendeeByEvent({});
     setPrivateDraft("");
-    setLeadForm(EMPTY_LEAD_FORM);
   };
 
   return (
@@ -360,9 +348,9 @@ export function TindereoApp() {
         <header className="flex flex-wrap items-center justify-between gap-4">
           <BrandMark />
           <div className="flex items-center gap-2">
-            <div className="hidden rounded-full border border-[#eadfd3] bg-white/88 px-4 py-2 text-sm text-[#6d5749] md:flex md:items-center md:gap-2">
+            <div className="hidden rounded-full border border-[#eadfd3] bg-white/88 px-4 py-2 text-sm text-[#6d5749] md:flex md:items-center md:gap-3">
               <AvatarChip user={currentUser} />
-              <span>{currentUser.role === "organizer" ? "Organizador aprobado" : "Modo asistente"}</span>
+              <span>{hostedCount} creados · {pendingApprovalsCount} por revisar</span>
             </div>
             <button
               className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-white/88 px-4 py-2 text-sm font-semibold text-[#5f4b3f] shadow-[0_10px_24px_rgba(52,34,22,0.06)]"
@@ -375,17 +363,14 @@ export function TindereoApp() {
           </div>
         </header>
 
-        <DesktopNavigation
-          activeTab={state.session.activeTab}
-          onChange={updateSession}
-          organizerMode={currentUser.role === "organizer"}
-        />
+        <DesktopNavigation activeTab={state.session.activeTab} onChange={updateSession} />
 
         <SummaryBanner
           currentUser={currentUser}
+          hostedCount={hostedCount}
           joinedCount={joinedCount}
-          requestCount={requestCount}
-          chatCount={chatCount}
+          pendingApprovalsCount={pendingApprovalsCount}
+          privateRequestCount={privateRequestCount}
         />
 
         {state.session.activeTab === "discover" ? (
@@ -397,11 +382,11 @@ export function TindereoApp() {
                     Descubrir eventos
                   </p>
                   <h1 className="mt-1 text-2xl font-black tracking-tight md:text-3xl">
-                    Encuentra el plan y entra en la conversacion antes de llegar
+                    Eventos publicos con acceso moderado y comunidad previa
                   </h1>
                 </div>
                 <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-2 text-sm text-[#6d5749]">
-                  {filteredEvents.length} eventos visibles
+                  {filteredEvents.length} visibles para ti
                 </div>
               </div>
               <div className="mt-4 flex flex-col gap-3 lg:flex-row">
@@ -430,9 +415,7 @@ export function TindereoApp() {
                             ? "border-[#ffb493] bg-[#fff0e8] text-[#d45d28]"
                             : "border-[#eadfd3] bg-[#fffaf6] text-[#6d5749]"
                         }`}
-                        onClick={() =>
-                          setCategoryFilter(option.value as EventCategory | "all")
-                        }
+                        onClick={() => setCategoryFilter(option.value as EventCategory | "all")}
                         type="button"
                       >
                         {option.label}
@@ -462,10 +445,11 @@ export function TindereoApp() {
                   }))
                 }
                 onChangeView={(view) => updateSession({ selectedEventView: view })}
-                onJoinEvent={handleJoinEvent}
                 onLeaveEvent={handleLeaveEvent}
                 onOpenPrivateChat={openPrivateChat}
-                onRespondRequest={handleRespondRequest}
+                onRequestEventAccess={handleRequestEventAccess}
+                onRespondEventAccess={handleRespondEventAccess}
+                onRespondPrivateRequest={handleRespondPrivateRequest}
                 onSelectAttendee={(userId) =>
                   setSelectedAttendeeByEvent((current) => ({
                     ...current,
@@ -487,7 +471,7 @@ export function TindereoApp() {
             ) : (
               <EmptyState
                 title="No hay eventos con ese filtro"
-                copy="Prueba con otra ciudad o limpia la busqueda para volver a ver el feed."
+                copy="Prueba con otra categoria o limpia la busqueda para volver a ver el feed."
               />
             )}
           </div>
@@ -500,11 +484,11 @@ export function TindereoApp() {
                 Mi agenda
               </p>
               <h1 className="mt-1 text-2xl font-black tracking-tight md:text-3xl">
-                Tus eventos confirmados y sus chats listos para usar
+                Tus eventos aprobados y los que has creado
               </h1>
               <p className="mt-2 text-sm text-[#6d5749]">
-                Cada vez que te unes a un evento entras tambien en el chat general. Desde ahi puedes
-                conocer gente y abrir privados solo con aceptacion.
+                Aqui entran los eventos donde ya tienes acceso confirmado y tambien los que tu
+                mismo organizas.
               </p>
             </section>
 
@@ -527,10 +511,11 @@ export function TindereoApp() {
                   }))
                 }
                 onChangeView={(view) => updateSession({ selectedEventView: view })}
-                onJoinEvent={handleJoinEvent}
                 onLeaveEvent={handleLeaveEvent}
                 onOpenPrivateChat={openPrivateChat}
-                onRespondRequest={handleRespondRequest}
+                onRequestEventAccess={handleRequestEventAccess}
+                onRespondEventAccess={handleRespondEventAccess}
+                onRespondPrivateRequest={handleRespondPrivateRequest}
                 onSelectAttendee={(userId) =>
                   setSelectedAttendeeByEvent((current) => ({
                     ...current,
@@ -551,8 +536,8 @@ export function TindereoApp() {
               />
             ) : (
               <EmptyState
-                title="Todavia no te has unido a ningun evento"
-                copy="Vuelve a Descubrir, elige un evento y se abrira automaticamente tu acceso al chat general."
+                title="Todavia no tienes eventos en agenda"
+                copy="Solicita acceso a un evento publico o crea el tuyo propio desde la pestaña Crear."
                 action={
                   <button
                     className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] px-5 py-3 text-sm font-semibold text-white"
@@ -573,7 +558,7 @@ export function TindereoApp() {
             currentUser={currentUser}
             onChangePrivateDraft={setPrivateDraft}
             onOpenChat={openPrivateChat}
-            onRespondRequest={handleRespondRequest}
+            onRespondPrivateRequest={handleRespondPrivateRequest}
             onSendMessage={handleSendPrivateMessage}
             privateChats={privateChats}
             privateDraft={privateDraft}
@@ -585,53 +570,39 @@ export function TindereoApp() {
         {state.session.activeTab === "profile" ? (
           <ProfileSection
             currentUser={currentUser}
+            hostedCount={hostedCount}
             joinedCount={joinedCount}
+            pendingApprovalsCount={pendingApprovalsCount}
             onResetDemo={handleResetDemo}
             onSwitchUser={handleSwitchUser}
-            requestCount={requestCount}
             state={state}
           />
         ) : null}
 
         {state.session.activeTab === "host" ? (
-          currentUser.role === "organizer" ? (
-            <OrganizerDashboard
-              currentUser={currentUser}
-              onCreateEvent={handleCreateEvent}
-              onSelectEvent={(eventId) => openEvent(eventId, "discover")}
-              state={state}
-            />
-          ) : (
-            <OrganizerAccessSection
-              currentUser={currentUser}
-              leadForm={leadForm}
-              onChangeLeadForm={setLeadForm}
-              onSubmitLead={handleSubmitOrganizerLead}
-              state={state}
-            />
-          )
+          <OrganizerDashboard
+            currentUser={currentUser}
+            onCreateEvent={handleCreateEvent}
+            onRespondToAccess={handleRespondEventAccess}
+            onSelectEvent={(eventId) => openEvent(eventId, "discover")}
+            state={state}
+          />
         ) : null}
       </main>
 
-      <MobileNavigation
-        activeTab={state.session.activeTab}
-        onChange={updateSession}
-        organizerMode={currentUser.role === "organizer"}
-      />
+      <MobileNavigation activeTab={state.session.activeTab} onChange={updateSession} />
     </div>
   );
 }
 
 function DesktopNavigation({
   activeTab,
-  onChange,
-  organizerMode
+  onChange
 }: {
   activeTab: AppTab;
   onChange: (patch: Partial<PersistedState["session"]>) => void;
-  organizerMode: boolean;
 }) {
-  const items = buildNavItems(organizerMode);
+  const items = buildNavItems();
 
   return (
     <nav className="mb-5 mt-5 hidden flex-wrap gap-2 md:flex">
@@ -659,14 +630,12 @@ function DesktopNavigation({
 
 function MobileNavigation({
   activeTab,
-  onChange,
-  organizerMode
+  onChange
 }: {
   activeTab: AppTab;
   onChange: (patch: Partial<PersistedState["session"]>) => void;
-  organizerMode: boolean;
 }) {
-  const items = buildNavItems(organizerMode);
+  const items = buildNavItems();
 
   return (
     <div className="md:hidden">
@@ -703,14 +672,16 @@ function MobileNavigation({
 
 function SummaryBanner({
   currentUser,
+  hostedCount,
   joinedCount,
-  requestCount,
-  chatCount
+  pendingApprovalsCount,
+  privateRequestCount
 }: {
   currentUser: PlatformUser;
+  hostedCount: number;
   joinedCount: number;
-  requestCount: number;
-  chatCount: number;
+  pendingApprovalsCount: number;
+  privateRequestCount: number;
 }) {
   return (
     <section className="mb-5 overflow-hidden rounded-[34px] border border-[#eadfd3] bg-white/88 p-4 shadow-[0_26px_64px_rgba(52,34,22,0.08)] md:p-5">
@@ -736,13 +707,11 @@ function SummaryBanner({
             <p className="mt-2 text-sm text-[#6d5749]">{currentUser.tagline}</p>
           </div>
         </div>
-        <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
-          <MetricTile label="Eventos" value={String(joinedCount)} />
-          <MetricTile label="Solicitudes" value={String(requestCount)} />
-          <MetricTile
-            label={currentUser.role === "organizer" ? "Panel" : "Privados"}
-            value={currentUser.role === "organizer" ? "Admin" : String(chatCount)}
-          />
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-4">
+          <MetricTile label="Creados" value={String(hostedCount)} />
+          <MetricTile label="Agenda" value={String(joinedCount)} />
+          <MetricTile label="Pendientes" value={String(pendingApprovalsCount)} />
+          <MetricTile label="Privados" value={String(privateRequestCount)} />
         </div>
       </div>
     </section>
@@ -760,10 +729,11 @@ function EventWorkspace({
   onChangeGroupDraft,
   onChangeRequestDraft,
   onChangeView,
-  onJoinEvent,
   onLeaveEvent,
   onOpenPrivateChat,
-  onRespondRequest,
+  onRequestEventAccess,
+  onRespondEventAccess,
+  onRespondPrivateRequest,
   onSelectAttendee,
   onSendGroupMessage,
   onSendPrivateRequest,
@@ -781,10 +751,11 @@ function EventWorkspace({
   onChangeGroupDraft: (value: string) => void;
   onChangeRequestDraft: (targetUserId: string, value: string) => void;
   onChangeView: (view: EventDetailTab) => void;
-  onJoinEvent: (eventId: string) => void;
   onLeaveEvent: (eventId: string) => void;
   onOpenPrivateChat: (chatId: string) => void;
-  onRespondRequest: (requestId: string, accept: boolean) => void;
+  onRequestEventAccess: (eventId: string) => void;
+  onRespondEventAccess: (membershipId: string, accept: boolean) => void;
+  onRespondPrivateRequest: (requestId: string, accept: boolean) => void;
   onSelectAttendee: (userId: string) => void;
   onSendGroupMessage: () => void;
   onSendPrivateRequest: (targetUserId: string) => void;
@@ -792,21 +763,28 @@ function EventWorkspace({
   selectedAttendeeId: string | null;
   state: PersistedState;
 }) {
-  const joined = hasJoinedEvent(state, event.id, currentUser.id);
   const host = getUserById(state, event.hostId);
+  const accessState = getEventAccessState(state, event.id, currentUser.id);
+  const isHost = accessState.kind === "host";
+  const canAccess = hasEventAccess(state, event.id, currentUser.id);
   const guestCount = getEventGuestCount(state, event.id);
+  const pendingCount = getEventPendingCount(state, event.id);
   const fill = Math.round(getEventAttendanceRatio(state, event.id) * 100);
   const messages = getEventMessages(state, event.id);
   const members = getEventMembers(state, event.id);
+  const pendingRequests = isHost ? getEventPendingRequests(state, event.id) : [];
+  const health = getEventHealth(state, event.id);
+  const requirement = getEventRequirementSummary(state, event.id);
+  const categoryMeta = getCategoryMeta(event.category);
   const attendee =
     members.find((user) => user.id === selectedAttendeeId) ??
     members.find((user) => user.id !== currentUser.id) ??
     members[0] ??
     null;
-  const connectionState = attendee
-    ? getEventConnectionState(state, event.id, currentUser.id, attendee.id)
-    : null;
-  const categoryMeta = getCategoryMeta(event.category);
+  const connectionState =
+    attendee && canAccess
+      ? getEventConnectionState(state, event.id, currentUser.id, attendee.id)
+      : null;
 
   return (
     <div className="space-y-5">
@@ -816,6 +794,7 @@ function EventWorkspace({
         <div className="relative p-5 md:p-7">
           <div className="flex flex-wrap gap-2">
             <Pill tone="dark">{categoryMeta.label}</Pill>
+            <Pill tone="dark">{event.visibility === "public" ? "Publico" : "Privado"}</Pill>
             <Pill tone="dark">{guestCount} confirmados</Pill>
             <Pill tone="dark">{event.priceLabel}</Pill>
           </div>
@@ -829,14 +808,34 @@ function EventWorkspace({
             <InfoChip icon={<Users className="h-4 w-4" />} value={`${guestCount} de ${event.capacity} plazas`} />
           </div>
           <div className="mt-5 flex flex-wrap items-center gap-3">
-            {joined ? (
+            {isHost ? (
+              <>
+                <button
+                  className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] px-5 py-3 text-sm font-semibold text-white shadow-[0_18px_35px_rgba(240,138,36,0.28)]"
+                  onClick={() => onChangeView("people")}
+                  type="button"
+                >
+                  Gestionar accesos
+                  <ArrowRight className="h-4 w-4" />
+                </button>
+                <button
+                  className="inline-flex items-center gap-2 rounded-full border border-white/18 bg-white/10 px-5 py-3 text-sm font-semibold text-white"
+                  onClick={() => onChangeView("chat")}
+                  type="button"
+                >
+                  Abrir chat general
+                </button>
+              </>
+            ) : null}
+
+            {accessState.kind === "approved" ? (
               <>
                 <button
                   className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] px-5 py-3 text-sm font-semibold text-white shadow-[0_18px_35px_rgba(240,138,36,0.28)]"
                   onClick={() => onChangeView("chat")}
                   type="button"
                 >
-                  Abrir chat general
+                  Entrar al chat general
                   <ArrowRight className="h-4 w-4" />
                 </button>
                 <button
@@ -847,18 +846,33 @@ function EventWorkspace({
                   Salir del evento
                 </button>
               </>
-            ) : (
+            ) : null}
+
+            {accessState.kind === "available" ? (
               <button
                 className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] px-5 py-3 text-sm font-semibold text-white shadow-[0_18px_35px_rgba(240,138,36,0.28)]"
-                onClick={() => onJoinEvent(event.id)}
+                onClick={() => onRequestEventAccess(event.id)}
                 type="button"
               >
-                Unirme y abrir chat general
+                Solicitar acceso
                 <ArrowRight className="h-4 w-4" />
               </button>
-            )}
+            ) : null}
+
+            {accessState.kind === "pending" ? (
+              <div className="rounded-full border border-white/18 bg-white/10 px-5 py-3 text-sm font-semibold text-white">
+                Solicitud pendiente de revision
+              </div>
+            ) : null}
+
+            {accessState.kind === "rejected" ? (
+              <div className="rounded-full border border-white/18 bg-white/10 px-5 py-3 text-sm font-semibold text-white">
+                Solicitud rechazada
+              </div>
+            ) : null}
+
             <div className="rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm text-white/72">
-              Organiza {host.name}
+              Crea {host.name}
             </div>
           </div>
         </div>
@@ -911,21 +925,27 @@ function EventWorkspace({
               </SectionCard>
 
               <SectionCard>
-                <SectionLabel>Como se conecta la gente aqui</SectionLabel>
+                <SectionLabel>Acceso y viabilidad</SectionLabel>
                 <div className="mt-4 grid gap-4 md:grid-cols-2">
                   <div className="rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
                     <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
-                      Conversacion inicial
+                      Politica de acceso
                     </p>
-                    <p className="mt-3 text-sm text-[#5f4b3f]">{event.conversationPrompt}</p>
+                    <p className="mt-3 text-sm text-[#5f4b3f]">
+                      {event.visibility === "public"
+                        ? "Es publico y aparece en Descubrir, pero el creador aprueba cada solicitud."
+                        : "Es privado. Solo lo ve quien lo crea y quien ya tiene acceso aprobado."}
+                    </p>
                   </div>
                   <div className="rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
                     <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
-                      Invitados visibles
+                      Regla de la semana
                     </p>
                     <p className="mt-3 text-sm text-[#5f4b3f]">
-                      Hay {members.length} perfiles demo visibles dentro de un total de {guestCount}{" "}
-                      confirmados. Desde estos perfiles puedes mandar solicitud de privado.
+                      Minimo {event.minimumGuestsRequired} personas inscritas en {event.validationWindowDays} dias.
+                      {health === "confirmed"
+                        ? " Este evento ya cumple el objetivo."
+                        : ` Quedan ${requirement.remainingCount} por confirmar antes del ${getEventDeadlineLabel(event)}.`}
                     </p>
                   </div>
                 </div>
@@ -934,14 +954,14 @@ function EventWorkspace({
           ) : null}
 
           {currentView === "chat" ? (
-            joined ? (
+            canAccess ? (
               <SectionCard>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <SectionLabel>Chat general del evento</SectionLabel>
                     <p className="mt-2 text-sm text-[#6d5749]">
-                      Este espacio se abre al unirte. Sirve para presentarte y llegar con menos frio
-                      social.
+                      Solo los confirmados y el creador pueden escribir aqui. La idea es llegar con
+                      la comunidad ya calentada.
                     </p>
                   </div>
                   <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-2 text-sm text-[#6d5749]">
@@ -958,7 +978,10 @@ function EventWorkspace({
                         {message.text}
                       </div>
                     ) : (
-                      <div key={message.id} className="flex gap-3 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
+                      <div
+                        key={message.id}
+                        className="flex gap-3 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4"
+                      >
                         <AvatarChip user={getUserById(state, message.authorId)} />
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center justify-between gap-2">
@@ -980,7 +1003,7 @@ function EventWorkspace({
                     </span>
                     <textarea
                       className="w-full resize-none rounded-[18px] border border-[#e7d8cb] bg-white px-4 py-3 text-sm text-[#1d160f] outline-none focus:border-[#ff8d66] focus:ring-2 focus:ring-[#ffd4c5]"
-                      onChange={(event) => onChangeGroupDraft(event.target.value)}
+                      onChange={(eventValue) => onChangeGroupDraft(eventValue.target.value)}
                       placeholder={event.conversationPrompt}
                       rows={3}
                       value={groupDraft}
@@ -1000,220 +1023,279 @@ function EventWorkspace({
               </SectionCard>
             ) : (
               <EmptyState
-                title="Unete para activar el chat general"
-                copy="La conversacion del evento se abre en cuanto confirmas tu asistencia."
+                title="Necesitas aprobacion para entrar al chat"
+                copy="El grupo general se activa cuando el creador acepta tu solicitud de acceso."
                 action={
-                  <button
-                    className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] px-5 py-3 text-sm font-semibold text-white"
-                    onClick={() => onJoinEvent(event.id)}
-                    type="button"
-                  >
-                    Unirme ahora
-                    <ArrowRight className="h-4 w-4" />
-                  </button>
+                  accessState.kind === "available" ? (
+                    <button
+                      className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] px-5 py-3 text-sm font-semibold text-white"
+                      onClick={() => onRequestEventAccess(event.id)}
+                      type="button"
+                    >
+                      Solicitar acceso
+                      <ArrowRight className="h-4 w-4" />
+                    </button>
+                  ) : undefined
                 }
               />
             )
           ) : null}
 
           {currentView === "people" ? (
-            <div className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
-              <SectionCard>
-                <div className="flex items-center justify-between gap-3">
-                  <SectionLabel>Asistentes visibles</SectionLabel>
-                  <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-2 text-sm text-[#6d5749]">
-                    {members.length} perfiles
+            canAccess || isHost ? (
+              <div className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
+                <SectionCard>
+                  <div className="flex items-center justify-between gap-3">
+                    <SectionLabel>Asistentes visibles</SectionLabel>
+                    <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-2 text-sm text-[#6d5749]">
+                      {members.length} perfiles
+                    </div>
                   </div>
-                </div>
-                <div className="mt-4 space-y-3">
-                  {members.map((member) => {
-                    const active = attendee?.id === member.id;
-                    return (
-                      <button
-                        key={member.id}
-                        className={`flex w-full items-center gap-3 rounded-[24px] border p-3 text-left transition ${
-                          active
-                            ? "border-[#ffb493] bg-[#fff0e8]"
-                            : "border-[#eadfd3] bg-[#fffaf6]"
-                        }`}
-                        onClick={() => onSelectAttendee(member.id)}
-                        type="button"
-                      >
-                        <AvatarChip user={member} />
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <p className="truncate font-semibold text-[#1d160f]">{member.name}</p>
-                            {member.role === "organizer" ? (
-                              <span className="rounded-full bg-[#1d160f] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-white">
-                                Host
+
+                  {isHost ? (
+                    <div className="mt-4 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                        Solicitudes pendientes
+                      </p>
+                      <div className="mt-3 space-y-3">
+                        {pendingRequests.length === 0 ? (
+                          <p className="text-sm text-[#6d5749]">
+                            No hay solicitudes pendientes en este evento.
+                          </p>
+                        ) : (
+                          pendingRequests.map((membership) => {
+                            const applicant = getUserById(state, membership.userId);
+                            return (
+                              <div
+                                key={membership.id}
+                                className="rounded-[20px] border border-[#eadfd3] bg-white px-3 py-3"
+                              >
+                                <div className="flex items-center justify-between gap-3">
+                                  <div>
+                                    <p className="font-semibold text-[#1d160f]">{applicant.name}</p>
+                                    <p className="text-xs text-[#8f6f59]">
+                                      {formatRelativeTime(membership.requestedAt)}
+                                    </p>
+                                  </div>
+                                  <div className="flex gap-2">
+                                    <button
+                                      className="rounded-full bg-[#1d160f] px-3 py-2 text-xs font-semibold text-white"
+                                      onClick={() => onRespondEventAccess(membership.id, true)}
+                                      type="button"
+                                    >
+                                      Aprobar
+                                    </button>
+                                    <button
+                                      className="rounded-full border border-[#eadfd3] px-3 py-2 text-xs font-semibold text-[#6d5749]"
+                                      onClick={() => onRespondEventAccess(membership.id, false)}
+                                      type="button"
+                                    >
+                                      Rechazar
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="mt-4 space-y-3">
+                    {members.map((member) => {
+                      const active = attendee?.id === member.id;
+                      return (
+                        <button
+                          key={member.id}
+                          className={`flex w-full items-center gap-3 rounded-[24px] border p-3 text-left transition ${
+                            active
+                              ? "border-[#ffb493] bg-[#fff0e8]"
+                              : "border-[#eadfd3] bg-[#fffaf6]"
+                          }`}
+                          onClick={() => onSelectAttendee(member.id)}
+                          type="button"
+                        >
+                          <AvatarChip user={member} />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <p className="truncate font-semibold text-[#1d160f]">{member.name}</p>
+                              {member.id === event.hostId ? (
+                                <span className="rounded-full bg-[#1d160f] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-white">
+                                  Host
+                                </span>
+                              ) : null}
+                            </div>
+                            <p className="truncate text-sm text-[#6d5749]">{member.title}</p>
+                          </div>
+                          <ChevronRight className="h-4 w-4 text-[#8f6f59]" />
+                        </button>
+                      );
+                    })}
+                  </div>
+                </SectionCard>
+
+                <SectionCard>
+                  {attendee ? (
+                    <div>
+                      <div className="flex flex-wrap items-center gap-4">
+                        <div className="h-20 w-20 overflow-hidden rounded-[26px] border border-[#eadfd3] bg-[#f5e4d6]">
+                          <img alt={attendee.name} className="h-full w-full object-cover" src={attendee.avatar} />
+                        </div>
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="text-2xl font-black tracking-tight text-[#1d160f]">
+                              {attendee.name}
+                            </h3>
+                            {attendee.id === event.hostId ? (
+                              <span className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-3 py-1 text-xs font-semibold text-[#6d5749]">
+                                Creador del evento
                               </span>
                             ) : null}
                           </div>
-                          <p className="truncate text-sm text-[#6d5749]">{member.title}</p>
+                          <p className="mt-1 text-sm font-semibold text-[#8f6f59]">
+                            {attendee.title}
+                            {attendee.company ? ` · ${attendee.company}` : ""}
+                          </p>
+                          <p className="mt-2 text-sm text-[#5f4b3f]">{attendee.bio}</p>
                         </div>
-                        <ChevronRight className="h-4 w-4 text-[#8f6f59]" />
-                      </button>
-                    );
-                  })}
-                </div>
-              </SectionCard>
-
-              <SectionCard>
-                {attendee ? (
-                  <div>
-                    <div className="flex flex-wrap items-center gap-4">
-                      <div className="h-20 w-20 overflow-hidden rounded-[26px] border border-[#eadfd3] bg-[#f5e4d6]">
-                        <img alt={attendee.name} className="h-full w-full object-cover" src={attendee.avatar} />
                       </div>
-                      <div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <h3 className="text-2xl font-black tracking-tight text-[#1d160f]">
-                            {attendee.name}
-                          </h3>
-                          {attendee.role === "organizer" ? (
-                            <span className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-3 py-1 text-xs font-semibold text-[#6d5749]">
-                              Organiza este evento
-                            </span>
-                          ) : null}
-                        </div>
-                        <p className="mt-1 text-sm font-semibold text-[#8f6f59]">
-                          {attendee.title}
-                          {attendee.company ? ` · ${attendee.company}` : ""}
+
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        {attendee.interests.map((interest) => (
+                          <span
+                            key={interest}
+                            className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-3 py-2 text-xs font-semibold text-[#6d5749]"
+                          >
+                            {interest}
+                          </span>
+                        ))}
+                      </div>
+
+                      <div className="mt-5 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
+                        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                          Conexion privada
                         </p>
-                        <p className="mt-2 text-sm text-[#5f4b3f]">{attendee.bio}</p>
+
+                        {connectionState?.kind === "self" ? (
+                          <p className="mt-3 text-sm text-[#5f4b3f]">
+                            Este eres tu. Cambia de perfil desde Perfil si quieres probar el otro lado
+                            del flujo.
+                          </p>
+                        ) : null}
+
+                        {connectionState?.kind === "available" ? (
+                          <div className="mt-3">
+                            <textarea
+                              className="w-full resize-none rounded-[18px] border border-[#e7d8cb] bg-white px-4 py-3 text-sm text-[#1d160f] outline-none focus:border-[#ff8d66] focus:ring-2 focus:ring-[#ffd4c5]"
+                              onChange={(eventValue) => onChangeRequestDraft(attendee.id, eventValue.target.value)}
+                              placeholder={`Hola ${attendee.name.split(" ")[0]}, me encantaria conocerte mejor antes del evento.`}
+                              rows={4}
+                              value={requestDraft}
+                            />
+                            <div className="mt-3 flex justify-end">
+                              <button
+                                className="inline-flex items-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+                                onClick={() => onSendPrivateRequest(attendee.id)}
+                                type="button"
+                              >
+                                Solicitar chat privado
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {connectionState?.kind === "outgoing-request" ? (
+                          <div className="mt-3 rounded-[18px] border border-[#eadfd3] bg-white px-4 py-4 text-sm text-[#5f4b3f]">
+                            <p className="font-semibold text-[#1d160f]">Solicitud enviada</p>
+                            <p className="mt-2">{connectionState.request.message}</p>
+                            <p className="mt-3 text-xs text-[#8f6f59]">
+                              Enviada {formatRelativeTime(connectionState.request.createdAt)}
+                            </p>
+                          </div>
+                        ) : null}
+
+                        {connectionState?.kind === "incoming-request" ? (
+                          <div className="mt-3 rounded-[18px] border border-[#eadfd3] bg-white px-4 py-4 text-sm text-[#5f4b3f]">
+                            <p className="font-semibold text-[#1d160f]">
+                              {getUserById(state, connectionState.request.fromUserId).name} quiere hablar
+                              contigo
+                            </p>
+                            <p className="mt-2">{connectionState.request.message}</p>
+                            <div className="mt-4 flex flex-wrap gap-2">
+                              <button
+                                className="rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+                                onClick={() => onRespondPrivateRequest(connectionState.request.id, true)}
+                                type="button"
+                              >
+                                Aceptar
+                              </button>
+                              <button
+                                className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm font-semibold text-[#6d5749]"
+                                onClick={() => onRespondPrivateRequest(connectionState.request.id, false)}
+                                type="button"
+                              >
+                                Rechazar
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {connectionState?.kind === "chat" ? (
+                          <div className="mt-3 rounded-[18px] border border-[#eadfd3] bg-white px-4 py-4 text-sm text-[#5f4b3f]">
+                            <p className="font-semibold text-[#1d160f]">Ya teneis chat privado abierto</p>
+                            <p className="mt-2">
+                              Este chat no caduca aunque el evento termine. Puedes abrirlo desde aqui o
+                              desde Inbox.
+                            </p>
+                            <div className="mt-4">
+                              <button
+                                className="rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+                                onClick={() => onOpenPrivateChat(connectionState.chat.id)}
+                                type="button"
+                              >
+                                Abrir chat
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {connectionState?.kind === "rejected" ? (
+                          <div className="mt-3 rounded-[18px] border border-[#eadfd3] bg-white px-4 py-4 text-sm text-[#5f4b3f]">
+                            <p className="font-semibold text-[#1d160f]">Solicitud no disponible</p>
+                            <p className="mt-2">
+                              {connectionState.by === "them"
+                                ? "La otra persona no acepto esta solicitud, asi que el privado no se ha abierto."
+                                : "Has rechazado esta solicitud y el privado permanece cerrado."}
+                            </p>
+                          </div>
+                        ) : null}
                       </div>
                     </div>
-
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      {attendee.interests.map((interest) => (
-                        <span
-                          key={interest}
-                          className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-3 py-2 text-xs font-semibold text-[#6d5749]"
-                        >
-                          {interest}
-                        </span>
-                      ))}
-                    </div>
-
-                    <div className="mt-5 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
-                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
-                        Conexion privada
-                      </p>
-
-                      {connectionState?.kind === "self" ? (
-                        <p className="mt-3 text-sm text-[#5f4b3f]">
-                          Este eres tu. Cambia de perfil desde la pestaña Perfil si quieres probar el
-                          otro lado del flujo.
-                        </p>
-                      ) : null}
-
-                      {connectionState?.kind === "available" ? (
-                        <div className="mt-3">
-                          <textarea
-                            className="w-full resize-none rounded-[18px] border border-[#e7d8cb] bg-white px-4 py-3 text-sm text-[#1d160f] outline-none focus:border-[#ff8d66] focus:ring-2 focus:ring-[#ffd4c5]"
-                            onChange={(event) => onChangeRequestDraft(attendee.id, event.target.value)}
-                            placeholder={`Hola ${attendee.name.split(" ")[0]}, me encantaria conocerte mejor antes del evento.`}
-                            rows={4}
-                            value={requestDraft}
-                          />
-                          <div className="mt-3 flex justify-end">
-                            <button
-                              className="inline-flex items-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
-                              onClick={() => onSendPrivateRequest(attendee.id)}
-                              type="button"
-                            >
-                              Solicitar chat privado
-                            </button>
-                          </div>
-                        </div>
-                      ) : null}
-
-                      {connectionState?.kind === "outgoing-request" ? (
-                        <div className="mt-3 rounded-[18px] border border-[#eadfd3] bg-white px-4 py-4 text-sm text-[#5f4b3f]">
-                          <p className="font-semibold text-[#1d160f]">Solicitud enviada</p>
-                          <p className="mt-2">{connectionState.request.message}</p>
-                          <p className="mt-3 text-xs text-[#8f6f59]">
-                            Enviada {formatRelativeTime(connectionState.request.createdAt)}
-                          </p>
-                        </div>
-                      ) : null}
-
-                      {connectionState?.kind === "incoming-request" ? (
-                        <div className="mt-3 rounded-[18px] border border-[#eadfd3] bg-white px-4 py-4 text-sm text-[#5f4b3f]">
-                          <p className="font-semibold text-[#1d160f]">
-                            {getUserById(state, connectionState.request.fromUserId).name} quiere hablar
-                            contigo
-                          </p>
-                          <p className="mt-2">{connectionState.request.message}</p>
-                          <div className="mt-4 flex flex-wrap gap-2">
-                            <button
-                              className="rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
-                              onClick={() => onRespondRequest(connectionState.request.id, true)}
-                              type="button"
-                            >
-                              Aceptar
-                            </button>
-                            <button
-                              className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm font-semibold text-[#6d5749]"
-                              onClick={() => onRespondRequest(connectionState.request.id, false)}
-                              type="button"
-                            >
-                              Rechazar
-                            </button>
-                          </div>
-                        </div>
-                      ) : null}
-
-                      {connectionState?.kind === "chat" ? (
-                        <div className="mt-3 rounded-[18px] border border-[#eadfd3] bg-white px-4 py-4 text-sm text-[#5f4b3f]">
-                          <p className="font-semibold text-[#1d160f]">Ya teneis chat privado abierto</p>
-                          <p className="mt-2">
-                            Este chat no caduca aunque el evento termine. Puedes abrirlo desde aqui o
-                            desde Inbox.
-                          </p>
-                          <div className="mt-4">
-                            <button
-                              className="rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
-                              onClick={() => onOpenPrivateChat(connectionState.chat.id)}
-                              type="button"
-                            >
-                              Abrir chat
-                            </button>
-                          </div>
-                        </div>
-                      ) : null}
-
-                      {connectionState?.kind === "rejected" ? (
-                        <div className="mt-3 rounded-[18px] border border-[#eadfd3] bg-white px-4 py-4 text-sm text-[#5f4b3f]">
-                          <p className="font-semibold text-[#1d160f]">Solicitud no disponible</p>
-                          <p className="mt-2">
-                            {connectionState.by === "them"
-                              ? "La otra persona no acepto esta solicitud, asi que el privado no se ha abierto."
-                              : "Has rechazado esta solicitud y el privado permanece cerrado."}
-                          </p>
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                ) : (
-                  <EmptyState
-                    title="Selecciona un asistente"
-                    copy="Aqui podras revisar su perfil y gestionar la solicitud de chat privado."
-                  />
-                )}
-              </SectionCard>
-            </div>
+                  ) : (
+                    <EmptyState
+                      title="Selecciona un asistente"
+                      copy="Aqui podras revisar su perfil y gestionar el privado."
+                    />
+                  )}
+                </SectionCard>
+              </div>
+            ) : (
+              <EmptyState
+                title="La lista de asistentes se abre tras la aprobacion"
+                copy="Hasta que el creador te confirme, solo puedes revisar el resumen del evento."
+              />
+            )
           ) : null}
         </div>
 
         <div className="space-y-4">
           <SectionCard>
-            <SectionLabel>{mode === "agenda" ? "Tus proximos eventos" : "Mas eventos"}</SectionLabel>
+            <SectionLabel>{mode === "agenda" ? "Tu agenda" : "Mas eventos"}</SectionLabel>
             <div className="mt-4 space-y-3">
               {collection.map((item) => {
                 const active = item.id === event.id;
-                const joinedItem = hasJoinedEvent(state, item.id, currentUser.id);
-                const itemGuests = getEventGuestCount(state, item.id);
+                const itemAccess = getEventAccessState(state, item.id, currentUser.id);
                 return (
                   <button
                     key={item.id}
@@ -1227,20 +1309,21 @@ function EventWorkspace({
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
-                          {getCategoryMeta(item.category).label}
-                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          <span className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                            {getCategoryMeta(item.category).label}
+                          </span>
+                          <span className="rounded-full border border-[#eadfd3] bg-white px-2 py-1 text-[10px] font-semibold text-[#6d5749]">
+                            {item.visibility === "public" ? "Publico" : "Privado"}
+                          </span>
+                        </div>
                         <h3 className="mt-1 text-base font-bold text-[#1d160f]">{item.title}</h3>
                         <p className="mt-2 text-sm text-[#6d5749]">{formatEventDateRange(item)}</p>
                       </div>
-                      {joinedItem ? (
-                        <span className="rounded-full border border-[#eadfd3] bg-white px-3 py-1 text-[11px] font-semibold text-[#6d5749]">
-                          Unido
-                        </span>
-                      ) : null}
+                      <AccessBadge access={itemAccess.kind} />
                     </div>
                     <div className="mt-3 flex items-center justify-between text-sm text-[#6d5749]">
-                      <span>{itemGuests} confirmados</span>
+                      <span>{getEventGuestCount(state, item.id)} confirmados</span>
                       <ChevronRight className="h-4 w-4" />
                     </div>
                   </button>
@@ -1250,11 +1333,11 @@ function EventWorkspace({
           </SectionCard>
 
           <SectionCard>
-            <SectionLabel>Señales del evento</SectionLabel>
+            <SectionLabel>Senales del evento</SectionLabel>
             <div className="mt-4 space-y-4">
               <div className="rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] p-4">
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
-                  Host
+                  Creador
                 </p>
                 <div className="mt-3 flex items-center gap-3">
                   <AvatarChip user={host} />
@@ -1279,7 +1362,17 @@ function EventWorkspace({
                   />
                 </div>
                 <p className="mt-3 text-sm text-[#5f4b3f]">
-                  {guestCount} confirmados, {event.waitlistCount} en espera.
+                  {guestCount} confirmados y {pendingCount} solicitudes pendientes.
+                </p>
+              </div>
+              <div className="rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                  Objetivo minimo
+                </p>
+                <p className="mt-3 text-sm text-[#5f4b3f]">
+                  {health === "confirmed"
+                    ? "Este evento ya ha superado el minimo de 4 personas."
+                    : `Quedan ${requirement.remainingCount} confirmaciones antes del ${getEventDeadlineLabel(event)}.`}
                 </p>
               </div>
               <div className="rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] p-4">
@@ -1309,7 +1402,7 @@ function InboxSection({
   currentUser,
   onChangePrivateDraft,
   onOpenChat,
-  onRespondRequest,
+  onRespondPrivateRequest,
   onSendMessage,
   privateChats,
   privateDraft,
@@ -1319,15 +1412,21 @@ function InboxSection({
   currentUser: PlatformUser;
   onChangePrivateDraft: (value: string) => void;
   onOpenChat: (chatId: string) => void;
-  onRespondRequest: (requestId: string, accept: boolean) => void;
+  onRespondPrivateRequest: (requestId: string, accept: boolean) => void;
   onSendMessage: () => void;
   privateChats: ReturnType<typeof getPrivateChatsForUser>;
   privateDraft: string;
   selectedChatId: string | null;
   state: PersistedState;
 }) {
-  const requests = getPrivateRequestsForUser(state, currentUser.id);
-  const incoming = requests.filter((request) => request.toUserId === currentUser.id && request.status === "pending");
+  const privateRequests = getPrivateRequestsForUser(state, currentUser.id);
+  const incomingRequests = privateRequests.filter(
+    (request) => request.toUserId === currentUser.id && request.status === "pending"
+  );
+  const myAccessRequests = state.memberships
+    .filter((membership) => membership.userId === currentUser.id)
+    .slice()
+    .sort((left, right) => right.requestedAt.localeCompare(left.requestedAt));
   const selectedChat = privateChats.find((chat) => chat.id === selectedChatId) ?? privateChats[0] ?? null;
   const selectedPartner = selectedChat ? getChatPartner(state, selectedChat, currentUser.id) : null;
   const selectedMessages = selectedChat ? getPrivateMessages(state, selectedChat.id) : [];
@@ -1337,25 +1436,69 @@ function InboxSection({
       <section className="rounded-[30px] border border-[#eadfd3] bg-white/88 p-4 shadow-[0_24px_60px_rgba(52,34,22,0.08)] md:p-5">
         <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">Inbox</p>
         <h1 className="mt-1 text-2xl font-black tracking-tight md:text-3xl">
-          Solicitudes y conversaciones privadas
+          Solicitudes de acceso y conversaciones privadas
         </h1>
         <p className="mt-2 text-sm text-[#6d5749]">
-          El chat privado solo existe si la otra persona acepta. Una vez abierto, permanece activo
-          aunque el evento ya haya terminado.
+          Aqui ves si te han aprobado un evento y tambien gestionas los privados entre asistentes.
         </p>
       </section>
 
       <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
         <div className="space-y-4">
           <SectionCard>
-            <SectionLabel>Solicitudes pendientes</SectionLabel>
+            <SectionLabel>Estado de tus accesos</SectionLabel>
             <div className="mt-4 space-y-3">
-              {incoming.length === 0 ? (
+              {myAccessRequests.length === 0 ? (
                 <p className="rounded-[22px] border border-dashed border-[#e1d4c7] bg-[#fbf7f2] px-4 py-5 text-sm text-[#7a6455]">
-                  Ahora mismo no tienes solicitudes pendientes.
+                  Aun no has pedido acceso a ningun evento.
                 </p>
               ) : (
-                incoming.map((request) => {
+                myAccessRequests.map((membership) => {
+                  const event = getEventById(state, membership.eventId);
+                  const tone =
+                    membership.status === "approved"
+                      ? "text-[#1f8d60] bg-[#e8fbf2]"
+                      : membership.status === "rejected"
+                        ? "text-[#d45d28] bg-[#fff0e8]"
+                        : "text-[#8f6f59] bg-[#f7f1ea]";
+                  const label =
+                    membership.status === "approved"
+                      ? "Aprobado"
+                      : membership.status === "rejected"
+                        ? "Rechazado"
+                        : "Pendiente";
+                  return (
+                    <div
+                      key={membership.id}
+                      className="rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] p-4"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="font-semibold text-[#1d160f]">{event?.title}</p>
+                          <p className="mt-1 text-sm text-[#6d5749]">
+                            Solicitado {formatRelativeTime(membership.requestedAt)}
+                          </p>
+                        </div>
+                        <span className={`rounded-full px-3 py-1 text-xs font-semibold ${tone}`}>
+                          {label}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </SectionCard>
+
+          <SectionCard>
+            <SectionLabel>Privados pendientes</SectionLabel>
+            <div className="mt-4 space-y-3">
+              {incomingRequests.length === 0 ? (
+                <p className="rounded-[22px] border border-dashed border-[#e1d4c7] bg-[#fbf7f2] px-4 py-5 text-sm text-[#7a6455]">
+                  Ahora mismo no tienes solicitudes privadas pendientes.
+                </p>
+              ) : (
+                incomingRequests.map((request) => {
                   const sender = getUserById(state, request.fromUserId);
                   const event = getEventById(state, request.eventId);
                   return (
@@ -1369,14 +1512,14 @@ function InboxSection({
                           <div className="mt-3 flex flex-wrap gap-2">
                             <button
                               className="rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
-                              onClick={() => onRespondRequest(request.id, true)}
+                              onClick={() => onRespondPrivateRequest(request.id, true)}
                               type="button"
                             >
                               Aceptar
                             </button>
                             <button
                               className="rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#6d5749]"
-                              onClick={() => onRespondRequest(request.id, false)}
+                              onClick={() => onRespondPrivateRequest(request.id, false)}
                               type="button"
                             >
                               Rechazar
@@ -1474,7 +1617,7 @@ function InboxSection({
               <div className="mt-4 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
                 <textarea
                   className="w-full resize-none rounded-[18px] border border-[#e7d8cb] bg-white px-4 py-3 text-sm text-[#1d160f] outline-none focus:border-[#ff8d66] focus:ring-2 focus:ring-[#ffd4c5]"
-                  onChange={(event) => onChangePrivateDraft(event.target.value)}
+                  onChange={(eventValue) => onChangePrivateDraft(eventValue.target.value)}
                   placeholder={`Escribe a ${selectedPartner.name.split(" ")[0]}...`}
                   rows={3}
                   value={privateDraft}
@@ -1505,21 +1648,22 @@ function InboxSection({
 
 function ProfileSection({
   currentUser,
+  hostedCount,
   joinedCount,
+  pendingApprovalsCount,
   onResetDemo,
   onSwitchUser,
-  requestCount,
   state
 }: {
   currentUser: PlatformUser;
+  hostedCount: number;
   joinedCount: number;
+  pendingApprovalsCount: number;
   onResetDemo: () => void;
   onSwitchUser: (userId: string) => void;
-  requestCount: number;
   state: PersistedState;
 }) {
   const privateChats = getPrivateChatsForUser(state, currentUser.id);
-  const hostedEvents = getHostedEvents(state, currentUser.id);
 
   return (
     <div className="space-y-5">
@@ -1536,9 +1680,9 @@ function ProfileSection({
             <div className="pb-2">
               <div className="flex flex-wrap items-center gap-2">
                 <h1 className="text-3xl font-black tracking-tight">{currentUser.name}</h1>
-                {currentUser.role === "organizer" ? (
+                {currentUser.verified ? (
                   <span className="rounded-full bg-[#1d160f] px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-white">
-                    Organizador
+                    Verificado
                   </span>
                 ) : null}
               </div>
@@ -1560,10 +1704,10 @@ function ProfileSection({
             ))}
           </div>
           <div className="mt-5 grid gap-3 md:grid-cols-4">
-            <MetricTile label="Eventos" value={String(joinedCount)} />
-            <MetricTile label="Solicitudes" value={String(requestCount)} />
+            <MetricTile label="Creados" value={String(hostedCount)} />
+            <MetricTile label="Agenda" value={String(joinedCount)} />
+            <MetricTile label="Pendientes" value={String(pendingApprovalsCount)} />
             <MetricTile label="Privados" value={String(privateChats.length)} />
-            <MetricTile label="Publicados" value={String(hostedEvents.length)} />
           </div>
         </div>
       </section>
@@ -1572,8 +1716,8 @@ function ProfileSection({
         <SectionCard>
           <SectionLabel>Modo demo</SectionLabel>
           <p className="mt-3 text-sm text-[#5f4b3f]">
-            Cambia entre perfiles para probar ambos lados del producto: asistentes, solicitudes
-            pendientes y cuentas organizadoras ya aprobadas.
+            Cambia entre perfiles para probar creadores, asistentes, aprobaciones y rechazos desde
+            ambos lados del producto.
           </p>
           <div className="mt-4 flex flex-wrap gap-3">
             <button
@@ -1605,11 +1749,6 @@ function ProfileSection({
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <p className="truncate font-semibold text-[#1d160f]">{user.name}</p>
-                      {user.role === "organizer" ? (
-                        <span className="rounded-full border border-[#eadfd3] bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#6d5749]">
-                          Host
-                        </span>
-                      ) : null}
                     </div>
                     <p className="truncate text-sm text-[#6d5749]">{user.title}</p>
                     <p className="mt-1 truncate text-xs text-[#8f6f59]">{user.handle}</p>
@@ -1620,110 +1759,6 @@ function ProfileSection({
           </div>
         </SectionCard>
       </section>
-    </div>
-  );
-}
-
-function OrganizerAccessSection({
-  currentUser,
-  leadForm,
-  onChangeLeadForm,
-  onSubmitLead,
-  state
-}: {
-  currentUser: PlatformUser;
-  leadForm: OrganizerLeadInput;
-  onChangeLeadForm: (value: OrganizerLeadInput) => void;
-  onSubmitLead: () => void;
-  state: PersistedState;
-}) {
-  const myLead = state.organizerLeads.find(
-    (lead) => lead.fromUserId === currentUser.id && lead.status === "pending"
-  );
-
-  return (
-    <div className="space-y-5">
-      <section className="overflow-hidden rounded-[36px] border border-[#eadfd3] bg-[#141110] p-5 text-white shadow-[0_34px_90px_rgba(20,17,16,0.18)] md:p-7">
-        <div className="inline-flex items-center gap-2 rounded-full border border-white/16 bg-white/10 px-3 py-1 text-xs uppercase tracking-[0.24em] text-white/72">
-          <Shield className="h-3.5 w-3.5" />
-          Acceso organizador
-        </div>
-        <h1 className="mt-4 max-w-3xl text-3xl font-black tracking-tight md:text-5xl">
-          Crear eventos no esta abierto a cualquiera
-        </h1>
-        <p className="mt-3 max-w-2xl text-sm text-white/72 md:text-base">
-          Queremos que los eventos mantengan calidad, moderacion y buen contexto social. Por eso el
-          perfil organizador se activa solo despues de revisar el proyecto contigo.
-        </p>
-      </section>
-
-      <div className="grid gap-5 xl:grid-cols-[0.92fr_1.08fr]">
-        <SectionCard>
-          <SectionLabel>Que revisamos antes de aprobar</SectionLabel>
-          <div className="mt-4 space-y-3">
-            {[
-              "Que el concepto del evento tenga encaje con comunidad y socializacion previa.",
-              "Que haya alguien responsable del ritmo del chat general y de la experiencia en sala.",
-              "Que el anfitrion quiera cuidar perfiles, aforo y conversaciones utiles."
-            ].map((item) => (
-              <div
-                key={item}
-                className="rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] p-4 text-sm text-[#5f4b3f]"
-              >
-                {item}
-              </div>
-            ))}
-          </div>
-          <div className="mt-4 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4 text-sm text-[#5f4b3f]">
-            Contacto directo:{" "}
-            <a className="font-semibold text-[#c86730]" href={`mailto:${ORGANIZER_CONTACT_EMAIL}`}>
-              {ORGANIZER_CONTACT_EMAIL}
-            </a>
-          </div>
-        </SectionCard>
-
-        <SectionCard>
-          <SectionLabel>Solicitar acceso</SectionLabel>
-          {myLead ? (
-            <div className="mt-4 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-5">
-              <p className="text-sm font-semibold text-[#1d160f]">Solicitud enviada</p>
-              <p className="mt-2 text-sm text-[#5f4b3f]">
-                Tenemos registrada tu propuesta y queda pendiente de contacto.
-              </p>
-              <p className="mt-3 text-xs text-[#8f6f59]">
-                Enviada {formatRelativeTime(myLead.createdAt)}
-              </p>
-            </div>
-          ) : (
-            <div className="mt-4 grid gap-3">
-              <FormField
-                label="Proyecto o marca"
-                value={leadForm.companyName}
-                onChange={(value) => onChangeLeadForm({ ...leadForm, companyName: value })}
-              />
-              <FormField
-                label="Concepto del evento"
-                value={leadForm.concept}
-                onChange={(value) => onChangeLeadForm({ ...leadForm, concept: value })}
-              />
-              <FormTextArea
-                label="Por que encaja en la plataforma"
-                rows={5}
-                value={leadForm.message}
-                onChange={(value) => onChangeLeadForm({ ...leadForm, message: value })}
-              />
-              <button
-                className="inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] px-5 py-3 text-sm font-semibold text-white"
-                onClick={onSubmitLead}
-                type="button"
-              >
-                Enviar solicitud
-                <ArrowRight className="h-4 w-4" />
-              </button>
-            </div>
-          )}
-        </SectionCard>
-      </div>
     </div>
   );
 }
@@ -1833,56 +1868,26 @@ function AvatarChip({ user }: { user: PlatformUser }) {
   );
 }
 
-function FormField({
-  label,
-  onChange,
-  value
+function AccessBadge({
+  access
 }: {
-  label: string;
-  onChange: (value: string) => void;
-  value: string;
+  access: ReturnType<typeof getEventAccessState>["kind"];
 }) {
-  return (
-    <label className="block">
-      <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
-        {label}
-      </span>
-      <input
-        className="w-full rounded-[18px] border border-[#e7d8cb] bg-[#fffaf6] px-4 py-3 text-sm text-[#1d160f] outline-none focus:border-[#ff8d66] focus:ring-2 focus:ring-[#ffd4c5]"
-        onChange={(event) => onChange(event.target.value)}
-        value={value}
-      />
-    </label>
-  );
+  const config =
+    access === "host"
+      ? { label: "Host", className: "bg-[#1d160f] text-white" }
+      : access === "approved"
+        ? { label: "Dentro", className: "bg-[#e8fbf2] text-[#1f8d60]" }
+        : access === "pending"
+          ? { label: "Pendiente", className: "bg-[#f7f1ea] text-[#8f6f59]" }
+          : access === "rejected"
+            ? { label: "Rechazado", className: "bg-[#fff0e8] text-[#d45d28]" }
+            : { label: "Solicitar", className: "bg-white text-[#6d5749] border border-[#eadfd3]" };
+
+  return <span className={`rounded-full px-3 py-1 text-[11px] font-semibold ${config.className}`}>{config.label}</span>;
 }
 
-function FormTextArea({
-  label,
-  onChange,
-  rows,
-  value
-}: {
-  label: string;
-  onChange: (value: string) => void;
-  rows: number;
-  value: string;
-}) {
-  return (
-    <label className="block">
-      <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
-        {label}
-      </span>
-      <textarea
-        className="w-full resize-none rounded-[18px] border border-[#e7d8cb] bg-[#fffaf6] px-4 py-3 text-sm text-[#1d160f] outline-none focus:border-[#ff8d66] focus:ring-2 focus:ring-[#ffd4c5]"
-        onChange={(event) => onChange(event.target.value)}
-        rows={rows}
-        value={value}
-      />
-    </label>
-  );
-}
-
-function buildNavItems(organizerMode: boolean) {
+function buildNavItems() {
   return [
     {
       id: "discover" as const,
@@ -1906,7 +1911,7 @@ function buildNavItems(organizerMode: boolean) {
     },
     {
       id: "host" as const,
-      label: organizerMode ? "Admin" : "Organiza",
+      label: "Crear",
       icon: <Shield className="h-4 w-4" />
     }
   ];

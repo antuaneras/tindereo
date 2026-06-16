@@ -2,25 +2,31 @@
 
 import { useState } from "react";
 import {
-  BarChart2,
   CalendarDays,
+  Check,
   ChevronRight,
-  MessageCircle,
+  Clock3,
   Plus,
   Shield,
   Sparkles,
-  Users
+  Users,
+  X
 } from "lucide-react";
-import { ORGANIZER_CONTACT_EMAIL } from "@/lib/tindereo-data";
 import type { CreateEventInput, PersistedState, PlatformUser } from "@/lib/tindereo-types";
 import {
   formatEventDateRange,
   formatRelativeTime,
+  getCategoryMeta,
   getEventAttendanceRatio,
+  getEventById,
+  getEventDeadlineLabel,
   getEventGuestCount,
-  getEventMessages,
+  getEventHealth,
+  getEventPendingCount,
+  getEventRequirementSummary,
   getHostedEvents,
-  getOrganizerMetrics,
+  getHostMetrics,
+  getHostPendingRequests,
   getUserById
 } from "@/lib/tindereo-utils";
 
@@ -28,18 +34,20 @@ interface OrganizerDashboardProps {
   state: PersistedState;
   currentUser: PlatformUser;
   onCreateEvent: (input: CreateEventInput) => void;
+  onRespondToAccess: (membershipId: string, accept: boolean) => void;
   onSelectEvent: (eventId: string) => void;
 }
 
 const EMPTY_DRAFT: CreateEventInput = {
   title: "",
   category: "networking",
+  visibility: "public",
   city: "Madrid",
   venue: "",
   startsAt: "2026-07-03T20:00",
   endsAt: "2026-07-03T23:30",
   priceLabel: "Desde 20 EUR",
-  capacity: 80,
+  capacity: 40,
   summary: "",
   description: "",
   dressCode: "Smart casual",
@@ -51,20 +59,18 @@ export function OrganizerDashboard({
   state,
   currentUser,
   onCreateEvent,
+  onRespondToAccess,
   onSelectEvent
 }: OrganizerDashboardProps) {
   const [draft, setDraft] = useState<CreateEventInput>(EMPTY_DRAFT);
   const [tagsInput, setTagsInput] = useState("Networking, comunidad, Madrid");
   const [highlightsInput, setHighlightsInput] = useState(
-    "Chat general desde el alta, lista de asistentes visible, conexiones privadas"
+    "Aprobacion manual, chat general para confirmados, objetivo minimo de 4 asistentes"
   );
 
   const hostedEvents = getHostedEvents(state, currentUser.id);
-  const metrics = getOrganizerMetrics(state, currentUser.id);
-  const pendingLeads = state.organizerLeads
-    .filter((lead) => lead.status === "pending")
-    .slice()
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const metrics = getHostMetrics(state, currentUser.id);
+  const pendingRequests = getHostPendingRequests(state, currentUser.id);
 
   const handleSubmit = () => {
     onCreateEvent({
@@ -81,68 +87,48 @@ export function OrganizerDashboard({
 
     setDraft(EMPTY_DRAFT);
     setTagsInput("Networking, comunidad, Madrid");
-    setHighlightsInput("Chat general desde el alta, lista de asistentes visible, conexiones privadas");
+    setHighlightsInput("Aprobacion manual, chat general para confirmados, objetivo minimo de 4 asistentes");
   };
 
   return (
     <div className="space-y-5">
       <section className="overflow-hidden rounded-[32px] border border-white/65 bg-[#141110] px-5 py-5 text-white shadow-[0_32px_80px_rgba(20,17,16,0.22)]">
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="max-w-2xl">
+          <div className="max-w-3xl">
             <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs uppercase tracking-[0.24em] text-white/72">
               <Shield className="h-3.5 w-3.5" />
-              Panel organizador
+              Crear y moderar eventos
             </div>
-            <h2 className="text-3xl font-black tracking-tight">Eventos listos para comunidad real</h2>
-            <p className="mt-2 max-w-xl text-sm text-white/72">
-              Aqui controlas publicacion, aforo, conversacion previa y nuevas solicitudes de
-              organizadores. Todo esta mockeado para demo, pero el flujo ya queda preparado para
-              backend real.
+            <h2 className="text-3xl font-black tracking-tight">Cualquier usuario puede montar un plan</h2>
+            <p className="mt-2 max-w-2xl text-sm text-white/72">
+              Lo importante ahora es la calidad del acceso: el creador decide si el evento es publico
+              o privado, aprueba a quien entra y puede vigilar si alcanza el minimo de 4 asistentes
+              durante la primera semana.
             </p>
           </div>
           <div className="rounded-[24px] border border-white/10 bg-white/6 px-4 py-3 text-sm text-white/72">
-            <p className="font-semibold text-white">{currentUser.company}</p>
-            <p>{currentUser.city}</p>
-            <p className="mt-2 text-xs text-white/54">{ORGANIZER_CONTACT_EMAIL}</p>
+            <p className="font-semibold text-white">{currentUser.name}</p>
+            <p>{currentUser.title}</p>
+            <p className="mt-2 text-xs text-white/54">{hostedEvents.length} eventos creados</p>
           </div>
         </div>
       </section>
 
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard
-          icon={<CalendarDays className="h-4 w-4" />}
-          label="Eventos publicados"
-          value={String(metrics.publishedEvents)}
-          copy="Calendario activo"
-        />
-        <MetricCard
-          icon={<Users className="h-4 w-4" />}
-          label="Invitados confirmados"
-          value={String(metrics.totalGuests)}
-          copy="Entre visibles y base importada"
-        />
-        <MetricCard
-          icon={<MessageCircle className="h-4 w-4" />}
-          label="Mensajes en grupo"
-          value={String(metrics.totalMessages)}
-          copy="Actividad previa al evento"
-        />
-        <MetricCard
-          icon={<Sparkles className="h-4 w-4" />}
-          label="Conexiones privadas"
-          value={String(metrics.privateConnections)}
-          copy={`${metrics.openLeads} solicitudes pendientes`}
-        />
+        <MetricCard label="Eventos creados" value={String(metrics.publishedEvents)} />
+        <MetricCard label="Confirmados" value={String(metrics.confirmedGuests)} />
+        <MetricCard label="Pendientes" value={String(metrics.pendingApprovals)} />
+        <MetricCard label="En riesgo" value={String(metrics.atRiskEvents)} />
       </section>
 
-      <section className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
+      <section className="grid gap-5 xl:grid-cols-[1.08fr_0.92fr]">
         <div className="space-y-4 rounded-[30px] border border-[#eadfd3] bg-white/88 p-4 shadow-[0_24px_60px_rgba(52,34,22,0.08)] md:p-5">
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">
-                Tu cartelera
+                Tus eventos
               </p>
-              <h3 className="mt-1 text-xl font-black text-[#1d160f]">Eventos publicados</h3>
+              <h3 className="mt-1 text-xl font-black text-[#1d160f]">Cartelera y salud de cada plan</h3>
             </div>
             <div className="rounded-full border border-[#eadfd3] px-3 py-1 text-xs text-[#7a6455]">
               {hostedEvents.length} activos
@@ -151,15 +137,16 @@ export function OrganizerDashboard({
 
           {hostedEvents.length === 0 ? (
             <div className="rounded-[24px] border border-dashed border-[#e1d4c7] bg-[#fbf7f2] px-4 py-6 text-sm text-[#7a6455]">
-              Todavia no has creado eventos. Usa el formulario de la derecha para publicar el
-              primero.
+              Todavia no has creado eventos. Usa el formulario y publica el primero.
             </div>
           ) : (
             <div className="space-y-3">
               {hostedEvents.map((event) => {
+                const category = getCategoryMeta(event.category);
+                const health = getEventHealth(state, event.id);
+                const requirements = getEventRequirementSummary(state, event.id);
                 const fill = Math.round(getEventAttendanceRatio(state, event.id) * 100);
-                const guestCount = getEventGuestCount(state, event.id);
-                const chatCount = getEventMessages(state, event.id).length;
+                const pendingCount = getEventPendingCount(state, event.id);
 
                 return (
                   <button
@@ -170,19 +157,38 @@ export function OrganizerDashboard({
                   >
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="max-w-xl">
-                        <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">
-                          {event.city} · {formatEventDateRange(event)}
-                        </p>
-                        <h4 className="mt-1 text-lg font-black text-[#1d160f]">{event.title}</h4>
+                        <div className="flex flex-wrap gap-2">
+                          <span
+                            className="rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em]"
+                            style={{
+                              backgroundColor: category.softAccent,
+                              color: category.accent
+                            }}
+                          >
+                            {category.label}
+                          </span>
+                          <StatusBadge health={health} />
+                          <VisibilityBadge visibility={event.visibility} />
+                        </div>
+                        <h4 className="mt-3 text-lg font-black text-[#1d160f]">{event.title}</h4>
                         <p className="mt-2 text-sm text-[#6d5749]">{event.summary}</p>
+                        <p className="mt-2 text-sm text-[#8f6f59]">{formatEventDateRange(event)}</p>
                       </div>
                       <ChevronRight className="mt-1 h-5 w-5 text-[#8f6f59]" />
                     </div>
+
                     <div className="mt-4 grid gap-3 md:grid-cols-3">
-                      <MiniStat label="Confirmados" value={`${guestCount}/${event.capacity}`} />
-                      <MiniStat label="Espera" value={String(event.waitlistCount)} />
-                      <MiniStat label="Mensajes" value={String(chatCount)} />
+                      <MiniStat
+                        label="Confirmados"
+                        value={`${getEventGuestCount(state, event.id)}/${event.capacity}`}
+                      />
+                      <MiniStat label="Pendientes" value={String(pendingCount)} />
+                      <MiniStat
+                        label="Objetivo"
+                        value={`${requirements.confirmedCount}/${event.minimumGuestsRequired}`}
+                      />
                     </div>
+
                     <div className="mt-4">
                       <div className="mb-2 flex items-center justify-between text-xs text-[#7a6455]">
                         <span>Ocupacion actual</span>
@@ -194,6 +200,17 @@ export function OrganizerDashboard({
                           style={{ width: `${fill}%` }}
                         />
                       </div>
+                    </div>
+
+                    <div className="mt-4 rounded-[20px] border border-[#eadfd3] bg-white px-3 py-3 text-sm text-[#6d5749]">
+                      <span className="font-semibold text-[#1d160f]">
+                        Objetivo minimo en 7 dias:
+                      </span>{" "}
+                      {health === "confirmed"
+                        ? "cumplido"
+                        : requirements.remainingCount > 0
+                          ? `faltan ${requirements.remainingCount} antes del ${getEventDeadlineLabel(event)}`
+                          : `revision hasta el ${getEventDeadlineLabel(event)}`}
                     </div>
                   </button>
                 );
@@ -232,17 +249,33 @@ export function OrganizerDashboard({
                     { value: "wellness", label: "Wellness" }
                   ]}
                 />
+                <Select
+                  label="Visibilidad"
+                  value={draft.visibility}
+                  onChange={(value) =>
+                    setDraft((current) => ({
+                      ...current,
+                      visibility: value as CreateEventInput["visibility"]
+                    }))
+                  }
+                  options={[
+                    { value: "public", label: "Publico" },
+                    { value: "private", label: "Privado" }
+                  ]}
+                />
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
                 <Input
                   label="Ciudad"
                   value={draft.city}
                   onChange={(value) => setDraft((current) => ({ ...current, city: value }))}
                 />
+                <Input
+                  label="Venue"
+                  value={draft.venue}
+                  onChange={(value) => setDraft((current) => ({ ...current, venue: value }))}
+                />
               </div>
-              <Input
-                label="Venue"
-                value={draft.venue}
-                onChange={(value) => setDraft((current) => ({ ...current, venue: value }))}
-              />
               <div className="grid gap-3 md:grid-cols-2">
                 <Input
                   label="Inicio"
@@ -277,15 +310,15 @@ export function OrganizerDashboard({
               </div>
               <TextArea
                 label="Resumen corto"
+                rows={3}
                 value={draft.summary}
                 onChange={(value) => setDraft((current) => ({ ...current, summary: value }))}
-                rows={3}
               />
               <TextArea
                 label="Descripcion"
+                rows={4}
                 value={draft.description}
                 onChange={(value) => setDraft((current) => ({ ...current, description: value }))}
-                rows={4}
               />
               <Input
                 label="Dress code"
@@ -303,42 +336,58 @@ export function OrganizerDashboard({
                 onClick={handleSubmit}
                 type="button"
               >
-                Publicar evento demo
+                Publicar evento
               </button>
             </div>
           </section>
 
           <section className="rounded-[30px] border border-[#eadfd3] bg-white/88 p-4 shadow-[0_24px_60px_rgba(52,34,22,0.08)] md:p-5">
             <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">
-              <BarChart2 className="h-4 w-4" />
-              Solicitudes de acceso organizador
+              <Clock3 className="h-4 w-4" />
+              Solicitudes pendientes
             </div>
             <div className="mt-4 space-y-3">
-              {pendingLeads.length === 0 ? (
+              {pendingRequests.length === 0 ? (
                 <div className="rounded-[22px] border border-dashed border-[#e1d4c7] bg-[#fbf7f2] px-4 py-5 text-sm text-[#7a6455]">
-                  No hay nuevas solicitudes ahora mismo.
+                  No tienes solicitudes de acceso pendientes ahora mismo.
                 </div>
               ) : (
-                pendingLeads.map((lead) => {
-                  const applicant = getUserById(state, lead.fromUserId);
+                pendingRequests.map((membership) => {
+                  const applicant = getUserById(state, membership.userId);
+                  const event = getEventById(state, membership.eventId);
 
                   return (
                     <div
-                      key={lead.id}
+                      key={membership.id}
                       className="rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] p-4"
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <p className="font-semibold text-[#1d160f]">{applicant.name}</p>
-                          <p className="text-sm text-[#6d5749]">
-                            {lead.companyName} · {lead.concept}
-                          </p>
+                          <p className="text-sm text-[#6d5749]">{event?.title}</p>
                         </div>
                         <div className="rounded-full border border-[#eadfd3] px-3 py-1 text-xs text-[#7a6455]">
-                          {formatRelativeTime(lead.createdAt)}
+                          {formatRelativeTime(membership.requestedAt)}
                         </div>
                       </div>
-                      <p className="mt-3 text-sm text-[#6d5749]">{lead.message}</p>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <button
+                          className="inline-flex items-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+                          onClick={() => onRespondToAccess(membership.id, true)}
+                          type="button"
+                        >
+                          <Check className="h-4 w-4" />
+                          Aprobar
+                        </button>
+                        <button
+                          className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#6d5749]"
+                          onClick={() => onRespondToAccess(membership.id, false)}
+                          type="button"
+                        >
+                          <X className="h-4 w-4" />
+                          Rechazar
+                        </button>
+                      </div>
                     </div>
                   );
                 })
@@ -351,27 +400,16 @@ export function OrganizerDashboard({
   );
 }
 
-function MetricCard({
-  icon,
-  label,
-  value,
-  copy
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  copy: string;
-}) {
+function MetricCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-[28px] border border-[#eadfd3] bg-white/88 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.06)]">
       <div className="inline-flex h-9 w-9 items-center justify-center rounded-2xl bg-[#fff0e8] text-[#ff6b57]">
-        {icon}
+        <Sparkles className="h-4 w-4" />
       </div>
       <p className="mt-4 text-xs font-semibold uppercase tracking-[0.22em] text-[#8f6f59]">
         {label}
       </p>
       <p className="mt-2 text-3xl font-black text-[#1d160f]">{value}</p>
-      <p className="mt-1 text-sm text-[#6d5749]">{copy}</p>
     </div>
   );
 }
@@ -382,6 +420,29 @@ function MiniStat({ label, value }: { label: string; value: string }) {
       <p className="text-xs uppercase tracking-[0.2em] text-[#8f6f59]">{label}</p>
       <p className="mt-1 text-base font-bold text-[#1d160f]">{value}</p>
     </div>
+  );
+}
+
+function StatusBadge({ health }: { health: ReturnType<typeof getEventHealth> }) {
+  const config =
+    health === "confirmed"
+      ? { label: "Confirmado", className: "bg-[#e8fbf2] text-[#1f8d60]" }
+      : health === "at-risk"
+        ? { label: "En riesgo", className: "bg-[#fff0e8] text-[#d45d28]" }
+        : { label: "Construyendo", className: "bg-[#f7f1ea] text-[#8f6f59]" };
+
+  return (
+    <span className={`rounded-full px-3 py-1 text-[11px] font-semibold ${config.className}`}>
+      {config.label}
+    </span>
+  );
+}
+
+function VisibilityBadge({ visibility }: { visibility: "public" | "private" }) {
+  return (
+    <span className="rounded-full bg-[#1d160f] px-3 py-1 text-[11px] font-semibold text-white">
+      {visibility === "public" ? "Publico" : "Privado"}
+    </span>
   );
 }
 
