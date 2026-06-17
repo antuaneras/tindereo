@@ -842,6 +842,34 @@ export function TindereoApp() {
     }
   };
 
+  const unreadNotificationCount = state.session.isAuthenticated
+    ? getUnreadNotificationCount(state, state.session.currentUserId)
+    : 0;
+  const unreadChatThreadCount = state.session.isAuthenticated
+    ? getUnreadChatThreadCount(state, state.session.currentUserId)
+    : 0;
+
+  useEffect(() => {
+    if (!state.session.isAuthenticated || typeof navigator === "undefined") {
+      return;
+    }
+
+    const badgeCount = unreadChatThreadCount + unreadNotificationCount;
+    const badgeNavigator = navigator as Navigator & {
+      clearAppBadge?: () => Promise<void>;
+      setAppBadge?: (count?: number) => Promise<void>;
+    };
+
+    if (badgeCount > 0 && badgeNavigator.setAppBadge) {
+      void badgeNavigator.setAppBadge(badgeCount).catch(() => undefined);
+      return;
+    }
+
+    if (badgeCount === 0 && badgeNavigator.clearAppBadge) {
+      void badgeNavigator.clearAppBadge().catch(() => undefined);
+    }
+  }, [state.session.isAuthenticated, unreadChatThreadCount, unreadNotificationCount]);
+
   if (!state.session.isAuthenticated) {
     return (
       <AuthScreen
@@ -906,32 +934,9 @@ export function TindereoApp() {
   const activeStories = getActiveStories(state, currentUser.id);
   const pendingEventInvites = getPendingEventInvitesForUser(state, currentUser.id);
   const notifications = getNotificationsForUser(state, currentUser.id);
-  const unreadNotificationCount = getUnreadNotificationCount(state, currentUser.id);
-  const unreadChatThreadCount = getUnreadChatThreadCount(state, currentUser.id);
   const joinedCount = joinedEvents.length;
   const hostedCount = hostedEvents.length;
   const pendingApprovalsCount = hostPendingRequests.length;
-
-  useEffect(() => {
-    if (typeof navigator === "undefined") {
-      return;
-    }
-
-    const badgeCount = unreadChatThreadCount + unreadNotificationCount;
-    const badgeNavigator = navigator as Navigator & {
-      clearAppBadge?: () => Promise<void>;
-      setAppBadge?: (count?: number) => Promise<void>;
-    };
-
-    if (badgeCount > 0 && badgeNavigator.setAppBadge) {
-      void badgeNavigator.setAppBadge(badgeCount).catch(() => undefined);
-      return;
-    }
-
-    if (badgeCount === 0 && badgeNavigator.clearAppBadge) {
-      void badgeNavigator.clearAppBadge().catch(() => undefined);
-    }
-  }, [unreadChatThreadCount, unreadNotificationCount]);
 
   const updateSession = (patch: Partial<PersistedState["session"]>) => {
     setState((current) =>
