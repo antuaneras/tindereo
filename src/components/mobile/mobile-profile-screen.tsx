@@ -10,8 +10,7 @@ import {
   LogOut,
   MessageCircle,
   Send,
-  Sparkles,
-  X
+  Sparkles
 } from "lucide-react";
 import {
   createPostComment,
@@ -22,9 +21,10 @@ import {
   updateViewerProfile
 } from "@/lib/mobile-api";
 import { MobilePostCarousel } from "@/components/mobile/mobile-post-carousel";
+import { MobileStoryOverlay } from "@/components/mobile/mobile-story-overlay";
 import { formatRelativeMobileTime } from "@/lib/mobile-shared";
 import { uploadManagedMediaFromClient } from "@/lib/tindereo-api";
-import type { MobilePost, MobilePostComment, MobileProfile, MobileProfileDetail, MobileStory } from "@/lib/mobile-types";
+import type { MobilePost, MobilePostComment, MobileProfile, MobileProfileDetail, MobileStoryCluster } from "@/lib/mobile-types";
 
 type MobileProfileScreenProps = {
   backHref?: string;
@@ -38,10 +38,12 @@ function cn(...values: Array<string | false | null | undefined>) {
 function ProfileAvatar({
   profile,
   ring = false,
+  ringTone = "active",
   size = "lg"
 }: {
   profile: MobileProfile;
   ring?: boolean;
+  ringTone?: "active" | "seen";
   size?: "sm" | "md" | "lg";
 }) {
   const dimensions =
@@ -61,7 +63,14 @@ function ProfileAvatar({
   }
 
   return (
-    <span className="inline-flex rounded-full bg-gradient-to-br from-[var(--coral)] to-[var(--orange)] p-[3px] shadow-[0_14px_28px_rgba(240,138,36,0.22)]">
+    <span
+      className={cn(
+        "inline-flex rounded-full p-[3px]",
+        ringTone === "active"
+          ? "bg-gradient-to-br from-[var(--coral)] to-[var(--orange)] shadow-[0_14px_28px_rgba(240,138,36,0.22)]"
+          : "bg-[var(--line-soft)]"
+      )}
+    >
       <span className="rounded-full bg-[var(--bg-main)] p-[3px]">{content}</span>
     </span>
   );
@@ -75,117 +84,12 @@ function EmptyPostTile() {
   );
 }
 
-function StoryViewer({
-  onClose,
-  owner,
-  stories
-}: {
-  onClose: () => void;
-  owner: MobileProfile;
-  stories: MobileStory[];
-}) {
-  const orderedStories = useMemo(
-    () => [...stories].sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
-    [stories]
-  );
-  const [storyIndex, setStoryIndex] = useState(0);
-  const activeStory = orderedStories[storyIndex] ?? null;
-
-  useEffect(() => {
-    if (!activeStory) {
-      return;
-    }
-
-    const timer = window.setTimeout(() => {
-      if (storyIndex < orderedStories.length - 1) {
-        setStoryIndex((current) => current + 1);
-        return;
-      }
-
-      onClose();
-    }, activeStory.durationMs || 5000);
-
-    return () => window.clearTimeout(timer);
-  }, [activeStory, onClose, orderedStories.length, storyIndex]);
-
-  if (!activeStory) {
-    return null;
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 bg-black">
-      <div className="absolute inset-x-0 top-0 z-20 flex gap-1 px-4 pt-[calc(0.8rem+env(safe-area-inset-top))]">
-        {orderedStories.map((story, index) => (
-          <span key={story.id} className="h-1 flex-1 overflow-hidden rounded-full bg-white/20">
-            <span
-              className="block h-full rounded-full bg-white transition-all"
-              style={{
-                width: index < storyIndex ? "100%" : index === storyIndex ? "100%" : "0%"
-              }}
-            />
-          </span>
-        ))}
-      </div>
-
-      <div className="absolute inset-x-0 top-0 z-20 flex items-center justify-between px-4 pt-[calc(1.2rem+env(safe-area-inset-top))]">
-        <div className="flex items-center gap-3">
-          <ProfileAvatar profile={owner} size="md" />
-          <div className="text-white">
-            <div className="text-sm font-semibold">@{owner.handle}</div>
-            <div className="text-xs text-white/70">{formatRelativeMobileTime(activeStory.createdAt)}</div>
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="flex h-10 w-10 items-center justify-center rounded-full bg-black/35 text-white"
-        >
-          <X className="h-5 w-5" />
-        </button>
-      </div>
-
-      <div className="relative h-full w-full">
-        {activeStory.media?.previewUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={activeStory.media.previewUrl} alt={`Story de @${owner.handle}`} className="h-full w-full object-cover" />
-        ) : (
-          <div className="flex h-full items-center justify-center text-white/70">Historia sin vista previa</div>
-        )}
-
-        <button
-          type="button"
-          onClick={() => setStoryIndex((current) => (current > 0 ? current - 1 : current))}
-          className="absolute inset-y-0 left-0 w-1/2"
-          aria-label="Historia anterior"
-        />
-        <button
-          type="button"
-          onClick={() => {
-            if (storyIndex < orderedStories.length - 1) {
-              setStoryIndex((current) => current + 1);
-              return;
-            }
-            onClose();
-          }}
-          className="absolute inset-y-0 right-0 w-1/2"
-          aria-label="Historia siguiente"
-        />
-
-        {activeStory.caption ? (
-          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/15 to-transparent px-5 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-16 text-white">
-            <p className="text-sm leading-6">{activeStory.caption}</p>
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
 export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileScreenProps) {
   const router = useRouter();
   const [profile, setProfile] = useState(initialProfile);
   const [pendingAvatar, setPendingAvatar] = useState(false);
   const [activeStoryOpen, setActiveStoryOpen] = useState(false);
+  const [seenStoryIds, setSeenStoryIds] = useState<string[]>([]);
   const [postViewerOpenId, setPostViewerOpenId] = useState<string | null>(null);
   const [activePostId, setActivePostId] = useState<string | null>(null);
   const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
@@ -200,6 +104,30 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
     [profile.stories]
   );
   const hasStories = activeStories.length > 0;
+  const hasUnseenStories = useMemo(
+    () => activeStories.some((story) => !story.hasSeen && !seenStoryIds.includes(story.id)),
+    [activeStories, seenStoryIds]
+  );
+  const storyCluster = useMemo<MobileStoryCluster[]>(
+    () =>
+      hasStories
+        ? [
+            {
+              ownerId: profile.profile.id,
+              ownerType: "user",
+              ownerLabel: `@${profile.profile.handle}`,
+              ownerAvatarUrl: profile.profile.avatarUrl,
+              unseenCount: activeStories.filter((story) => !story.hasSeen && !seenStoryIds.includes(story.id)).length,
+              stories: activeStories
+            }
+          ]
+        : [],
+    [activeStories, hasStories, profile.profile.avatarUrl, profile.profile.handle, profile.profile.id, seenStoryIds]
+  );
+  const initialStoryIndex = useMemo(() => {
+    const firstPendingIndex = activeStories.findIndex((story) => !story.hasSeen && !seenStoryIds.includes(story.id));
+    return firstPendingIndex >= 0 ? firstPendingIndex : Math.max(0, activeStories.length - 1);
+  }, [activeStories, seenStoryIds]);
   const currentOverlayIndex = useMemo(
     () => Math.max(0, profile.posts.findIndex((post) => post.id === activePostId)),
     [activePostId, profile.posts]
@@ -348,7 +276,11 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                 }}
                 className={cn(!hasStories && "cursor-default")}
               >
-                <ProfileAvatar profile={profile.profile} ring={hasStories} />
+                <ProfileAvatar
+                  profile={profile.profile}
+                  ring={hasStories}
+                  ringTone={profile.isViewer || hasUnseenStories ? "active" : "seen"}
+                />
               </button>
 
               {profile.isViewer ? (
@@ -423,7 +355,9 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                 className="inline-flex items-center gap-2 rounded-full bg-[rgba(255,107,87,0.08)] px-3 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[var(--coral)]"
               >
                 <Sparkles className="h-3.5 w-3.5" />
-                {activeStories.length} historia{activeStories.length === 1 ? "" : "s"} activa{activeStories.length === 1 ? "" : "s"}
+                {hasUnseenStories
+                  ? `${storyCluster[0]?.unseenCount ?? activeStories.length} por ver`
+                  : `${activeStories.length} historia${activeStories.length === 1 ? "" : "s"} vista${activeStories.length === 1 ? "" : "s"}`}
               </button>
             ) : null}
           </div>
@@ -473,7 +407,18 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
       </div>
 
       {activeStoryOpen && hasStories ? (
-        <StoryViewer owner={profile.profile} stories={activeStories} onClose={() => setActiveStoryOpen(false)} />
+        <MobileStoryOverlay
+          clusters={storyCluster}
+          initialClusterIndex={0}
+          initialStoryIndex={initialStoryIndex}
+          onClose={() => setActiveStoryOpen(false)}
+          seenStoryIds={seenStoryIds}
+          showOwnStoryStats={profile.isViewer}
+          viewer={profile.viewer}
+          onStorySeen={(storyId) => {
+            setSeenStoryIds((current) => (current.includes(storyId) ? current : [...current, storyId]));
+          }}
+        />
       ) : null}
 
       {postViewerOpenId ? (
