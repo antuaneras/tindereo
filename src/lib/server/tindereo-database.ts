@@ -246,6 +246,7 @@ export function readAppDataset(): AppDataset {
         highlights: parseStringArray(row.highlights_json),
         tags: parseStringArray(row.tags_json),
         dressCode: String(row.dress_code),
+        chatMode: "open",
         conversationPrompt: String(row.conversation_prompt),
         minimumGuestsRequired: readCount(row.minimum_guests_required),
         validationWindowDays: readCount(row.validation_window_days)
@@ -302,6 +303,9 @@ export function readAppDataset(): AppDataset {
     .map(
       (row): PrivateChat => ({
         id: String(row.id),
+        kind: "direct",
+        title: null,
+        ownerId: String(row.participant_a_id),
         participantIds: [String(row.participant_a_id), String(row.participant_b_id)],
         originEventId: row.origin_event_id ? String(row.origin_event_id) : null,
         requestId: row.request_id ? String(row.request_id) : null,
@@ -335,6 +339,7 @@ export function readAppDataset(): AppDataset {
     socialPosts: [],
     stories: [],
     storyViews: [],
+    messageMediaViews: [],
     conversationReadStates: [],
     notifications: []
   };

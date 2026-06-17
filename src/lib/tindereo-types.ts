@@ -6,6 +6,8 @@ export type EventCategory = "music" | "networking" | "food" | "creative" | "well
 
 export type EventVisibility = "public" | "private";
 
+export type EventChatMode = "open" | "announcements";
+
 export type EventAttendanceStatus = "pending" | "approved" | "rejected";
 
 export type EventHealthStatus = "building" | "confirmed" | "at-risk";
@@ -19,6 +21,12 @@ export type SocialAuthorType = "user" | "event";
 export type EventInviteStatus = "pending" | "accepted" | "declined";
 
 export type ConversationScope = "event" | "private";
+
+export type PrivateChatKind = "direct" | "group";
+
+export type ChatMediaKind = "image";
+
+export type ChatMediaDelivery = "view-once";
 
 export type NotificationKind =
   | "friendship"
@@ -69,6 +77,7 @@ export interface EventItem {
   highlights: string[];
   tags: string[];
   dressCode: string;
+  chatMode: EventChatMode;
   conversationPrompt: string;
   minimumGuestsRequired: number;
   validationWindowDays: number;
@@ -105,7 +114,10 @@ export interface PrivateChatRequest {
 
 export interface PrivateChat {
   id: string;
-  participantIds: [string, string];
+  kind: PrivateChatKind;
+  title: string | null;
+  ownerId: string;
+  participantIds: string[];
   originEventId: string | null;
   requestId: string | null;
   createdAt: string;
@@ -117,6 +129,13 @@ export interface PrivateMessage {
   authorId: string;
   text: string;
   createdAt: string;
+}
+
+export interface ChatMediaView {
+  id: string;
+  messageId: string;
+  userId: string;
+  seenAt: string;
 }
 
 export interface Friendship {
@@ -206,6 +225,7 @@ export interface AppDataset {
   socialPosts: SocialPost[];
   stories: StoryItem[];
   storyViews: StoryView[];
+  messageMediaViews: ChatMediaView[];
   conversationReadStates: ConversationReadState[];
   notifications: AppNotification[];
 }
@@ -252,10 +272,19 @@ export type PlatformAction =
   | { type: "register-user"; input: RegisterUserInput }
   | { type: "update-user-avatar"; actorId: string; imageUrl: string }
   | { type: "create-event"; actorId: string; input: CreateEventInput }
+  | { type: "set-event-chat-mode"; actorId: string; eventId: string; mode: EventChatMode }
   | { type: "request-event-access"; actorId: string; eventId: string }
   | { type: "respond-event-access"; actorId: string; membershipId: string; accept: boolean }
   | { type: "leave-event"; actorId: string; eventId: string }
   | { type: "send-group-message"; actorId: string; eventId: string; text: string }
+  | {
+      type: "send-group-media-message";
+      actorId: string;
+      eventId: string;
+      imageUrl: string;
+      caption: string;
+      viewOnce: boolean;
+    }
   | { type: "toggle-friendship"; actorId: string; targetUserId: string }
   | { type: "send-event-invite"; actorId: string; eventId: string; targetUserId: string }
   | { type: "respond-event-invite"; actorId: string; inviteId: string; accept: boolean }
@@ -280,8 +309,18 @@ export type PlatformAction =
     }
   | { type: "respond-private-request"; actorId: string; requestId: string; accept: boolean }
   | { type: "start-friend-chat"; actorId: string; targetUserId: string }
+  | { type: "create-group-chat"; actorId: string; title: string; participantIds: string[] }
   | { type: "send-private-message"; actorId: string; chatId: string; text: string }
+  | {
+      type: "send-private-media-message";
+      actorId: string;
+      chatId: string;
+      imageUrl: string;
+      caption: string;
+      viewOnce: boolean;
+    }
   | { type: "mark-story-viewed"; actorId: string; storyId: string }
+  | { type: "mark-chat-media-viewed"; actorId: string; messageId: string }
   | { type: "mark-thread-read"; actorId: string; scope: ConversationScope; targetId: string }
   | { type: "mark-notification-read"; actorId: string; notificationId: string }
   | { type: "mark-all-notifications-read"; actorId: string };

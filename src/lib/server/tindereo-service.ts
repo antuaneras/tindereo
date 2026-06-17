@@ -15,6 +15,7 @@ import type {
   PlatformDataEnvelope
 } from "../tindereo-types";
 import {
+  createGroupChat,
   createEventPost,
   createEventStory,
   createEvent,
@@ -26,18 +27,22 @@ import {
   deleteUserStory,
   leaveEvent,
   markAllNotificationsRead,
+  markChatMediaViewed,
   markNotificationRead,
   markStoryViewed,
   markThreadRead,
   postEventMessage,
+  postEventMediaMessage,
   registerUser,
   requestEventAccess,
   respondToEventAccess,
   respondToEventInvite,
   respondToPrivateChatRequest,
+  sendPrivateMediaMessage,
   sendPrivateChatRequest,
   sendEventInvite,
   sendPrivateMessage,
+  setEventChatMode,
   startFriendChat,
   toggleFriendship,
   updateUserAvatar,
@@ -130,6 +135,10 @@ export async function runPlatformAction(action: PlatformAction): Promise<Platfor
       );
     case "create-event":
       return createEventRecord(action.actorId, action.input);
+    case "set-event-chat-mode":
+      return runStateMutation(action.actorId, (state) =>
+        setEventChatMode(state, action.actorId, action.eventId, action.mode)
+      );
     case "request-event-access":
       return runStateMutation(action.actorId, (state) =>
         requestEventAccess(state, action.eventId, action.actorId)
@@ -207,6 +216,17 @@ export async function runPlatformAction(action: PlatformAction): Promise<Platfor
       return runStateMutation(action.actorId, (state) =>
         postEventMessage(state, action.eventId, action.actorId, action.text)
       );
+    case "send-group-media-message":
+      return runStateMutation(action.actorId, (state) =>
+        postEventMediaMessage(
+          state,
+          action.eventId,
+          action.actorId,
+          action.imageUrl,
+          action.caption,
+          action.viewOnce
+        )
+      );
     case "send-private-request":
       return runStateMutation(action.actorId, (state) =>
         sendPrivateChatRequest(
@@ -225,13 +245,32 @@ export async function runPlatformAction(action: PlatformAction): Promise<Platfor
       return runStateMutation(action.actorId, (state) =>
         startFriendChat(state, action.actorId, action.targetUserId)
       );
+    case "create-group-chat":
+      return runStateMutation(action.actorId, (state) =>
+        createGroupChat(state, action.actorId, action.title, action.participantIds)
+      );
     case "send-private-message":
       return runStateMutation(action.actorId, (state) =>
         sendPrivateMessage(state, action.chatId, action.actorId, action.text)
       );
+    case "send-private-media-message":
+      return runStateMutation(action.actorId, (state) =>
+        sendPrivateMediaMessage(
+          state,
+          action.chatId,
+          action.actorId,
+          action.imageUrl,
+          action.caption,
+          action.viewOnce
+        )
+      );
     case "mark-story-viewed":
       return runStateMutation(action.actorId, (state) =>
         markStoryViewed(state, action.actorId, action.storyId)
+      );
+    case "mark-chat-media-viewed":
+      return runStateMutation(action.actorId, (state) =>
+        markChatMediaViewed(state, action.actorId, action.messageId)
       );
     case "mark-thread-read":
       return runStateMutation(action.actorId, (state) =>

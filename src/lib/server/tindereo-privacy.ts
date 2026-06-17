@@ -87,6 +87,7 @@ export function sanitizePlatformDataForViewer(data: AppDataset, viewerId: string
       socialPosts: [],
       stories: [],
       storyViews: [],
+      messageMediaViews: [],
       conversationReadStates: [],
       notifications: []
     };
@@ -117,6 +118,17 @@ export function sanitizePlatformDataForViewer(data: AppDataset, viewerId: string
   });
   const eventMap = getEventMap(publicData.events);
   const storyMap = getStoryMap(publicData.stories);
+  const visibleEventMessageIds = new Set(
+    publicData.groupMessages
+      .filter((message) => canSeeEventChat(publicData, message.eventId, viewerId))
+      .map((message) => message.id)
+  );
+  const visiblePrivateMessageIds = new Set(
+    publicData.privateMessages
+      .filter((message) => visibleChatIds.has(message.chatId))
+      .map((message) => message.id)
+  );
+  const visibleMessageIds = new Set([...visibleEventMessageIds, ...visiblePrivateMessageIds]);
 
   return {
     ...publicData,
@@ -171,6 +183,9 @@ export function sanitizePlatformDataForViewer(data: AppDataset, viewerId: string
         event && event.hostId === viewerId && visibleStoryIds.has(story.id)
       );
     }),
+    messageMediaViews: publicData.messageMediaViews.filter(
+      (view) => view.userId === viewerId && visibleMessageIds.has(view.messageId)
+    ),
     conversationReadStates: publicData.conversationReadStates.filter(
       (entry) => entry.userId === viewerId
     ),

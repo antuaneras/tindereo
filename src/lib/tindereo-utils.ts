@@ -5,10 +5,12 @@ import {
 } from "@/lib/tindereo-data";
 import type {
   AppNotification,
+  ChatMediaView,
   ConversationReadState,
   ConversationScope,
   CreateEventInput,
   EventAccessState,
+  EventChatMode,
   EventInvite,
   EventInviteStatus,
   EventConnectionState,
@@ -18,6 +20,7 @@ import type {
   EventItem,
   EventMembership,
   Friendship,
+  PrivateChatKind,
   PersistedState,
   PlatformUser,
   NotificationKind,
@@ -29,6 +32,8 @@ import type {
   StoryItem,
   StoryView
 } from "@/lib/tindereo-types";
+
+const CHAT_MEDIA_PREFIX = "[media:";
 
 function cloneState<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -68,6 +73,64 @@ function createNotification(
 
 function getUserIdentityLabel(user: Pick<PlatformUser, "handle" | "name">) {
   return user.handle?.trim() || user.name;
+}
+
+function getUserIdentityMeta(user: Pick<PlatformUser, "city" | "title">) {
+  return user.city?.trim() || user.title;
+}
+
+function normalizePrivateChatKind(kind: PrivateChat["kind"] | undefined) {
+  return kind === "group" ? "group" : "direct";
+}
+
+function normalizeEventChatMode(mode: EventItem["chatMode"] | undefined): EventChatMode {
+  return mode === "announcements" ? "announcements" : "open";
+}
+
+type ParsedChatMediaAttachment = {
+  caption: string;
+  delivery: "view-once";
+  expiresAt: string;
+  imageUrl: string;
+  kind: "image";
+};
+
+function buildChatMediaSummary(caption: string) {
+  return caption ? `Foto efimera: ${caption}` : "Foto efimera";
+}
+
+function parseChatMediaNotificationPayload(text: string) {
+  if (!text.startsWith(CHAT_MEDIA_PREFIX)) {
+    return null as ParsedChatMediaAttachment | null;
+  }
+
+  const closingIndex = text.indexOf("]");
+  if (closingIndex === -1) {
+    return null;
+  }
+
+  const metadata = text.slice(CHAT_MEDIA_PREFIX.length, closingIndex).split("|");
+  if (metadata.length < 5) {
+    return null;
+  }
+
+  const kind = metadata[0] === "image" ? "image" : null;
+  const delivery = metadata[1] === "view-once" ? "view-once" : null;
+  const expiresAt = decodeURIComponent(metadata[2] ?? "");
+  const imageUrl = decodeURIComponent(metadata[3] ?? "");
+  const caption = decodeURIComponent(metadata.slice(4).join("|"));
+
+  if (!kind || !delivery || !expiresAt || !imageUrl) {
+    return null;
+  }
+
+  return {
+    kind,
+    delivery,
+    expiresAt,
+    imageUrl,
+    caption
+  } satisfies ParsedChatMediaAttachment;
 }
 
 function parseStoryNotificationPayload(text: string) {
@@ -320,6 +383,7 @@ function isPersistedState(value: unknown): value is PersistedState {
     Array.isArray(candidate.socialPosts) &&
     Array.isArray(candidate.stories) &&
     Array.isArray(candidate.storyViews) &&
+    Array.isArray(candidate.messageMediaViews) &&
     Array.isArray(candidate.conversationReadStates) &&
     Array.isArray(candidate.notifications) &&
     (!firstEvent ||
@@ -335,7 +399,11 @@ function isPersistedState(value: unknown): value is PersistedState {
 function findPairChat(state: PersistedState, userAId: string, userBId: string) {
   return (
     state.privateChats.find(
-      (chat) => chat.participantIds.includes(userAId) && chat.participantIds.includes(userBId)
+      (chat) =>
+        normalizePrivateChatKind(chat.kind) === "direct" &&
+        chat.participantIds.length === 2 &&
+        chat.participantIds.includes(userAId) &&
+        chat.participantIds.includes(userBId)
     ) ?? null
   );
 }
@@ -386,6 +454,16 @@ export function normalizeState(state: PersistedState) {
   const provisionalState: PersistedState = {
     ...DEFAULT_STATE,
     ...state,
+    events: (state.events ?? DEFAULT_STATE.events).map((event) => ({
+      ...event,
+      chatMode: normalizeEventChatMode(event.chatMode)
+    })),
+    privateChats: (state.privateChats ?? DEFAULT_STATE.privateChats).map((chat) => ({
+      ...chat,
+      kind: normalizePrivateChatKind(chat.kind),
+      title: chat.title ?? null,
+      ownerId: chat.ownerId ?? chat.participantIds[0] ?? ""
+    })),
     session: {
       ...DEFAULT_STATE.session,
       ...state.session,
@@ -397,6 +475,7 @@ export function normalizeState(state: PersistedState) {
     socialPosts: state.socialPosts ?? DEFAULT_STATE.socialPosts,
     stories: state.stories ?? DEFAULT_STATE.stories,
     storyViews: state.storyViews ?? DEFAULT_STATE.storyViews,
+    messageMediaViews: state.messageMediaViews ?? DEFAULT_STATE.messageMediaViews,
     conversationReadStates:
       state.conversationReadStates ?? DEFAULT_STATE.conversationReadStates,
     notifications: state.notifications ?? DEFAULT_STATE.notifications
@@ -552,6 +631,19 @@ export function getEventAccessState(
 export function hasEventAccess(state: PersistedState, eventId: string, userId: string) {
   const access = getEventAccessState(state, eventId, userId);
   return access.kind === "host" || access.kind === "approved";
+}
+
+export function getEventChatMode(state: PersistedState, eventId: string) {
+  return normalizeEventChatMode(getEventById(state, eventId)?.chatMode);
+}
+
+export function canWriteEventChat(state: PersistedState, eventId: string, userId: string) {
+  const event = getEventById(state, eventId);
+  if (!event || !hasEventAccess(state, eventId, userId)) {
+    return false;
+  }
+
+  return event.hostId === userId || normalizeEventChatMode(event.chatMode) === "open";
 }
 
 export function getEventMembers(state: PersistedState, eventId: string) {
@@ -728,6 +820,34 @@ export function getEventMessages(state: PersistedState, eventId: string) {
   return sortByCreatedAtAsc(state.groupMessages.filter((message) => message.eventId === eventId));
 }
 
+function buildChatMediaMessageText(
+  imageUrl: string,
+  caption: string,
+  delivery: "view-once" = "view-once"
+) {
+  const trimmedImageUrl = imageUrl.trim();
+  if (!trimmedImageUrl) {
+    return "";
+  }
+
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  return `${CHAT_MEDIA_PREFIX}image|${delivery}|${encodeURIComponent(expiresAt)}|${encodeURIComponent(trimmedImageUrl)}|${encodeURIComponent(caption.trim())}]`;
+}
+
+export function parseEphemeralMediaMessageText(text: string) {
+  return parseChatMediaNotificationPayload(text);
+}
+
+export function isChatMediaExpired(expiresAt: string) {
+  return new Date(expiresAt).getTime() <= Date.now();
+}
+
+export function hasViewedMessageMedia(state: PersistedState, messageId: string, userId: string) {
+  return state.messageMediaViews.some(
+    (view) => view.messageId === messageId && view.userId === userId
+  );
+}
+
 export function getUnreadEventMessagesCount(
   state: PersistedState,
   userId: string,
@@ -748,7 +868,7 @@ export function postEventMessage(
   text: string
 ) {
   const trimmed = text.trim();
-  if (!trimmed || !hasEventAccess(state, eventId, authorId)) {
+  if (!trimmed || !canWriteEventChat(state, eventId, authorId)) {
     return state;
   }
 
@@ -769,10 +889,13 @@ export function postEventMessage(
 
   if (!event) {
     return nextState;
-  };
+  }
 
   const author = getUserById(state, authorId);
-  const preview = trimmed.length > 96 ? `${trimmed.slice(0, 93)}...` : trimmed;
+  const media = parseChatMediaNotificationPayload(trimmed);
+  const previewSource = media ? buildChatMediaSummary(media.caption) : trimmed;
+  const preview =
+    previewSource.length > 96 ? `${previewSource.slice(0, 93)}...` : previewSource;
   const recipientIds = getEventMembers(nextState, eventId)
     .map((member) => member.id)
     .filter((memberId) => memberId !== authorId);
@@ -784,6 +907,22 @@ export function postEventMessage(
         eventId
       })
     )
+  );
+}
+
+export function postEventMediaMessage(
+  state: PersistedState,
+  eventId: string,
+  authorId: string,
+  imageUrl: string,
+  caption: string,
+  viewOnce: boolean
+) {
+  return postEventMessage(
+    state,
+    eventId,
+    authorId,
+    buildChatMediaMessageText(imageUrl, caption, viewOnce ? "view-once" : "view-once")
   );
 }
 
@@ -1846,6 +1985,32 @@ export function getPrivateChatsForUser(state: PersistedState, userId: string) {
     });
 }
 
+export function isGroupChat(chat: PrivateChat) {
+  return normalizePrivateChatKind(chat.kind) === "group";
+}
+
+export function getChatTitle(state: PersistedState, chat: PrivateChat, userId: string) {
+  if (isGroupChat(chat)) {
+    return chat.title?.trim() || "Grupo";
+  }
+
+  return getUserIdentityLabel(getChatPartner(state, chat, userId));
+}
+
+export function getChatSubtitle(state: PersistedState, chat: PrivateChat, userId: string) {
+  if (isGroupChat(chat)) {
+    const otherParticipants = chat.participantIds.filter((participantId) => participantId !== userId);
+    const sampleNames = otherParticipants
+      .slice(0, 2)
+      .map((participantId) => getUserIdentityLabel(getUserById(state, participantId)))
+      .join(", ");
+    const suffix = otherParticipants.length > 2 ? ` +${otherParticipants.length - 2}` : "";
+    return `${chat.participantIds.length} miembros${sampleNames ? ` - ${sampleNames}${suffix}` : ""}`;
+  }
+
+  return getUserIdentityMeta(getChatPartner(state, chat, userId));
+}
+
 export function getUnreadChatThreadCount(state: PersistedState, userId: string) {
   const unreadEventThreads = getJoinedEvents(state, userId).filter(
     (event) => getUnreadEventMessagesCount(state, userId, event.id) > 0
@@ -2039,6 +2204,9 @@ export function respondToPrivateChatRequest(
   const chatId = buildId("chat");
   const nextChat: PrivateChat = {
     id: chatId,
+    kind: "direct",
+    title: null,
+    ownerId: request.fromUserId,
     participantIds: [request.fromUserId, request.toUserId],
     originEventId: request.eventId,
     requestId: request.id,
@@ -2091,6 +2259,9 @@ export function startFriendChat(state: PersistedState, actorId: string, targetUs
   const createdAt = new Date().toISOString();
   const nextChat: PrivateChat = {
     id: buildId("chat"),
+    kind: "direct",
+    title: null,
+    ownerId: actorId,
     participantIds: [actorId, targetUserId],
     originEventId: null,
     requestId: null,
@@ -2126,6 +2297,66 @@ export function startFriendChat(state: PersistedState, actorId: string, targetUs
   );
 }
 
+export function createGroupChat(
+  state: PersistedState,
+  actorId: string,
+  title: string,
+  participantIds: string[]
+) {
+  const trimmedTitle = title.trim();
+  const normalizedParticipantIds = [...new Set([actorId, ...participantIds])]
+    .filter((participantId) => participantId && state.users.some((user) => user.id === participantId));
+
+  if (!trimmedTitle) {
+    throw new Error("Ponle un nombre al grupo.");
+  }
+
+  if (normalizedParticipantIds.length < 3) {
+    throw new Error("Selecciona al menos dos personas para crear un grupo.");
+  }
+
+  const createdAt = new Date().toISOString();
+  const nextChat: PrivateChat = {
+    id: buildId("chat"),
+    kind: "group",
+    title: trimmedTitle,
+    ownerId: actorId,
+    participantIds: normalizedParticipantIds,
+    originEventId: null,
+    requestId: null,
+    createdAt
+  };
+  const author = getUserById(state, actorId);
+  const welcomeMessage: PrivateMessage = {
+    id: buildId("private"),
+    chatId: nextChat.id,
+    authorId: actorId,
+    text: `${author.name} ha creado el grupo ${trimmedTitle}.`,
+    createdAt
+  };
+  const recipientIds = normalizedParticipantIds.filter((participantId) => participantId !== actorId);
+
+  return prependNotifications(
+    {
+      ...state,
+      privateChats: [...state.privateChats, nextChat],
+      privateMessages: [...state.privateMessages, welcomeMessage]
+    },
+    recipientIds.map((recipientId) =>
+      createNotification(
+        recipientId,
+        "private-message",
+        trimmedTitle,
+        `${author.name} te ha anadido al grupo.`,
+        {
+          chatId: nextChat.id,
+          fromUserId: actorId
+        }
+      )
+    )
+  );
+}
+
 export function sendPrivateMessage(
   state: PersistedState,
   chatId: string,
@@ -2151,33 +2382,112 @@ export function sendPrivateMessage(
       }
     ]
   };
-  const partnerId = chat.participantIds.find((participantId) => participantId !== authorId);
-  if (!partnerId) {
+  const recipientIds = chat.participantIds.filter((participantId) => participantId !== authorId);
+  if (recipientIds.length === 0) {
     return nextState;
   }
 
   const author = getUserById(state, authorId);
   const storyReply = parseStoryNotificationPayload(trimmed);
-  const preview = trimmed.length > 96 ? `${trimmed.slice(0, 93)}...` : trimmed;
+  const media = parseChatMediaNotificationPayload(trimmed);
+  const previewSource = media
+    ? buildChatMediaSummary(media.caption)
+    : trimmed;
+  const preview = previewSource.length > 96 ? `${previewSource.slice(0, 93)}...` : previewSource;
 
   return prependNotifications(nextState, [
-    createNotification(
-      partnerId,
-      "private-message",
-      storyReply
-        ? storyReply.mode === "reaction"
-          ? `${author.name} ha reaccionado a tu historia`
-          : `${author.name} ha respondido a tu historia`
-        : author.name,
-      storyReply ? storyReply.text : preview,
-      {
-        chatId,
-        eventId: chat.originEventId ?? undefined,
-        fromUserId: authorId,
-        storyId: storyReply?.storyId
-      }
+    ...recipientIds.map((recipientId) =>
+      createNotification(
+        recipientId,
+        "private-message",
+        storyReply
+          ? storyReply.mode === "reaction"
+            ? `${author.name} ha reaccionado a tu historia`
+            : `${author.name} ha respondido a tu historia`
+          : isGroupChat(chat)
+            ? getChatTitle(state, chat, recipientId)
+            : author.name,
+        storyReply
+          ? storyReply.text
+          : isGroupChat(chat)
+            ? `${author.name}: ${preview}`
+            : preview,
+        {
+          chatId,
+          eventId: chat.originEventId ?? undefined,
+          fromUserId: authorId,
+          storyId: storyReply?.storyId
+        }
+      )
     )
   ]);
+}
+
+export function sendPrivateMediaMessage(
+  state: PersistedState,
+  chatId: string,
+  authorId: string,
+  imageUrl: string,
+  caption: string,
+  viewOnce: boolean
+) {
+  return sendPrivateMessage(
+    state,
+    chatId,
+    authorId,
+    buildChatMediaMessageText(imageUrl, caption, viewOnce ? "view-once" : "view-once")
+  );
+}
+
+export function markChatMediaViewed(state: PersistedState, actorId: string, messageId: string) {
+  const privateMessage = state.privateMessages.find((message) => message.id === messageId);
+  if (privateMessage) {
+    const chat = state.privateChats.find((item) => item.id === privateMessage.chatId);
+    if (
+      !chat ||
+      !chat.participantIds.includes(actorId) ||
+      privateMessage.authorId === actorId ||
+      !parseChatMediaNotificationPayload(privateMessage.text) ||
+      hasViewedMessageMedia(state, messageId, actorId)
+    ) {
+      return state;
+    }
+
+    const nextView: ChatMediaView = {
+      id: buildId("media-view"),
+      messageId,
+      userId: actorId,
+      seenAt: new Date().toISOString()
+    };
+
+    return {
+      ...state,
+      messageMediaViews: [...state.messageMediaViews, nextView]
+    };
+  }
+
+  const eventMessage = state.groupMessages.find((message) => message.id === messageId);
+  if (
+    !eventMessage ||
+    eventMessage.authorId === actorId ||
+    !hasEventAccess(state, eventMessage.eventId, actorId) ||
+    !parseChatMediaNotificationPayload(eventMessage.text) ||
+    hasViewedMessageMedia(state, messageId, actorId)
+  ) {
+    return state;
+  }
+
+  const nextView: ChatMediaView = {
+    id: buildId("media-view"),
+    messageId,
+    userId: actorId,
+    seenAt: new Date().toISOString()
+  };
+
+  return {
+    ...state,
+    messageMediaViews: [...state.messageMediaViews, nextView]
+  };
 }
 
 export function getChatPartner(state: PersistedState, chat: PrivateChat, userId: string) {
@@ -2245,6 +2555,45 @@ export function updateUserAvatar(state: PersistedState, actorId: string, imageUr
   };
 }
 
+export function setEventChatMode(
+  state: PersistedState,
+  actorId: string,
+  eventId: string,
+  mode: EventChatMode
+) {
+  const event = getEventById(state, eventId);
+  if (!event || event.hostId !== actorId) {
+    return state;
+  }
+
+  const nextMode = normalizeEventChatMode(mode);
+  const createdAt = new Date().toISOString();
+  const systemMessage: EventGroupMessage = {
+    id: buildId("group"),
+    eventId,
+    authorId: "system",
+    text:
+      nextMode === "announcements"
+        ? "El chat ha pasado a modo solo organizador."
+        : "El chat vuelve a estar abierto para todos los asistentes.",
+    kind: "system",
+    createdAt
+  };
+
+  return {
+    ...state,
+    events: state.events.map((item) =>
+      item.id === eventId
+        ? {
+            ...item,
+            chatMode: nextMode
+          }
+        : item
+    ),
+    groupMessages: [...state.groupMessages, systemMessage]
+  };
+}
+
 export function createEvent(state: PersistedState, userId: string, input: CreateEventInput) {
   const creator = getUserById(state, userId);
   const title = input.title.trim();
@@ -2291,6 +2640,7 @@ export function createEvent(state: PersistedState, userId: string, input: Create
     highlights: input.highlights.filter(Boolean).slice(0, 3),
     tags: input.tags.filter(Boolean).slice(0, 5),
     dressCode: input.dressCode.trim() || "Casual",
+    chatMode: "open",
     conversationPrompt:
       "Presentate y cuenta que clase de gente te gustaria tener cerca antes de que empiece el evento.",
     minimumGuestsRequired: 4,

@@ -77,6 +77,7 @@ export const DEFAULT_STATE: PersistedState = {
   socialPosts: [],
   stories: [],
   storyViews: [],
+  messageMediaViews: [],
   conversationReadStates: [],
   notifications: []
 };

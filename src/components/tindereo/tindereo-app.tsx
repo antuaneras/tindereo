@@ -76,17 +76,21 @@ import type {
 } from "@/lib/tindereo-types";
 import {
   areFriends,
+  canWriteEventChat,
   formatEventDateRange,
   formatRelativeTime,
   formatTime,
   getActiveStories,
   getCategoryMeta,
+  getChatSubtitle,
+  getChatTitle,
   getChatPartner,
   getCurrentUser,
   getDiscoverFeedEvents,
   getEventAccessState,
   getEventAttendanceRatio,
   getEventById,
+  getEventChatMode,
   getEventConnectionState,
   getEventDeadlineLabel,
   getEventFriendMembers,
@@ -122,9 +126,13 @@ import {
   getUnreadNotificationCount,
   getUnreadPrivateMessagesCount,
   getUserById,
+  hasViewedMessageMedia,
   hasViewedStory,
   hasEventAccess,
-  normalizeState
+  isChatMediaExpired,
+  isGroupChat,
+  normalizeState,
+  parseEphemeralMediaMessageText
 } from "@/lib/tindereo-utils";
 
 function readSharedEventSlug() {
@@ -262,7 +270,22 @@ type StoryChatAttachment = {
   text: string;
 };
 
+type ChatMediaAttachment = NonNullable<ReturnType<typeof parseEphemeralMediaMessageText>>;
+
 type ProfileDrilldown = "created" | "agenda" | "friends" | "private";
+
+type GroupChatComposerState = {
+  participantIds: string[];
+  title: string;
+};
+
+type ChatMediaViewerState = {
+  authorLabel: string;
+  caption: string;
+  imageUrl: string;
+  messageId: string;
+  title: string;
+};
 
 type CameraComposerState = {
   caption: string;
@@ -316,6 +339,11 @@ const CAMERA_COMPOSER_INITIAL_STATE: CameraComposerState = {
   mode: "story",
   taggedUserIds: [],
   target: "user"
+};
+
+const GROUP_CHAT_COMPOSER_INITIAL_STATE: GroupChatComposerState = {
+  participantIds: [],
+  title: ""
 };
 
 const POST_LIKES_STORAGE_KEY = "tindereo-post-likes-v1";
@@ -452,20 +480,33 @@ function parseStoryMessageText(text: string) {
 
 function parseChatMessage(text: string) {
   const reply = parseReplyMessageText(text);
-  const story = parseStoryMessageText(text);
+  const story = parseStoryMessageText(reply.body);
+  const media = parseEphemeralMediaMessageText(reply.body);
 
   if (story) {
     return {
       body: story.mode === "comment" ? story.text : "",
-      reply: null as ReplyTarget | null,
+      media: null as ChatMediaAttachment | null,
+      reply: reply.reply,
       story,
       summary:
         story.mode === "reaction" ? `Reacciono a una historia: ${story.text}` : `Comento una historia: ${story.text}`
     };
   }
 
+  if (media) {
+    return {
+      body: media.caption,
+      media,
+      reply: reply.reply,
+      story: null as StoryChatAttachment | null,
+      summary: media.caption ? `Foto efimera: ${media.caption}` : "Foto efimera"
+    };
+  }
+
   return {
     body: reply.body,
+    media: null as ChatMediaAttachment | null,
     reply: reply.reply,
     story: null as StoryChatAttachment | null,
     summary: reply.body
@@ -661,7 +702,9 @@ export function TindereoApp() {
   const [likedPostKeys, setLikedPostKeys] = useState<string[]>([]);
   const [storyViewer, setStoryViewer] = useState<StoryViewerState | null>(null);
   const [storyReplyDraft, setStoryReplyDraft] = useState("");
+  const [chatMediaViewer, setChatMediaViewer] = useState<ChatMediaViewerState | null>(null);
   const [cameraComposer, setCameraComposer] = useState<CameraComposerState | null>(null);
+  const [groupChatComposer, setGroupChatComposer] = useState<GroupChatComposerState | null>(null);
   const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
   const [mediaEditor, setMediaEditor] = useState<MediaEditorState | null>(null);
   const [uiNotice, setUiNotice] = useState<string | null>(null);
@@ -1401,13 +1444,51 @@ export function TindereoApp() {
 
     const nextData = extractPlatformData(payload);
     const nextChat =
-      nextData.privateChats.find((chat) => chat.participantIds.includes(targetUserId)) ?? null;
+      nextData.privateChats.find(
+        (chat) => !isGroupChat(chat) && chat.participantIds.includes(targetUserId)
+      ) ?? null;
 
     applyPlatformPayload(payload, {
       activeTab: "inbox",
       selectedPrivateChatId: nextChat?.id ?? state.session.selectedPrivateChatId
     });
     setMobilePrivateChatOpen(Boolean(nextChat));
+  };
+
+  const handleCreateGroupChat = async () => {
+    if (!groupChatComposer) {
+      return;
+    }
+
+    const payload = await runPlatformMutation(
+      {
+        type: "create-group-chat",
+        actorId: state.session.currentUserId,
+        title: groupChatComposer.title,
+        participantIds: groupChatComposer.participantIds
+      },
+      {
+        activeTab: "inbox"
+      }
+    );
+
+    if (!payload) {
+      return;
+    }
+
+    const nextData = extractPlatformData(payload);
+    const nextChat =
+      nextData.privateChats
+        .filter((chat) => isGroupChat(chat) && chat.ownerId === state.session.currentUserId)
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0] ?? null;
+
+    applyPlatformPayload(payload, {
+      activeTab: "inbox",
+      selectedPrivateChatId: nextChat?.id ?? state.session.selectedPrivateChatId
+    });
+    setGroupChatComposer(null);
+    setMobilePrivateChatOpen(Boolean(nextChat));
+    setUiNotice("Grupo creado.");
   };
 
   const handleSendPrivateMessage = async () => {
@@ -1428,6 +1509,107 @@ export function TindereoApp() {
       setPrivateDraft("");
       setPrivateReplyTarget(null);
     }
+  };
+
+  const handleSendPrivateMediaMessage = async (chatId: string, file: File | null) => {
+    if (!file) {
+      return;
+    }
+
+    try {
+      const imageUrl = await readFileAsDataUrl(file);
+      const payload = await runPlatformMutation({
+        type: "send-private-media-message",
+        actorId: state.session.currentUserId,
+        chatId,
+        imageUrl,
+        caption: "",
+        viewOnce: true
+      });
+
+      if (payload) {
+        setUiNotice("Foto efimera enviada.");
+      }
+    } catch (error) {
+      setUiNotice(error instanceof Error ? error.message : "No se pudo enviar la foto.");
+    }
+  };
+
+  const handleSendEventMediaMessage = async (eventId: string, file: File | null) => {
+    if (!file) {
+      return;
+    }
+
+    try {
+      const imageUrl = await readFileAsDataUrl(file);
+      const payload = await runPlatformMutation({
+        type: "send-group-media-message",
+        actorId: state.session.currentUserId,
+        eventId,
+        imageUrl,
+        caption: "",
+        viewOnce: true
+      });
+
+      if (payload) {
+        setUiNotice("Foto efimera enviada al chat.");
+      }
+    } catch (error) {
+      setUiNotice(error instanceof Error ? error.message : "No se pudo enviar la foto.");
+    }
+  };
+
+  const handleSetEventChatMode = async (eventId: string, mode: "open" | "announcements") => {
+    const payload = await runPlatformMutation({
+      type: "set-event-chat-mode",
+      actorId: state.session.currentUserId,
+      eventId,
+      mode
+    });
+
+    if (payload) {
+      setUiNotice(
+        mode === "announcements"
+          ? "Chat cerrado: solo escribe el organizador."
+          : "Chat reabierto para todos."
+      );
+    }
+  };
+
+  const handleOpenChatMedia = async (
+    messageId: string,
+    authorId: string,
+    authorLabel: string,
+    media: ChatMediaAttachment
+  ) => {
+    if (isChatMediaExpired(media.expiresAt)) {
+      setUiNotice("Esta foto ya ha caducado.");
+      return;
+    }
+
+    const mine = authorId === state.session.currentUserId;
+    const alreadyViewed = hasViewedMessageMedia(state, messageId, state.session.currentUserId);
+
+    if (!mine && alreadyViewed) {
+      setUiNotice("Esta foto ya se abrio y no puede volver a verse.");
+      return;
+    }
+
+    if (!mine) {
+      await runPlatformMutation({
+        type: "mark-chat-media-viewed",
+        actorId: state.session.currentUserId,
+        messageId
+      });
+    }
+
+    setChatMediaViewer({
+      authorLabel,
+      caption: media.caption,
+      imageUrl: media.imageUrl,
+      messageId,
+      title: mine ? "Tu foto efimera" : `Foto de ${authorLabel}`
+    });
   };
 
   const handleCreateUserPost = async (draft: MediaDraft = profileMediaDraft) => {
@@ -2001,6 +2183,7 @@ export function TindereoApp() {
     const existingChat =
       state.privateChats.find(
         (chat) =>
+          !isGroupChat(chat) &&
           chat.participantIds.includes(currentUser.id) && chat.participantIds.includes(story.authorId)
       ) ?? null;
 
@@ -2052,7 +2235,9 @@ export function TindereoApp() {
 
   const shouldHideMobileNavigation = Boolean(
     storyViewer ||
+      chatMediaViewer ||
       cameraComposer ||
+      groupChatComposer ||
       notificationCenterOpen ||
       mediaEditor ||
       mobileEventScreen ||
@@ -2111,6 +2296,7 @@ export function TindereoApp() {
             setGroupDrafts((current) => ({ ...current, [eventId]: value }))
           }
           onChangePrivateDraft={setPrivateDraft}
+          onCreateGroupChat={() => setGroupChatComposer(GROUP_CHAT_COMPOSER_INITIAL_STATE)}
           onCreateEvent={(input) => void handleCreateEvent(input)}
           onGoToCreate={() => navigateToTab("host")}
           onMarkAllNotificationsRead={() => void handleMarkAllNotificationsRead()}
@@ -2118,6 +2304,9 @@ export function TindereoApp() {
           onOpenNotification={(notificationId) => void handleOpenNotification(notificationId)}
           onOpenNotifications={() => navigateToTab("search")}
           onOpenProfileTab={() => navigateToTab("profile")}
+          onOpenChatMedia={(messageId, authorId, authorLabel, media) =>
+            void handleOpenChatMedia(messageId, authorId, authorLabel, media)
+          }
           onUpdateAvatar={(file) => void handleUpdateCurrentUserAvatar(file)}
           onEnablePushNotifications={() => void handleEnablePushNotifications()}
           onDisablePushNotifications={() => void handleDisablePushNotifications()}
@@ -2139,11 +2328,14 @@ export function TindereoApp() {
           onRequestEventAccess={handleRequestEventAccess}
           onResetDemo={() => void handleResetDemo()}
           onSendGroupMessage={handleSendGroupMessage}
+          onSendGroupMediaMessage={(eventId, file) => void handleSendEventMediaMessage(eventId, file)}
           onSendPrivateMessage={() => void handleSendPrivateMessage()}
+          onSendPrivateMediaMessage={(chatId, file) => void handleSendPrivateMediaMessage(chatId, file)}
           onSendPrivateRequest={handleSendPrivateRequest}
           onSendStoryReply={(message, reaction) => void handleStoryReply(message, reaction)}
           onStartFriendChat={(targetUserId) => void handleStartFriendChat(targetUserId)}
           onSubmitCameraComposer={() => void submitCameraComposer()}
+          onToggleEventChatMode={(eventId, mode) => void handleSetEventChatMode(eventId, mode)}
           onToggleFriendship={(targetUserId) => void handleToggleFriendship(targetUserId)}
           onTogglePostLike={togglePostLike}
           onUpdateCameraComposer={setCameraComposer}
@@ -2319,6 +2511,9 @@ export function TindereoApp() {
                 onCreateEventPost={() => void handleCreateEventPost(discoverSelection.id)}
                 onCreateEventStory={() => void handleCreateEventStory(discoverSelection.id)}
                 onLeaveEvent={handleLeaveEvent}
+                onOpenChatMedia={(messageId, authorId, authorLabel, media) =>
+                  void handleOpenChatMedia(messageId, authorId, authorLabel, media)
+                }
                 onOpenPrivateChat={openPrivateChat}
                 onRequestEventAccess={handleRequestEventAccess}
                 onRespondEventAccess={handleRespondEventAccess}
@@ -2336,8 +2531,14 @@ export function TindereoApp() {
                   }))
                 }
                 onSendGroupMessage={() => handleSendGroupMessage(discoverSelection.id)}
+                onSendGroupMediaMessage={(file) =>
+                  void handleSendEventMediaMessage(discoverSelection.id, file)
+                }
                 onSendPrivateRequest={(targetUserId) =>
                   handleSendPrivateRequest(discoverSelection.id, targetUserId)
+                }
+                onToggleEventChatMode={(mode) =>
+                  void handleSetEventChatMode(discoverSelection.id, mode)
                 }
                 onToggleFriendship={(targetUserId) => void handleToggleFriendship(targetUserId)}
                 eventMediaDraft={eventMediaDrafts[discoverSelection.id] ?? { imageUrl: "", caption: "" }}
@@ -2424,6 +2625,9 @@ export function TindereoApp() {
                   onCreateEventPost={() => void handleCreateEventPost(agendaSelection.id)}
                   onCreateEventStory={() => void handleCreateEventStory(agendaSelection.id)}
                   onLeaveEvent={handleLeaveEvent}
+                  onOpenChatMedia={(messageId, authorId, authorLabel, media) =>
+                    void handleOpenChatMedia(messageId, authorId, authorLabel, media)
+                  }
                   onOpenPrivateChat={openPrivateChat}
                   onRequestEventAccess={handleRequestEventAccess}
                   onRespondEventAccess={handleRespondEventAccess}
@@ -2441,8 +2645,14 @@ export function TindereoApp() {
                     }))
                   }
                   onSendGroupMessage={() => handleSendGroupMessage(agendaSelection.id)}
+                  onSendGroupMediaMessage={(file) =>
+                    void handleSendEventMediaMessage(agendaSelection.id, file)
+                  }
                   onSendPrivateRequest={(targetUserId) =>
                     handleSendPrivateRequest(agendaSelection.id, targetUserId)
+                  }
+                  onToggleEventChatMode={(mode) =>
+                    void handleSetEventChatMode(agendaSelection.id, mode)
                   }
                   onToggleFriendship={(targetUserId) => void handleToggleFriendship(targetUserId)}
                   eventMediaDraft={eventMediaDrafts[agendaSelection.id] ?? { imageUrl: "", caption: "" }}
@@ -2479,9 +2689,14 @@ export function TindereoApp() {
             currentUser={currentUser}
             friends={friends}
             onChangePrivateDraft={setPrivateDraft}
+            onCreateGroupChat={() => setGroupChatComposer(GROUP_CHAT_COMPOSER_INITIAL_STATE)}
+            onOpenChatMedia={(messageId, authorId, authorLabel, media) =>
+              void handleOpenChatMedia(messageId, authorId, authorLabel, media)
+            }
             onOpenChat={openPrivateChat}
             onRespondPrivateRequest={handleRespondPrivateRequest}
             onSendMessage={handleSendPrivateMessage}
+            onSendPrivateMediaMessage={(chatId, file) => void handleSendPrivateMediaMessage(chatId, file)}
             onStartFriendChat={handleStartFriendChat}
             privateChats={privateChats}
             privateDraft={privateDraft}
@@ -2534,6 +2749,35 @@ export function TindereoApp() {
         onOpenCamera={() => openCameraComposer()}
         unreadChatThreadCount={unreadChatThreadCount}
       />
+
+      {groupChatComposer ? (
+        <GroupChatComposerSheet
+          currentUser={currentUser}
+          draft={groupChatComposer}
+          friends={friends}
+          onClose={() => setGroupChatComposer(null)}
+          onCreate={() => void handleCreateGroupChat()}
+          onToggleParticipant={(userId) =>
+            setGroupChatComposer((current) =>
+              current
+                ? {
+                    ...current,
+                    participantIds: current.participantIds.includes(userId)
+                      ? current.participantIds.filter((participantId) => participantId !== userId)
+                      : [...current.participantIds, userId]
+                  }
+                : current
+            )
+          }
+          onUpdateTitle={(value) =>
+            setGroupChatComposer((current) => (current ? { ...current, title: value } : current))
+          }
+        />
+      ) : null}
+
+      {chatMediaViewer ? (
+        <ChatMediaViewerSheet viewer={chatMediaViewer} onClose={() => setChatMediaViewer(null)} />
+      ) : null}
     </div>
   );
 }
@@ -2682,6 +2926,7 @@ function MobileAppShell({
   onChangeEventView,
   onChangeGroupDraft,
   onChangePrivateDraft,
+  onCreateGroupChat,
   onCreateEvent,
   onGoToCreate,
   onMarkAllNotificationsRead,
@@ -2691,6 +2936,7 @@ function MobileAppShell({
   onOpenNotification,
   onOpenNotifications,
   onOpenProfileTab,
+  onOpenChatMedia,
   onUpdateAvatar,
   onOpenCamera,
   onOpenEvent,
@@ -2709,11 +2955,14 @@ function MobileAppShell({
   onRequestEventAccess,
   onResetDemo,
   onSendGroupMessage,
+  onSendGroupMediaMessage,
   onSendPrivateMessage,
+  onSendPrivateMediaMessage,
   onSendPrivateRequest,
   onSendStoryReply,
   onStartFriendChat,
   onSubmitCameraComposer,
+  onToggleEventChatMode,
   onToggleFriendship,
   onTogglePostLike,
   onUpdateCameraComposer,
@@ -2771,6 +3020,7 @@ function MobileAppShell({
   onChangeEventView: (view: EventDetailTab) => void;
   onChangeGroupDraft: (eventId: string, value: string) => void;
   onChangePrivateDraft: (value: string) => void;
+  onCreateGroupChat: () => void;
   onCreateEvent: (input: CreateEventInput) => void;
   onGoToCreate: () => void;
   onMarkAllNotificationsRead: () => void;
@@ -2780,6 +3030,12 @@ function MobileAppShell({
   onOpenNotification: (notificationId: string) => void;
   onOpenNotifications: () => void;
   onOpenProfileTab: () => void;
+  onOpenChatMedia: (
+    messageId: string,
+    authorId: string,
+    authorLabel: string,
+    media: ChatMediaAttachment
+  ) => void;
   onUpdateAvatar: (file: File | null) => void;
   onOpenCamera: (draft?: Partial<CameraComposerState>) => void;
   onOpenEvent: (eventId: string, tab: AppTab) => void;
@@ -2798,11 +3054,14 @@ function MobileAppShell({
   onRequestEventAccess: (eventId: string) => void;
   onResetDemo: () => void;
   onSendGroupMessage: (eventId: string) => void;
+  onSendGroupMediaMessage: (eventId: string, file: File | null) => void;
   onSendPrivateMessage: () => void;
+  onSendPrivateMediaMessage: (chatId: string, file: File | null) => void;
   onSendPrivateRequest: (eventId: string, targetUserId: string) => void;
   onSendStoryReply: (message: string, reaction?: string) => void;
   onStartFriendChat: (targetUserId: string) => void;
   onSubmitCameraComposer: () => void;
+  onToggleEventChatMode: (eventId: string, mode: "open" | "announcements") => void;
   onToggleFriendship: (targetUserId: string) => void;
   onTogglePostLike: (postId: string) => void;
   onUpdateCameraComposer: Dispatch<SetStateAction<CameraComposerState | null>>;
@@ -2965,7 +3224,9 @@ function MobileAppShell({
         onBack={closeMobileEventScreen}
         onChangeDraft={(value) => onChangeGroupDraft(selectedEvent.id, value)}
         onChangeView={onChangeEventView}
+        onChangeChatMode={(mode) => onToggleEventChatMode(selectedEvent.id, mode)}
         onOpenCamera={(draft) => onOpenCamera({ eventId: selectedEvent.id, target: "event", ...draft })}
+        onOpenChatMedia={onOpenChatMedia}
         onOpenPrivateChat={onOpenPrivateChat}
         onOpenMediaEditor={onOpenMediaEditor}
         onOpenProfileUser={onOpenProfileUser}
@@ -2975,6 +3236,7 @@ function MobileAppShell({
         onRequestAccess={() => onRequestEventAccess(selectedEvent.id)}
         onRespondEventAccess={onRespondEventAccess}
         onRespondPrivateRequest={onRespondPrivateRequest}
+        onSendMediaMessage={(file) => onSendGroupMediaMessage(selectedEvent.id, file)}
         onSendMessage={() => onSendGroupMessage(selectedEvent.id)}
         onToggleFriendship={onToggleFriendship}
         replyTarget={groupReplyTargets[selectedEvent.id] ?? null}
@@ -2992,8 +3254,10 @@ function MobileAppShell({
         draft={privateDraft}
         onBack={closePrivateChat}
         onChangeDraft={onChangePrivateDraft}
+        onOpenChatMedia={onOpenChatMedia}
         onOpenProfileUser={onOpenProfileUser}
         onReplyMessage={onReplyPrivateMessage}
+        onSendMediaMessage={(file) => onSendPrivateMediaMessage(selectedChat.id, file)}
         onSendMessage={onSendPrivateMessage}
         replyTarget={privateReplyTarget}
         state={state}
@@ -3064,6 +3328,7 @@ function MobileAppShell({
           currentUser={currentUser}
           friends={friends}
           incomingRequests={incomingRequests}
+          onCreateGroupChat={onCreateGroupChat}
           onOpenChat={onOpenPrivateChat}
           onOpenProfileUser={onOpenProfileUser}
           onRespondPrivateRequest={onRespondPrivateRequest}
@@ -3302,6 +3567,143 @@ function MediaEditorSheet({
             Eliminar
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ChatMediaViewerSheet({
+  viewer,
+  onClose
+}: {
+  viewer: ChatMediaViewerState;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[78] bg-[#1d160f] px-3 pb-6 pt-[calc(env(safe-area-inset-top)+1rem)] text-white">
+      <div className="mb-4 flex items-center gap-3">
+        <button
+          className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10"
+          onClick={onClose}
+          type="button"
+        >
+          <ChevronLeft className="h-5 w-5" />
+        </button>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-xs font-semibold uppercase tracking-[0.24em] text-white/60">
+            {viewer.authorLabel}
+          </p>
+          <h2 className="truncate text-xl font-black tracking-tight">{viewer.title}</h2>
+        </div>
+      </div>
+
+      <div className="overflow-hidden rounded-[30px] border border-white/10 bg-white/5">
+        <MediaSurface
+          alt={viewer.title}
+          className="max-h-[70vh] w-full object-contain"
+          src={viewer.imageUrl}
+        />
+      </div>
+      {viewer.caption ? <p className="mt-4 text-sm text-white/76">{viewer.caption}</p> : null}
+    </div>
+  );
+}
+
+function GroupChatComposerSheet({
+  currentUser,
+  draft,
+  friends,
+  onClose,
+  onCreate,
+  onToggleParticipant,
+  onUpdateTitle
+}: {
+  currentUser: PlatformUser;
+  draft: GroupChatComposerState;
+  friends: PlatformUser[];
+  onClose: () => void;
+  onCreate: () => void;
+  onToggleParticipant: (userId: string) => void;
+  onUpdateTitle: (value: string) => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[77] overflow-y-auto bg-[#f6efe7] px-3 pb-6 pt-[calc(env(safe-area-inset-top)+1rem)]">
+      <div className="mb-4 flex items-center gap-3">
+        <button
+          className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white shadow-[0_12px_24px_rgba(52,34,22,0.08)]"
+          onClick={onClose}
+          type="button"
+        >
+          <ChevronLeft className="h-5 w-5 text-[#1d160f]" />
+        </button>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">
+            Nuevo grupo
+          </p>
+          <h2 className="text-2xl font-black tracking-tight text-[#1d160f]">
+            Chat tipo WhatsApp
+          </h2>
+        </div>
+      </div>
+
+      <div className="rounded-[30px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+        <label className="grid gap-2">
+          <span className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+            Nombre del grupo
+          </span>
+          <input
+            className="rounded-[18px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm text-[#1d160f] outline-none"
+            onChange={(event) => onUpdateTitle(event.target.value)}
+            placeholder={`Ej. Cena con ${currentUser.city}`}
+            value={draft.title}
+          />
+        </label>
+
+        <div className="mt-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+            Participantes
+          </p>
+          <div className="mt-3 space-y-3">
+            {friends.length === 0 ? (
+              <EmptyState
+                copy="Primero necesitas tener al menos dos amistades añadidas."
+                title="Aun no puedes crear grupos"
+              />
+            ) : (
+              friends.map((friend) => {
+                const checked = draft.participantIds.includes(friend.id);
+                return (
+                  <label
+                    key={friend.id}
+                    className="flex cursor-pointer items-center gap-3 rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] p-3"
+                  >
+                    <input
+                      checked={checked}
+                      className="h-4 w-4 accent-[#1d160f]"
+                      onChange={() => onToggleParticipant(friend.id)}
+                      type="checkbox"
+                    />
+                    <AvatarChip user={friend} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-semibold text-[#1d160f]">
+                        {getUserIdentityLabel(friend)}
+                      </p>
+                      <p className="truncate text-sm text-[#8f6f59]">{getUserIdentityMeta(friend)}</p>
+                    </div>
+                  </label>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        <button
+          className="mt-4 w-full rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+          onClick={onCreate}
+          type="button"
+        >
+          Crear grupo
+        </button>
       </div>
     </div>
   );
@@ -3824,6 +4226,7 @@ function MobileInboxScreen({
   currentUser,
   friends,
   incomingRequests,
+  onCreateGroupChat,
   onOpenChat,
   onOpenProfileUser,
   onRespondPrivateRequest,
@@ -3835,6 +4238,7 @@ function MobileInboxScreen({
   currentUser: PlatformUser;
   friends: PlatformUser[];
   incomingRequests: ReturnType<typeof getPrivateRequestsForUser>;
+  onCreateGroupChat: () => void;
   onOpenChat: (chatId: string) => void;
   onOpenProfileUser: (userId: string) => void;
   onRespondPrivateRequest: (requestId: string, accept: boolean) => void;
@@ -3850,11 +4254,20 @@ function MobileInboxScreen({
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">Chats</p>
             <h1 className="mt-2 text-2xl font-black tracking-tight text-[#1d160f]">
-              Conversaciones privadas
+              Conversaciones
             </h1>
           </div>
-          <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-3 py-2 text-xs font-semibold text-[#6d5749]">
-            {unreadChatThreadCount} pendientes
+          <div className="flex items-center gap-2">
+            <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-3 py-2 text-xs font-semibold text-[#6d5749]">
+              {unreadChatThreadCount} pendientes
+            </div>
+            <button
+              className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-[#1d160f] text-white"
+              onClick={onCreateGroupChat}
+              type="button"
+            >
+              <Users className="h-4 w-4" />
+            </button>
           </div>
         </div>
       </section>
@@ -3873,7 +4286,9 @@ function MobileInboxScreen({
           </div>
           <div className="mt-4 space-y-3">
             {friends.map((friend) => {
-              const existingChat = privateChats.find((chat) => chat.participantIds.includes(friend.id));
+              const existingChat = privateChats.find(
+                (chat) => !isGroupChat(chat) && chat.participantIds.includes(friend.id)
+              );
               return (
                 <div
                   key={friend.id}
@@ -3947,7 +4362,6 @@ function MobileInboxScreen({
           />
         ) : (
           privateChats.map((chat) => {
-            const partner = getChatPartner(state, chat, currentUser.id);
             const lastMessage = getLatestPrivateMessage(state, chat.id);
             const unreadCount = getUnreadPrivateMessagesCount(state, currentUser.id, chat.id);
             return (
@@ -3957,10 +4371,12 @@ function MobileInboxScreen({
                 onClick={() => onOpenChat(chat.id)}
                 type="button"
               >
-                <AvatarChip user={partner} />
+                <ChatAvatarChip chat={chat} currentUserId={currentUser.id} state={state} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
-                    <p className="truncate font-semibold text-[#1d160f]">{getUserIdentityLabel(partner)}</p>
+                    <p className="truncate font-semibold text-[#1d160f]">
+                      {getChatTitle(state, chat, currentUser.id)}
+                    </p>
                     <div className="flex items-center gap-2">
                       {unreadCount > 0 ? (
                         <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-[#ff6b57] px-2 py-1 text-[10px] font-bold text-white">
@@ -3972,6 +4388,9 @@ function MobileInboxScreen({
                       </span>
                     </div>
                   </div>
+                  <p className="mt-1 truncate text-xs text-[#8f6f59]">
+                    {getChatSubtitle(state, chat, currentUser.id)}
+                  </p>
                   <p className="mt-1 truncate text-sm text-[#5f4b3f]">
                     {lastMessage ? parseChatMessage(lastMessage.text).summary : "Chat listo para empezar"}
                   </p>
@@ -4424,6 +4843,59 @@ function StoryMessageCard({
   );
 }
 
+function ChatMediaMessageCard({
+  dark,
+  media,
+  mine,
+  onOpen,
+  viewed
+}: {
+  dark?: boolean;
+  media: ChatMediaAttachment;
+  mine: boolean;
+  onOpen: () => void;
+  viewed: boolean;
+}) {
+  const expired = isChatMediaExpired(media.expiresAt);
+  const canOpen = mine ? !expired : !expired && !viewed;
+  const statusLabel = expired
+    ? "Caducada"
+    : mine
+      ? "Disponible 24 h"
+      : viewed
+        ? "Vista"
+        : "Ver una vez";
+
+  return (
+    <button
+      className={`mb-2 flex w-full items-center gap-3 rounded-[18px] border p-3 text-left ${
+        dark ? "border-white/10 bg-white/10 text-white" : "border-[#eadfd3] bg-[#fffaf6] text-[#1d160f]"
+      } ${canOpen ? "" : "opacity-75"}`}
+      onClick={onOpen}
+      type="button"
+    >
+      <div
+        className={`flex h-12 w-12 items-center justify-center rounded-[14px] ${
+          dark ? "bg-white/12" : "bg-[#f3e7dc]"
+        }`}
+      >
+        <Image className="h-5 w-5" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p
+          className={`truncate text-xs font-semibold uppercase tracking-[0.16em] ${
+            dark ? "text-white/68" : "text-[#8f6f59]"
+          }`}
+        >
+          Foto efimera
+        </p>
+        <p className="truncate text-sm font-semibold">{media.caption || "Toca para abrirla"}</p>
+        <p className={`mt-1 text-xs ${dark ? "text-white/72" : "text-[#6d5749]"}`}>{statusLabel}</p>
+      </div>
+    </button>
+  );
+}
+
 function StoryViewerOverlay({
   activeStory,
   currentUserId,
@@ -4662,8 +5134,10 @@ function MobilePrivateChatScreen({
   draft,
   onBack,
   onChangeDraft,
+  onOpenChatMedia,
   onOpenProfileUser,
   onReplyMessage,
+  onSendMediaMessage,
   onSendMessage,
   replyTarget,
   state
@@ -4673,14 +5147,25 @@ function MobilePrivateChatScreen({
   draft: string;
   onBack: () => void;
   onChangeDraft: (value: string) => void;
+  onOpenChatMedia: (
+    messageId: string,
+    authorId: string,
+    authorLabel: string,
+    media: ChatMediaAttachment
+  ) => void;
   onOpenProfileUser: (userId: string) => void;
   onReplyMessage: (replyTarget: ReplyTarget | null) => void;
+  onSendMediaMessage: (file: File | null) => void;
   onSendMessage: () => void;
   replyTarget: ReplyTarget | null;
   state: PersistedState;
 }) {
   const partner = getChatPartner(state, chat, currentUser.id);
   const messages = getPrivateMessages(state, chat.id);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const groupChat = isGroupChat(chat);
+  const chatTitle = getChatTitle(state, chat, currentUser.id);
+  const chatSubtitle = getChatSubtitle(state, chat, currentUser.id);
 
   return (
     <div className="fixed inset-0 z-[60] flex flex-col bg-[#efe8df]">
@@ -4688,11 +5173,15 @@ function MobilePrivateChatScreen({
         <button className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-[#fff0e8]" onClick={onBack} type="button">
           <ChevronLeft className="h-5 w-5 text-[#1d160f]" />
         </button>
-        <button className="flex min-w-0 items-center gap-3 text-left" onClick={() => onOpenProfileUser(partner.id)} type="button">
-          <AvatarChip user={partner} />
+        <button
+          className="flex min-w-0 items-center gap-3 text-left"
+          onClick={() => (!groupChat ? onOpenProfileUser(partner.id) : undefined)}
+          type="button"
+        >
+          <ChatAvatarChip chat={chat} currentUserId={currentUser.id} state={state} />
           <div className="min-w-0">
-            <p className="truncate font-semibold text-[#1d160f]">{getUserIdentityLabel(partner)}</p>
-            <p className="truncate text-sm text-[#8f6f59]">{getUserIdentityMeta(partner)}</p>
+            <p className="truncate font-semibold text-[#1d160f]">{chatTitle}</p>
+            <p className="truncate text-sm text-[#8f6f59]">{chatSubtitle}</p>
           </div>
         </button>
       </div>
@@ -4700,16 +5189,23 @@ function MobilePrivateChatScreen({
         {messages.map((message) => {
           const mine = message.authorId === currentUser.id;
           const parsed = parseChatMessage(message.text);
-          const author = mine ? getUserIdentityLabel(currentUser) : getUserIdentityLabel(partner);
+          const authorUser = getUserById(state, message.authorId);
+          const author = getUserIdentityLabel(authorUser);
+          const viewed = hasViewedMessageMedia(state, message.id, currentUser.id);
           return (
             <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
               <button
                 className={`max-w-[82%] rounded-[22px] px-4 py-3 text-left text-sm ${
                   mine ? "bg-[#d1f7c4] text-[#1d160f]" : "bg-white text-[#1d160f]"
                 }`}
-                onClick={() => onReplyMessage(buildReplyTarget(author, message.id, parsed.body))}
+                onClick={() => onReplyMessage(buildReplyTarget(author, message.id, parsed.summary))}
                 type="button"
               >
+                {groupChat ? (
+                  <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
+                    {author}
+                  </p>
+                ) : null}
                 {parsed.reply ? (
                   <div className="mb-2 rounded-[16px] border-l-2 border-[#ff6b57] bg-black/5 px-3 py-2">
                     <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
@@ -4719,6 +5215,15 @@ function MobilePrivateChatScreen({
                   </div>
                 ) : null}
                 {parsed.story ? <StoryMessageCard dark={mine} state={state} storyAttachment={parsed.story} /> : null}
+                {parsed.media ? (
+                  <ChatMediaMessageCard
+                    dark={mine}
+                    media={parsed.media}
+                    mine={mine}
+                    onOpen={() => onOpenChatMedia(message.id, message.authorId, author, parsed.media!)}
+                    viewed={viewed}
+                  />
+                ) : null}
                 {parsed.body ? <p>{parsed.body}</p> : null}
                 <p className="mt-2 text-[11px] text-[#8f6f59]">{formatTime(message.createdAt)}</p>
               </button>
@@ -4727,6 +5232,17 @@ function MobilePrivateChatScreen({
         })}
       </div>
       <div className="border-t border-[#eadfd3] bg-white/95 px-3 pb-[calc(env(safe-area-inset-bottom)+0.85rem)] pt-3">
+        <input
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          onChange={(event) => {
+            void onSendMediaMessage(event.target.files?.[0] ?? null);
+            event.target.value = "";
+          }}
+          ref={fileInputRef}
+          type="file"
+        />
         {replyTarget ? (
           <div className="mb-3 flex items-start justify-between gap-3 rounded-[18px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3">
             <div>
@@ -4741,10 +5257,17 @@ function MobilePrivateChatScreen({
           </div>
         ) : null}
         <div className="flex items-center gap-2">
+          <button
+            className="inline-flex h-12 w-12 items-center justify-center rounded-full border border-[#eadfd3] bg-[#fffaf6] text-[#1d160f]"
+            onClick={() => fileInputRef.current?.click()}
+            type="button"
+          >
+            <Image className="h-4 w-4" />
+          </button>
           <input
             className="min-w-0 flex-1 rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm text-[#1d160f] outline-none"
             onChange={(event) => onChangeDraft(event.target.value)}
-            placeholder={`Escribe a ${getUserIdentityLabel(partner)}...`}
+            placeholder={`Escribe en ${chatTitle}...`}
             value={draft}
           />
           <button className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-[#1d160f] text-white" onClick={onSendMessage} type="button">
@@ -4761,9 +5284,11 @@ function MobileEventScreen({
   draft,
   event,
   onBack,
+  onChangeChatMode,
   onChangeDraft,
   onChangeView,
   onOpenCamera,
+  onOpenChatMedia,
   onOpenPrivateChat,
   onOpenMediaEditor,
   onOpenProfileUser,
@@ -4773,6 +5298,7 @@ function MobileEventScreen({
   onRequestAccess,
   onRespondEventAccess,
   onRespondPrivateRequest,
+  onSendMediaMessage,
   onSendMessage,
   onToggleFriendship,
   replyTarget,
@@ -4783,9 +5309,16 @@ function MobileEventScreen({
   draft: string;
   event: EventItem;
   onBack: () => void;
+  onChangeChatMode: (mode: "open" | "announcements") => void;
   onChangeDraft: (value: string) => void;
   onChangeView: (view: EventDetailTab) => void;
   onOpenCamera: (draft?: Partial<CameraComposerState>) => void;
+  onOpenChatMedia: (
+    messageId: string,
+    authorId: string,
+    authorLabel: string,
+    media: ChatMediaAttachment
+  ) => void;
   onOpenPrivateChat: (chatId: string) => void;
   onOpenMediaEditor: Dispatch<SetStateAction<MediaEditorState | null>>;
   onOpenProfileUser: (userId: string) => void;
@@ -4795,6 +5328,7 @@ function MobileEventScreen({
   onRequestAccess: () => void;
   onRespondEventAccess: (membershipId: string, accept: boolean) => void;
   onRespondPrivateRequest: (requestId: string, accept: boolean) => void;
+  onSendMediaMessage: (file: File | null) => void;
   onSendMessage: () => void;
   onToggleFriendship: (targetUserId: string) => void;
   replyTarget: ReplyTarget | null;
@@ -4810,6 +5344,9 @@ function MobileEventScreen({
   const members = getEventMembers(state, event.id);
   const friendMembers = getEventFriendMembers(state, event.id, currentUser.id);
   const pendingRequests = getEventPendingRequests(state, event.id);
+  const canWrite = canWriteEventChat(state, event.id, currentUser.id);
+  const chatMode = getEventChatMode(state, event.id);
+  const mediaInputRef = useRef<HTMLInputElement>(null);
   const [shareNotice, setShareNotice] = useState<string | null>(null);
   const shareUrl = buildEventShareUrl(event.slug);
   const shareCopy = buildEventShareCopy(event, shareUrl);
@@ -4874,6 +5411,26 @@ function MobileEventScreen({
       {view === "chat" ? (
         <>
           <div className="flex-1 space-y-3 overflow-y-auto bg-[radial-gradient(circle_at_top_left,rgba(255,107,87,0.08),transparent_24%),#efe8df] px-3 py-4">
+            <input
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={(eventValue) => {
+                void onSendMediaMessage(eventValue.target.files?.[0] ?? null);
+                eventValue.target.value = "";
+              }}
+              ref={mediaInputRef}
+              type="file"
+            />
+            {canAccess ? (
+              <div className="rounded-[22px] border border-[#eadfd3] bg-white/92 px-4 py-3 text-sm text-[#5f4b3f] shadow-[0_12px_24px_rgba(52,34,22,0.06)]">
+                {chatMode === "announcements"
+                  ? currentUser.id === event.hostId
+                    ? "Modo solo organizador activo. Solo tus mensajes saldran al grupo."
+                    : "El organizador ha cerrado temporalmente el chat. Puedes leer, pero solo escribe el."
+                  : "Chat abierto para todos los asistentes."}
+              </div>
+            ) : null}
             {!canAccess ? (
               <div className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
                 <img alt={event.title} className="h-44 w-full rounded-[22px] object-cover" src={event.coverImage} />
@@ -4892,6 +5449,7 @@ function MobileEventScreen({
                     message.authorId === "system" ? null : getUserById(state, message.authorId);
                   const authorLabel = author ? getUserIdentityLabel(author) : "Sistema";
                   const parsed = parseChatMessage(message.text);
+                  const viewed = hasViewedMessageMedia(state, message.id, currentUser.id);
 
                   if (message.authorId === "system") {
                     return (
@@ -4910,6 +5468,16 @@ function MobileEventScreen({
                             </div>
                           ) : null}
                           {parsed.story ? <StoryMessageCard state={state} storyAttachment={parsed.story} /> : null}
+                          {parsed.media ? (
+                            <ChatMediaMessageCard
+                              media={parsed.media}
+                              mine={false}
+                              onOpen={() =>
+                                onOpenChatMedia(message.id, message.authorId, authorLabel, parsed.media!)
+                              }
+                              viewed={viewed}
+                            />
+                          ) : null}
                           {parsed.body ? <p>{parsed.body}</p> : null}
                           <p className="mt-2 text-[11px] text-[#8f6f59]">{formatTime(message.createdAt)}</p>
                         </button>
@@ -4946,6 +5514,17 @@ function MobileEventScreen({
                           </div>
                         ) : null}
                         {parsed.story ? <StoryMessageCard dark={message.authorId !== "system" && mine} state={state} storyAttachment={parsed.story} /> : null}
+                        {parsed.media ? (
+                          <ChatMediaMessageCard
+                            dark={message.authorId !== "system" && mine}
+                            media={parsed.media}
+                            mine={mine}
+                            onOpen={() =>
+                              onOpenChatMedia(message.id, message.authorId, authorLabel, parsed.media!)
+                            }
+                            viewed={viewed}
+                          />
+                        ) : null}
                         {parsed.body ? <p>{parsed.body}</p> : null}
                         <p className="mt-2 text-[11px] text-[#8f6f59]">{formatTime(message.createdAt)}</p>
                       </button>
@@ -4975,13 +5554,29 @@ function MobileEventScreen({
                 </div>
               ) : null}
               <div className="flex items-center gap-2">
+                <button
+                  className="inline-flex h-12 w-12 items-center justify-center rounded-full border border-[#eadfd3] bg-[#fffaf6] text-[#1d160f] disabled:opacity-45"
+                  disabled={!canWrite}
+                  onClick={() => mediaInputRef.current?.click()}
+                  type="button"
+                >
+                  <Image className="h-4 w-4" />
+                </button>
                 <input
                   className="min-w-0 flex-1 rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm text-[#1d160f] outline-none"
                   onChange={(eventValue) => onChangeDraft(eventValue.target.value)}
-                  placeholder="Responder al grupo..."
+                  placeholder={
+                    canWrite ? "Responder al grupo..." : "El chat esta en modo solo organizador"
+                  }
+                  disabled={!canWrite}
                   value={draft}
                 />
-                <button className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-[#1d160f] text-white" onClick={onSendMessage} type="button">
+                <button
+                  className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-[#1d160f] text-white disabled:opacity-45"
+                  disabled={!canWrite}
+                  onClick={onSendMessage}
+                  type="button"
+                >
                   <Send className="h-4 w-4" />
                 </button>
               </div>
@@ -5032,6 +5627,32 @@ function MobileEventScreen({
               </section>
 
               <section className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+                {event.hostId === currentUser.id ? (
+                  <div className="mb-4 flex flex-wrap gap-2">
+                    <button
+                      className={`rounded-full px-4 py-3 text-sm font-semibold ${
+                        chatMode === "open"
+                          ? "bg-[#1d160f] text-white"
+                          : "border border-[#eadfd3] bg-white text-[#6d5749]"
+                      }`}
+                      onClick={() => onChangeChatMode("open")}
+                      type="button"
+                    >
+                      Chat abierto
+                    </button>
+                    <button
+                      className={`rounded-full px-4 py-3 text-sm font-semibold ${
+                        chatMode === "announcements"
+                          ? "bg-[#1d160f] text-white"
+                          : "border border-[#eadfd3] bg-white text-[#6d5749]"
+                      }`}
+                      onClick={() => onChangeChatMode("announcements")}
+                      type="button"
+                    >
+                      Solo organizador
+                    </button>
+                  </div>
+                ) : null}
                 <div className="flex flex-wrap gap-2">
                   <button
                     className="rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
@@ -5279,13 +5900,16 @@ function MobileProfileCollectionScreen({
           : null}
         {detail === "private"
           ? privateChats.map((chat) => {
-              const partner = getChatPartner(state, chat, currentUser.id);
               return (
                 <button key={chat.id} className="flex w-full items-center gap-3 rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 text-left shadow-[0_20px_40px_rgba(52,34,22,0.08)]" onClick={() => onOpenChat(chat.id)} type="button">
-                  <AvatarChip user={partner} />
+                  <ChatAvatarChip chat={chat} currentUserId={currentUser.id} state={state} />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate font-semibold text-[#1d160f]">{getUserIdentityLabel(partner)}</p>
-                    <p className="text-sm text-[#8f6f59]">{getUserIdentityMeta(partner)}</p>
+                    <p className="truncate font-semibold text-[#1d160f]">
+                      {getChatTitle(state, chat, currentUser.id)}
+                    </p>
+                    <p className="text-sm text-[#8f6f59]">
+                      {getChatSubtitle(state, chat, currentUser.id)}
+                    </p>
                   </div>
                 </button>
               );
@@ -5321,7 +5945,7 @@ function MobileUserProfileScreen({
   const stories = getProfileStories(state, user.id);
   const isFriend = areFriends(state, currentUser.id, user.id);
   const privateChat = getPrivateChatsForUser(state, currentUser.id).find((chat) =>
-    chat.participantIds.includes(user.id)
+    !isGroupChat(chat) && chat.participantIds.includes(user.id)
   );
 
   return (
@@ -6760,6 +7384,7 @@ function EventWorkspace({
   onCreateEventPost,
   onCreateEventStory,
   onLeaveEvent,
+  onOpenChatMedia,
   onOpenPrivateChat,
   onRequestEventAccess,
   onRespondEventAccess,
@@ -6768,7 +7393,9 @@ function EventWorkspace({
   onRespondPrivateRequest,
   onSelectAttendee,
   onSendGroupMessage,
+  onSendGroupMediaMessage,
   onSendPrivateRequest,
+  onToggleEventChatMode,
   onToggleFriendship,
   requestDraft,
   selectedAttendeeId,
@@ -6789,6 +7416,12 @@ function EventWorkspace({
   onCreateEventPost: () => void;
   onCreateEventStory: () => void;
   onLeaveEvent: (eventId: string) => void;
+  onOpenChatMedia: (
+    messageId: string,
+    authorId: string,
+    authorLabel: string,
+    media: ChatMediaAttachment
+  ) => void;
   onOpenPrivateChat: (chatId: string) => void;
   onRequestEventAccess: (eventId: string) => void;
   onRespondEventAccess: (membershipId: string, accept: boolean) => void;
@@ -6797,7 +7430,9 @@ function EventWorkspace({
   onRespondPrivateRequest: (requestId: string, accept: boolean) => void;
   onSelectAttendee: (userId: string) => void;
   onSendGroupMessage: () => void;
+  onSendGroupMediaMessage: (file: File | null) => void;
   onSendPrivateRequest: (targetUserId: string) => void;
+  onToggleEventChatMode: (mode: "open" | "announcements") => void;
   onToggleFriendship: (targetUserId: string) => void;
   requestDraft: string;
   selectedAttendeeId: string | null;
@@ -6835,6 +7470,9 @@ function EventWorkspace({
       : null;
   const shareUrl = buildEventShareUrl(event.slug);
   const shareCopy = buildEventShareCopy(event, shareUrl);
+  const canWrite = canWriteEventChat(state, event.id, currentUser.id);
+  const chatMode = getEventChatMode(state, event.id);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const eventTabs =
     mode === "agenda"
       ? [
@@ -7443,9 +8081,44 @@ function EventWorkspace({
                         ? "Este es el grupo principal del evento. Entra aqui para llegar ya con la conversacion empezada."
                         : "Solo los confirmados y el creador pueden escribir aqui. La idea es llegar con la comunidad ya calentada."}
                     </p>
+                    <p className="mt-2 text-sm text-[#8f6f59]">
+                      {chatMode === "announcements"
+                        ? isHost
+                          ? "Modo solo organizador activo."
+                          : "Modo solo organizador activo: puedes leer, pero no escribir."
+                        : "Modo abierto para todos."}
+                    </p>
                   </div>
-                  <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-2 text-sm text-[#6d5749]">
-                    {messages.length} mensajes
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-2 text-sm text-[#6d5749]">
+                      {messages.length} mensajes
+                    </div>
+                    {isHost ? (
+                      <>
+                        <button
+                          className={`rounded-full px-4 py-2 text-sm font-semibold ${
+                            chatMode === "open"
+                              ? "bg-[#1d160f] text-white"
+                              : "border border-[#eadfd3] bg-[#fffaf6] text-[#6d5749]"
+                          }`}
+                          onClick={() => onToggleEventChatMode("open")}
+                          type="button"
+                        >
+                          Abierto
+                        </button>
+                        <button
+                          className={`rounded-full px-4 py-2 text-sm font-semibold ${
+                            chatMode === "announcements"
+                              ? "bg-[#1d160f] text-white"
+                              : "border border-[#eadfd3] bg-[#fffaf6] text-[#6d5749]"
+                          }`}
+                          onClick={() => onToggleEventChatMode("announcements")}
+                          type="button"
+                        >
+                          Solo yo
+                        </button>
+                      </>
+                    ) : null}
                   </div>
                 </div>
                 <div className="mt-4 space-y-3">
@@ -7465,6 +8138,7 @@ function EventWorkspace({
                     const author = getUserById(state, message.authorId);
                     const mine = message.authorId === currentUser.id;
                     const authorLabel = getUserIdentityLabel(author);
+                    const viewed = hasViewedMessageMedia(state, message.id, currentUser.id);
 
                     if (mine) {
                       return (
@@ -7474,6 +8148,17 @@ function EventWorkspace({
                               {authorLabel}
                             </p>
                             {parsed.story ? <StoryMessageCard dark state={state} storyAttachment={parsed.story} /> : null}
+                            {parsed.media ? (
+                              <ChatMediaMessageCard
+                                dark
+                                media={parsed.media}
+                                mine
+                                onOpen={() =>
+                                  onOpenChatMedia(message.id, message.authorId, authorLabel, parsed.media!)
+                                }
+                                viewed={viewed}
+                              />
+                            ) : null}
                             {parsed.body ? <p>{parsed.body}</p> : null}
                             <p className="mt-2 text-[11px] text-white/64">
                               {formatTime(message.createdAt)}
@@ -7493,6 +8178,16 @@ function EventWorkspace({
                             <span className="text-xs text-[#8f6f59]">{formatTime(message.createdAt)}</span>
                           </div>
                           {parsed.story ? <StoryMessageCard state={state} storyAttachment={parsed.story} /> : null}
+                          {parsed.media ? (
+                            <ChatMediaMessageCard
+                              media={parsed.media}
+                              mine={false}
+                              onOpen={() =>
+                                onOpenChatMedia(message.id, message.authorId, authorLabel, parsed.media!)
+                              }
+                              viewed={viewed}
+                            />
+                          ) : null}
                           {parsed.body ? <p className="mt-1">{parsed.body}</p> : null}
                         </div>
                       </div>
@@ -7500,6 +8195,17 @@ function EventWorkspace({
                   })}
                 </div>
                 <div className="mt-4 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
+                  <input
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    onChange={(event) => {
+                      void onSendGroupMediaMessage(event.target.files?.[0] ?? null);
+                      event.target.value = "";
+                    }}
+                    ref={fileInputRef}
+                    type="file"
+                  />
                   <label className="block">
                     <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
                       Escribe al grupo
@@ -7507,14 +8213,25 @@ function EventWorkspace({
                     <textarea
                       className="w-full resize-none rounded-[18px] border border-[#e7d8cb] bg-white px-4 py-3 text-sm text-[#1d160f] outline-none focus:border-[#ff8d66] focus:ring-2 focus:ring-[#ffd4c5]"
                       onChange={(eventValue) => onChangeGroupDraft(eventValue.target.value)}
-                      placeholder={event.conversationPrompt}
+                      placeholder={canWrite ? event.conversationPrompt : "Modo solo organizador activo"}
                       rows={3}
+                      disabled={!canWrite}
                       value={groupDraft}
                     />
                   </label>
-                  <div className="mt-3 flex justify-end">
+                  <div className="mt-3 flex justify-between gap-3">
                     <button
-                      className="inline-flex items-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+                      className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#1d160f] disabled:opacity-45"
+                      disabled={!canWrite}
+                      onClick={() => fileInputRef.current?.click()}
+                      type="button"
+                    >
+                      <Image className="h-4 w-4" />
+                      Foto efimera
+                    </button>
+                    <button
+                      className="inline-flex items-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white disabled:opacity-45"
+                      disabled={!canWrite}
                       onClick={onSendGroupMessage}
                       type="button"
                     >
@@ -8014,9 +8731,12 @@ function InboxSection({
   currentUser,
   friends,
   onChangePrivateDraft,
+  onCreateGroupChat,
+  onOpenChatMedia,
   onOpenChat,
   onRespondPrivateRequest,
   onSendMessage,
+  onSendPrivateMediaMessage,
   onStartFriendChat,
   privateChats,
   privateDraft,
@@ -8026,9 +8746,17 @@ function InboxSection({
   currentUser: PlatformUser;
   friends: PlatformUser[];
   onChangePrivateDraft: (value: string) => void;
+  onCreateGroupChat: () => void;
+  onOpenChatMedia: (
+    messageId: string,
+    authorId: string,
+    authorLabel: string,
+    media: ChatMediaAttachment
+  ) => void;
   onOpenChat: (chatId: string) => void;
   onRespondPrivateRequest: (requestId: string, accept: boolean) => void;
   onSendMessage: () => void;
+  onSendPrivateMediaMessage: (chatId: string, file: File | null) => void;
   onStartFriendChat: (targetUserId: string) => void;
   privateChats: ReturnType<typeof getPrivateChatsForUser>;
   privateDraft: string;
@@ -8044,15 +8772,15 @@ function InboxSection({
     .slice()
     .sort((left, right) => right.requestedAt.localeCompare(left.requestedAt));
   const selectedChat = privateChats.find((chat) => chat.id === selectedChatId) ?? privateChats[0] ?? null;
-  const selectedPartner = selectedChat ? getChatPartner(state, selectedChat, currentUser.id) : null;
   const selectedMessages = selectedChat ? getPrivateMessages(state, selectedChat.id) : [];
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   return (
     <div className="space-y-5">
       <section className="rounded-[30px] border border-[#eadfd3] bg-white/88 p-4 shadow-[0_24px_60px_rgba(52,34,22,0.08)] md:p-5">
         <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">Inbox</p>
         <h1 className="mt-1 text-2xl font-black tracking-tight md:text-3xl">
-          Solicitudes de acceso y conversaciones privadas
+          Solicitudes de acceso y conversaciones
         </h1>
         <p className="mt-2 text-sm text-[#6d5749]">
           Aqui ves si te han aprobado un evento y tambien gestionas los privados entre asistentes.
@@ -8151,9 +8879,17 @@ function InboxSection({
           </SectionCard>
 
           <SectionCard>
-            <SectionLabel>Chats abiertos</SectionLabel>
-            <div className="mt-4 space-y-3">
-              {friends.length > 0 ? (
+          <SectionLabel>Chats abiertos</SectionLabel>
+          <button
+            className="mt-3 inline-flex items-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+            onClick={onCreateGroupChat}
+            type="button"
+          >
+            <Users className="h-4 w-4" />
+            Nuevo grupo
+          </button>
+          <div className="mt-4 space-y-3">
+            {friends.length > 0 ? (
                 <div className="rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] p-4">
                   <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
                     Abrir chat con amigos
@@ -8161,7 +8897,7 @@ function InboxSection({
                   <div className="mt-3 space-y-2">
                     {friends.map((friend) => {
                       const existingChat = privateChats.find((chat) =>
-                        chat.participantIds.includes(friend.id)
+                        !isGroupChat(chat) && chat.participantIds.includes(friend.id)
                       );
 
                       return (
@@ -8200,7 +8936,6 @@ function InboxSection({
                 </p>
               ) : (
                 privateChats.map((chat) => {
-                  const partner = getChatPartner(state, chat, currentUser.id);
                   const lastMessage = getLatestPrivateMessage(state, chat.id);
                   const active = chat.id === selectedChatId;
                   return (
@@ -8212,14 +8947,19 @@ function InboxSection({
                       onClick={() => onOpenChat(chat.id)}
                       type="button"
                     >
-                      <AvatarChip user={partner} />
+                      <ChatAvatarChip chat={chat} currentUserId={currentUser.id} state={state} />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center justify-between gap-2">
-                          <p className="truncate font-semibold text-[#1d160f]">{getUserIdentityLabel(partner)}</p>
+                          <p className="truncate font-semibold text-[#1d160f]">
+                            {getChatTitle(state, chat, currentUser.id)}
+                          </p>
                           <span className="text-xs text-[#8f6f59]">
                             {lastMessage ? formatTime(lastMessage.createdAt) : ""}
                           </span>
                         </div>
+                        <p className="mt-1 truncate text-xs text-[#8f6f59]">
+                          {getChatSubtitle(state, chat, currentUser.id)}
+                        </p>
                         <p className="mt-1 truncate text-sm text-[#6d5749]">
                   {lastMessage ? parseChatMessage(lastMessage.text).summary : "Chat listo para empezar"}
                         </p>
@@ -8233,24 +8973,46 @@ function InboxSection({
         </div>
 
         <SectionCard>
-          {selectedChat && selectedPartner ? (
+          {selectedChat ? (
             <div>
+              <input
+                accept="image/*"
+                capture="environment"
+                className="hidden"
+                onChange={(event) => {
+                  void onSendPrivateMediaMessage(selectedChat.id, event.target.files?.[0] ?? null);
+                  event.target.value = "";
+                }}
+                ref={fileInputRef}
+                type="file"
+              />
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
-                  <AvatarChip user={selectedPartner} />
+                  <ChatAvatarChip chat={selectedChat} currentUserId={currentUser.id} state={state} />
                   <div>
-                    <p className="font-semibold text-[#1d160f]">{getUserIdentityLabel(selectedPartner)}</p>
-                    <p className="text-sm text-[#6d5749]">{getUserIdentityMeta(selectedPartner)}</p>
+                    <p className="font-semibold text-[#1d160f]">
+                      {getChatTitle(state, selectedChat, currentUser.id)}
+                    </p>
+                    <p className="text-sm text-[#6d5749]">
+                      {getChatSubtitle(state, selectedChat, currentUser.id)}
+                    </p>
                   </div>
                 </div>
                 <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-2 text-sm text-[#6d5749]">
-                  Origen: {getEventById(state, selectedChat.originEventId)?.title}
+                  {selectedChat.originEventId
+                    ? `Origen: ${getEventById(state, selectedChat.originEventId)?.title}`
+                    : isGroupChat(selectedChat)
+                      ? "Grupo libre"
+                      : "Chat directo"}
                 </div>
               </div>
               <div className="mt-4 space-y-3">
                 {selectedMessages.map((message) => {
                   const mine = message.authorId === currentUser.id;
                   const parsed = parseChatMessage(message.text);
+                  const author = getUserById(state, message.authorId);
+                  const authorLabel = getUserIdentityLabel(author);
+                  const viewed = hasViewedMessageMedia(state, message.id, currentUser.id);
                   return (
                     <div
                       key={message.id}
@@ -8263,7 +9025,23 @@ function InboxSection({
                             : "border border-[#eadfd3] bg-[#fffaf6] text-[#5f4b3f]"
                         }`}
                       >
+                        {isGroupChat(selectedChat) ? (
+                          <p className={`mb-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${mine ? "text-white/70" : "text-[#8f6f59]"}`}>
+                            {authorLabel}
+                          </p>
+                        ) : null}
                         {parsed.story ? <StoryMessageCard dark={mine} state={state} storyAttachment={parsed.story} /> : null}
+                        {parsed.media ? (
+                          <ChatMediaMessageCard
+                            dark={mine}
+                            media={parsed.media}
+                            mine={mine}
+                            onOpen={() =>
+                              onOpenChatMedia(message.id, message.authorId, authorLabel, parsed.media!)
+                            }
+                            viewed={viewed}
+                          />
+                        ) : null}
                         {parsed.body ? <p>{parsed.body}</p> : null}
                         <p className={`mt-2 text-[11px] ${mine ? "text-white/64" : "text-[#8f6f59]"}`}>
                           {formatTime(message.createdAt)}
@@ -8274,10 +9052,20 @@ function InboxSection({
                 })}
               </div>
               <div className="mt-4 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
+                <div className="mb-3 flex justify-end">
+                  <button
+                    className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-white px-4 py-2 text-sm font-semibold text-[#6d5749]"
+                    onClick={() => fileInputRef.current?.click()}
+                    type="button"
+                  >
+                    <Image className="h-4 w-4" />
+                    Foto efimera
+                  </button>
+                </div>
                 <textarea
                   className="w-full resize-none rounded-[18px] border border-[#e7d8cb] bg-white px-4 py-3 text-sm text-[#1d160f] outline-none focus:border-[#ff8d66] focus:ring-2 focus:ring-[#ffd4c5]"
                   onChange={(eventValue) => onChangePrivateDraft(eventValue.target.value)}
-                  placeholder={`Escribe a ${getUserIdentityLabel(selectedPartner)}...`}
+                  placeholder={`Escribe en ${getChatTitle(state, selectedChat, currentUser.id)}...`}
                   rows={3}
                   value={privateDraft}
                 />
@@ -8851,6 +9639,28 @@ function AvatarChip({ user }: { user: PlatformUser }) {
             {getInitials(getUserIdentityLabel(user).replace(/^@/, ""))}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function ChatAvatarChip({
+  chat,
+  currentUserId,
+  state
+}: {
+  chat: PrivateChat;
+  currentUserId: string;
+  state: PersistedState;
+}) {
+  if (!isGroupChat(chat)) {
+    return <AvatarChip user={getChatPartner(state, chat, currentUserId)} />;
+  }
+
+  return (
+    <div className="flex items-center gap-3">
+      <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full border border-[#eadfd3] bg-[linear-gradient(135deg,#ff6b57,#f08a24)] text-white">
+        <Users className="h-5 w-5" />
       </div>
     </div>
   );
