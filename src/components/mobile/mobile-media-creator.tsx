@@ -4,6 +4,7 @@ import { startTransition, useDeferredValue, useEffect, useRef, useState } from "
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
+  CalendarDays,
   Camera,
   Image as ImageIcon,
   MapPin,
@@ -11,8 +12,7 @@ import {
   Plus,
   RefreshCw,
   Sparkles,
-  UsersRound,
-  Video
+  UsersRound
 } from "lucide-react";
 import { publishPost, publishStory, searchMobile } from "@/lib/mobile-api";
 import {
@@ -27,7 +27,8 @@ import {
 import { uploadManagedMediaFromClient } from "@/lib/tindereo-api";
 import type { MobileProfile } from "@/lib/mobile-types";
 
-type CreatorMode = "launcher" | "post" | "story";
+type CreatorMode = "camera" | "post";
+type CaptureMode = "story" | "post";
 
 type LocalMediaItem = {
   file: File;
@@ -90,69 +91,16 @@ function buildFinalCaption(caption: string, location: string, taggedProfiles: Mo
   return sections.filter(Boolean).join("\n\n");
 }
 
-function LauncherCard({
-  onOpenEvent,
-  onSelect
-}: {
-  onOpenEvent: () => void;
-  onSelect: (mode: Exclude<CreatorMode, "launcher">) => void;
-}) {
-  return (
-    <div className="space-y-5 rounded-[2.2rem] border border-white/10 bg-[#15110d] p-5 text-white shadow-[0_24px_70px_rgba(0,0,0,0.28)]">
-      <div className="space-y-2">
-        <div className="text-xs font-semibold uppercase tracking-[0.24em] text-white/55">Crear</div>
-        <h2 className="text-[2rem] font-black tracking-[-0.05em]">Sube algo como en Insta</h2>
-        <p className="text-sm leading-6 text-white/68">
-          Publicacion con carrusel o historia con camara en directo. Las fotos se comprimen antes de subirlas y en la
-          base solo guardamos referencias, no binarios.
-        </p>
-      </div>
-
-      <div className="grid gap-3">
-        <button
-          type="button"
-          onClick={() => onSelect("post")}
-          className="flex items-center justify-between rounded-[1.8rem] border border-white/10 bg-white/6 px-4 py-5 text-left"
-        >
-          <div>
-            <div className="text-lg font-bold">Publicacion</div>
-            <div className="mt-1 text-sm text-white/60">Abre la fototeca, permite carrusel de hasta 20 fotos.</div>
-          </div>
-          <ImageIcon className="h-6 w-6 text-white/72" />
-        </button>
-
-        <button
-          type="button"
-          onClick={() => onSelect("story")}
-          className="flex items-center justify-between rounded-[1.8rem] border border-white/10 bg-white/6 px-4 py-5 text-left"
-        >
-          <div>
-            <div className="text-lg font-bold">Historia</div>
-            <div className="mt-1 text-sm text-white/60">Abre la camara, selfie o trasera, y deja grabar hasta 20 s.</div>
-          </div>
-          <Camera className="h-6 w-6 text-white/72" />
-        </button>
-      </div>
-
-      <button
-        type="button"
-        onClick={onOpenEvent}
-        className="inline-flex items-center gap-2 rounded-full border border-white/12 bg-white/6 px-4 py-3 text-sm font-semibold text-white/82"
-      >
-        <Plus className="h-4 w-4" />
-        Crear evento
-      </button>
-    </div>
-  );
-}
-
 function PostComposer({
+  initialFiles = [],
   onBack
 }: {
+  initialFiles?: File[];
   onBack: () => void;
 }) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const itemsRef = useRef<LocalMediaItem[]>([]);
   const [items, setItems] = useState<LocalMediaItem[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [caption, setCaption] = useState("");
@@ -167,12 +115,16 @@ function PostComposer({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+
+  useEffect(() => {
     return () => {
-      for (const item of items) {
+      for (const item of itemsRef.current) {
         revokeObjectPreviewUrl(item.previewUrl);
       }
     };
-  }, [items]);
+  }, []);
 
   useEffect(() => {
     if (!deferredTagQuery.trim()) {
@@ -205,8 +157,8 @@ function PostComposer({
     };
   }, [deferredTagQuery, taggedProfiles]);
 
-  async function handleAddFiles(fileList: FileList | null) {
-    if (!fileList?.length) {
+  async function ingestFiles(inputFiles: File[]) {
+    if (!inputFiles.length) {
       return;
     }
 
@@ -219,21 +171,42 @@ function PostComposer({
         throw new Error("Has llegado al limite de 20 fotos por publicacion.");
       }
 
-      const compressed = await compressPostImages(Array.from(fileList).slice(0, remainingSlots));
+      const compressed = await compressPostImages(inputFiles.slice(0, remainingSlots));
       const nextItems = compressed.map((file, index) => ({
         file,
         id: `${Date.now()}-${index}-${file.name}`,
         previewUrl: createObjectPreviewUrl(file)
       }));
 
-      setItems((current) => [...current, ...nextItems].slice(0, 20));
-      setActiveIndex((current) => (items.length === 0 ? 0 : current));
+      setItems((current) => {
+        const next = [...current, ...nextItems].slice(0, 20);
+        if (current.length === 0) {
+          setActiveIndex(0);
+        }
+        return next;
+      });
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : "No se pudieron preparar esas fotos.");
     } finally {
       setIsPreparing(false);
     }
   }
+
+  async function handleAddFiles(fileList: FileList | null) {
+    if (!fileList?.length) {
+      return;
+    }
+
+    await ingestFiles(Array.from(fileList));
+  }
+
+  useEffect(() => {
+    if (!initialFiles.length) {
+      return;
+    }
+
+    void ingestFiles(initialFiles);
+  }, [initialFiles]);
 
   async function handleSubmit() {
     if (!items.length || isSubmitting) {
@@ -468,10 +441,14 @@ function PostComposer({
   );
 }
 
-function StoryComposer({
-  onBack
+function CameraComposer({
+  onBack,
+  onOpenEvent,
+  onOpenPostComposer
 }: {
   onBack: () => void;
+  onOpenEvent: () => void;
+  onOpenPostComposer: (files: File[]) => void;
 }) {
   const router = useRouter();
   const cameraInputRef = useRef<HTMLInputElement | null>(null);
@@ -491,6 +468,7 @@ function StoryComposer({
   const [caption, setCaption] = useState("");
   const [storyMediaType, setStoryMediaType] = useState<"image" | "video">("image");
   const [durationMs, setDurationMs] = useState(5000);
+  const [captureMode, setCaptureMode] = useState<CaptureMode>("story");
   const [cameraAccessError, setCameraAccessError] = useState<string | null>(null);
   const [cameraFacingMode, setCameraFacingMode] = useState<"environment" | "user">("environment");
   const [hasLiveCamera, setHasLiveCamera] = useState(false);
@@ -505,6 +483,27 @@ function StoryComposer({
       revokeObjectPreviewUrl(previewUrl);
     };
   }, [previewUrl]);
+
+  useEffect(() => {
+    if (captureMode !== "post" || !previewUrl) {
+      return;
+    }
+
+    resetStoryDraft();
+    setCameraRetryNonce((current) => current + 1);
+  }, [captureMode, previewUrl]);
+
+  const resetStoryDraft = () => {
+    if (previewUrl) {
+      revokeObjectPreviewUrl(previewUrl);
+    }
+    setPreviewUrl("");
+    setStoryFile(null);
+    setCaption("");
+    setStoryMediaType("image");
+    setDurationMs(5000);
+    setCameraAccessError(null);
+  };
 
   const clearCaptureTimer = () => {
     if (holdTimerRef.current !== null) {
@@ -694,6 +693,11 @@ function StoryComposer({
       return;
     }
 
+    if (captureMode === "post") {
+      onOpenPostComposer([file]);
+      return;
+    }
+
     const prepared = await prepareStoryFile(file);
     if (previewUrl) {
       revokeObjectPreviewUrl(previewUrl);
@@ -713,6 +717,11 @@ function StoryComposer({
     }
 
     const file = await captureVideoFrameToFile(video);
+    if (captureMode === "post") {
+      onOpenPostComposer([file]);
+      return;
+    }
+
     await handlePickedStoryFile(file);
   }
 
@@ -795,6 +804,10 @@ function StoryComposer({
       return;
     }
 
+    if (captureMode === "post") {
+      return;
+    }
+
     clearCaptureTimer();
     holdTimerRef.current = window.setTimeout(() => {
       videoCaptureStartedRef.current = true;
@@ -816,6 +829,11 @@ function StoryComposer({
 
     if (!hasLiveCamera) {
       cameraInputRef.current?.click();
+      return;
+    }
+
+    if (captureMode === "post") {
+      void capturePhotoFromLiveCamera();
       return;
     }
 
@@ -843,7 +861,7 @@ function StoryComposer({
   };
 
   async function handleSubmit() {
-    if (!storyFile || isSubmitting) {
+    if (!storyFile || isSubmitting || captureMode !== "story") {
       return;
     }
 
@@ -879,14 +897,33 @@ function StoryComposer({
         <button className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-white/10" onClick={onBack} type="button">
           <ArrowLeft className="h-5 w-5" />
         </button>
-        <p className="text-sm font-semibold uppercase tracking-[0.2em] text-white/72">Nueva historia</p>
+        <p className="text-sm font-semibold uppercase tracking-[0.2em] text-white/72">
+          {captureMode === "story" ? "Historia" : "Publicacion"}
+        </p>
         <button
-          className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-[#1d160f] disabled:opacity-60"
-          disabled={isSubmitting || !previewUrl}
-          onClick={() => void handleSubmit()}
+          className={cn(
+            "rounded-full px-4 py-2 text-sm font-semibold disabled:opacity-60",
+            previewUrl && captureMode === "story" ? "bg-white text-[#1d160f]" : "bg-white/10 text-white"
+          )}
+          disabled={previewUrl && captureMode === "story" ? isSubmitting || !previewUrl : false}
+          onClick={() => {
+            if (previewUrl && captureMode === "story") {
+              void handleSubmit();
+              return;
+            }
+
+            onOpenEvent();
+          }}
           type="button"
         >
-          {isSubmitting ? "Subiendo..." : "Subir"}
+          {previewUrl && captureMode === "story" ? (
+            isSubmitting ? "Subiendo..." : "Subir"
+          ) : (
+            <span className="inline-flex items-center gap-2">
+              <CalendarDays className="h-4 w-4" />
+              Evento
+            </span>
+          )}
         </button>
       </div>
 
@@ -905,11 +942,7 @@ function StoryComposer({
                 <button
                   className="inline-flex items-center gap-2 rounded-full bg-black/35 px-4 py-2 text-sm font-semibold text-white"
                   onClick={() => {
-                    revokeObjectPreviewUrl(previewUrl);
-                    setPreviewUrl("");
-                    setStoryFile(null);
-                    setStoryMediaType("image");
-                    setDurationMs(5000);
+                    resetStoryDraft();
                     setCameraRetryNonce((current) => current + 1);
                   }}
                   type="button"
@@ -949,7 +982,7 @@ function StoryComposer({
               />
               <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-[linear-gradient(180deg,rgba(0,0,0,0.6),transparent)] px-4 pb-16 pt-4">
                 <div className="rounded-full bg-black/35 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-white/70">
-                  Historia
+                  {captureMode === "story" ? "Historia" : "Publicacion"}
                 </div>
                 <button
                   className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-black/35 text-white disabled:opacity-40"
@@ -962,6 +995,107 @@ function StoryComposer({
                 >
                   <RefreshCw className="h-5 w-5" />
                 </button>
+              </div>
+              <div className="absolute inset-x-0 bottom-0 z-20 bg-[linear-gradient(0deg,rgba(0,0,0,0.94),rgba(0,0,0,0.3),transparent)] px-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-16">
+                <div className="flex justify-center">
+                  <div className="inline-flex rounded-full bg-black/40 p-1 backdrop-blur">
+                    {([
+                      { id: "post", label: "Publicacion" },
+                      { id: "story", label: "Historia" }
+                    ] as const).map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => setCaptureMode(item.id)}
+                        className={cn(
+                          "rounded-full px-4 py-2 text-sm font-semibold transition",
+                          captureMode === item.id ? "bg-white text-[#120d0a]" : "text-white/72"
+                        )}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="mt-5 flex items-center justify-between gap-4 px-1">
+                  <button
+                    className="inline-flex h-14 w-14 items-center justify-center overflow-hidden rounded-2xl border border-white/15 bg-white/8 text-white"
+                    onClick={() => cameraInputRef.current?.click()}
+                    type="button"
+                  >
+                    <ImageIcon className="h-5 w-5" />
+                  </button>
+                  <button
+                    className="relative inline-flex h-24 w-24 touch-none select-none items-center justify-center rounded-full border-2 border-white bg-white/12 text-white shadow-[0_18px_40px_rgba(0,0,0,0.28)]"
+                    onContextMenu={(event) => event.preventDefault()}
+                    onPointerCancel={(event) => {
+                      event.preventDefault();
+                      event.currentTarget.releasePointerCapture?.(event.pointerId);
+                      handleCapturePressCancel();
+                    }}
+                    onPointerDown={(event) => {
+                      event.preventDefault();
+                      event.currentTarget.setPointerCapture?.(event.pointerId);
+                      handleCapturePressStart();
+                    }}
+                    onPointerUp={(event) => {
+                      event.preventDefault();
+                      event.currentTarget.releasePointerCapture?.(event.pointerId);
+                      handleCapturePressEnd();
+                    }}
+                    style={{ touchAction: "none" }}
+                    type="button"
+                  >
+                    <span className={cn("inline-flex h-[4.4rem] w-[4.4rem] items-center justify-center rounded-full transition", isRecordingVideo ? "scale-90 bg-[#ff6b57]" : "bg-white text-[#1d160f]")}>
+                      {isRecordingVideo ? <span className="h-7 w-7 rounded-2xl bg-white" /> : <Camera className="h-7 w-7" />}
+                    </span>
+                  </button>
+                  <button
+                    className="inline-flex h-14 w-14 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white disabled:opacity-40"
+                    disabled={isRecordingVideo}
+                    onClick={() => {
+                      stopSharedCameraSessionStream();
+                      setCameraFacingMode((current) => (current === "environment" ? "user" : "environment"));
+                    }}
+                    type="button"
+                  >
+                    <RefreshCw className="h-5 w-5" />
+                  </button>
+                </div>
+
+                <div className="mt-4 space-y-2 text-center">
+                  <p className="text-sm font-semibold text-white">
+                    {captureMode === "story"
+                      ? hasLiveCamera
+                        ? isRecordingVideo
+                          ? "Grabando historia en video"
+                          : cameraFacingMode === "user"
+                            ? "Camara selfie activa"
+                            : "Camara trasera activa"
+                        : "Usa la camara en directo o la del sistema"
+                      : "Haz una foto o abre tu fototeca para publicar"}
+                  </p>
+                  <p className="text-xs uppercase tracking-[0.18em] text-white/60">
+                    {captureMode === "story"
+                      ? "Toca para foto · Mantener para video"
+                      : "Toca para foto · Galeria para carrusel"}
+                  </p>
+                </div>
+
+                <div className="mt-4 flex items-center justify-center">
+                  <button
+                    className="rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white"
+                    onClick={() => {
+                      setCameraAccessError(null);
+                      stopLiveStream("dispose");
+                      setCameraRetryNonce((current) => current + 1);
+                    }}
+                    type="button"
+                  >
+                    Reintentar camara
+                  </button>
+                </div>
               </div>
             </div>
           ) : (
@@ -987,89 +1121,7 @@ function StoryComposer({
           }}
         />
 
-        {!previewUrl ? (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between gap-4 px-1">
-              <button
-                className="inline-flex h-14 w-14 items-center justify-center overflow-hidden rounded-2xl border border-white/15 bg-white/8 text-white"
-                onClick={() => cameraInputRef.current?.click()}
-                type="button"
-              >
-                <ImageIcon className="h-5 w-5" />
-              </button>
-              <button
-                className="relative inline-flex h-24 w-24 touch-none select-none items-center justify-center rounded-full border-2 border-white bg-white/12 text-white shadow-[0_18px_40px_rgba(0,0,0,0.28)]"
-                onContextMenu={(event) => event.preventDefault()}
-                onPointerCancel={(event) => {
-                  event.preventDefault();
-                  event.currentTarget.releasePointerCapture?.(event.pointerId);
-                  handleCapturePressCancel();
-                }}
-                onPointerDown={(event) => {
-                  event.preventDefault();
-                  event.currentTarget.setPointerCapture?.(event.pointerId);
-                  handleCapturePressStart();
-                }}
-                onPointerUp={(event) => {
-                  event.preventDefault();
-                  event.currentTarget.releasePointerCapture?.(event.pointerId);
-                  handleCapturePressEnd();
-                }}
-                style={{ touchAction: "none" }}
-                type="button"
-              >
-                <span className={cn("inline-flex h-[4.4rem] w-[4.4rem] items-center justify-center rounded-full transition", isRecordingVideo ? "scale-90 bg-[#ff6b57]" : "bg-white text-[#1d160f]")}>
-                  {isRecordingVideo ? <span className="h-7 w-7 rounded-2xl bg-white" /> : <Camera className="h-7 w-7" />}
-                </span>
-              </button>
-              <button
-                className="inline-flex h-14 w-14 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white disabled:opacity-40"
-                disabled={isRecordingVideo}
-                onClick={() => {
-                  stopSharedCameraSessionStream();
-                  setCameraFacingMode((current) => (current === "environment" ? "user" : "environment"));
-                }}
-                type="button"
-              >
-                <RefreshCw className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="space-y-2 text-center">
-              <p className="text-sm font-semibold text-white">
-                {hasLiveCamera
-                  ? isRecordingVideo
-                    ? "Grabando historia en video"
-                    : cameraFacingMode === "user"
-                      ? "Camara selfie activa"
-                      : "Camara trasera activa"
-                  : "Usa la camara en directo o la del sistema"}
-              </p>
-              <p className="text-xs uppercase tracking-[0.18em] text-white/60">Toca para foto · Mantener para video</p>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-center gap-3">
-              <button
-                className="rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white"
-                onClick={() => cameraInputRef.current?.click()}
-                type="button"
-              >
-                Elegir archivo
-              </button>
-              <button
-                className="rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white"
-                onClick={() => {
-                  setCameraAccessError(null);
-                  stopLiveStream("dispose");
-                  setCameraRetryNonce((current) => current + 1);
-                }}
-                type="button"
-              >
-                Reintentar
-              </button>
-            </div>
-          </div>
-        ) : (
+        {previewUrl && captureMode === "story" ? (
           <div className="space-y-4">
             <div className="rounded-[1.8rem] border border-white/10 bg-white/6 p-4">
               <div className="flex items-center gap-3 text-white/72">
@@ -1088,7 +1140,7 @@ function StoryComposer({
               />
             </div>
           </div>
-        )}
+        ) : null}
 
         {cameraAccessError ? (
           <div className="rounded-[1.4rem] bg-white/8 px-4 py-3 text-sm text-[#ffd0c2]">{cameraAccessError}</div>
@@ -1099,19 +1151,44 @@ function StoryComposer({
 }
 
 export function MobileMediaCreator({
-  initialMode = "launcher",
+  initialMode = "camera",
   onOpenEvent
 }: {
   initialMode?: CreatorMode;
   onOpenEvent: () => void;
 }) {
+  const router = useRouter();
   const [mode, setMode] = useState<CreatorMode>(initialMode);
+  const [postSeedFiles, setPostSeedFiles] = useState<File[]>([]);
+  const [postComposerKey, setPostComposerKey] = useState(0);
+
+  const dismissCreator = () => {
+    if (typeof window !== "undefined" && window.history.length > 1) {
+      router.back();
+      return;
+    }
+
+    router.push("/inicio");
+  };
 
   return mode === "post" ? (
-    <PostComposer onBack={() => setMode("launcher")} />
-  ) : mode === "story" ? (
-    <StoryComposer onBack={() => setMode("launcher")} />
+    <PostComposer
+      key={postComposerKey}
+      initialFiles={postSeedFiles}
+      onBack={() => {
+        setPostSeedFiles([]);
+        setMode("camera");
+      }}
+    />
   ) : (
-    <LauncherCard onOpenEvent={onOpenEvent} onSelect={(nextMode) => setMode(nextMode)} />
+    <CameraComposer
+      onBack={dismissCreator}
+      onOpenEvent={onOpenEvent}
+      onOpenPostComposer={(files) => {
+        setPostSeedFiles(files);
+        setPostComposerKey((current) => current + 1);
+        setMode("post");
+      }}
+    />
   );
 }
