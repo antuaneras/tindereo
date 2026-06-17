@@ -17,7 +17,9 @@ import {
   Image,
   MapPin,
   MessageCircle,
+  Pause,
   Pencil,
+  Play,
   Plus,
   RefreshCw,
   Search,
@@ -30,6 +32,8 @@ import {
   User,
   UserPlus,
   Users,
+  Volume2,
+  VolumeX,
   X
 } from "lucide-react";
 import { OrganizerDashboard } from "@/components/tindereo/organizer-dashboard";
@@ -119,6 +123,7 @@ import {
   getProfilePosts,
   getProfileStories,
   getPrivateChatsForUser,
+  getConversationReadState,
   getPrivateMessages,
   getPrivateRequestsForUser,
   getStoryViews,
@@ -265,6 +270,13 @@ type StoryViewerState = {
   storyIds: string[];
 };
 
+type OptimisticChatMessage = {
+  authorId: string;
+  clientId: string;
+  createdAt: string;
+  text: string;
+};
+
 type StoryChatAttachment = {
   actionLabel: string;
   mode: "reaction" | "comment";
@@ -288,6 +300,8 @@ type ChatMediaViewerState = {
   messageId: string;
   title: string;
 };
+
+type MessageDeliveryState = "pending" | "sent" | "read";
 
 type CameraComposerState = {
   caption: string;
@@ -339,7 +353,7 @@ const CAMERA_COMPOSER_INITIAL_STATE: CameraComposerState = {
   eventId: null,
   imageUrl: "",
   mediaType: "image",
-  mode: "story",
+  mode: "post",
   pendingFile: null,
   taggedUserIds: [],
   target: "user"
@@ -551,7 +565,14 @@ function appendTaggedHandles(caption: string, taggedUsers: PlatformUser[]) {
 }
 
 function buildStorySequence(stories: StoryItem[], activeStoryId: string) {
-  const orderedStories = stories
+  const activeStory = stories.find((story) => story.id === activeStoryId) ?? null;
+  const relevantStories = activeStory
+    ? stories.filter(
+        (story) =>
+          story.authorId === activeStory.authorId && story.authorType === activeStory.authorType
+      )
+    : stories;
+  const orderedStories = relevantStories
     .slice()
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   const activeIndex = orderedStories.findIndex((story) => story.id === activeStoryId);
@@ -573,6 +594,45 @@ async function readFileAsDataUrl(file: File) {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+}
+
+function buildOptimisticChatMessage(authorId: string, text: string): OptimisticChatMessage {
+  return {
+    authorId,
+    clientId: `optimistic-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    createdAt: new Date().toISOString(),
+    text,
+  };
+}
+
+function MessageDeliveryIndicator({ status }: { status: MessageDeliveryState }) {
+  if (status === "pending") {
+    return <Check className="h-3.5 w-3.5 text-current opacity-70" />;
+  }
+
+  const toneClass = status === "read" ? "text-[#34b7f1]" : "text-current opacity-70";
+
+  return (
+    <span className={`inline-flex items-center ${toneClass}`}>
+      <Check className="h-3.5 w-3.5" />
+      <Check className="-ml-1 h-3.5 w-3.5" />
+    </span>
+  );
+}
+
+function getPrivateMessageDeliveryState(
+  state: PersistedState,
+  chat: PrivateChat,
+  currentUserId: string,
+  messageCreatedAt: string
+): Exclude<MessageDeliveryState, "pending"> {
+  if (isGroupChat(chat)) {
+    return "sent";
+  }
+
+  const partner = getChatPartner(state, chat, currentUserId);
+  const readState = getConversationReadState(state, partner.id, "private", chat.id);
+  return readState?.lastReadAt && readState.lastReadAt >= messageCreatedAt ? "read" : "sent";
 }
 
 function revokePreviewUrlIfNeeded(url: string) {
@@ -743,6 +803,7 @@ export function TindereoApp() {
   const [chatMediaViewer, setChatMediaViewer] = useState<ChatMediaViewerState | null>(null);
   const [cameraComposer, setCameraComposer] = useState<CameraComposerState | null>(null);
   const [groupChatComposer, setGroupChatComposer] = useState<GroupChatComposerState | null>(null);
+  const [directChatComposerOpen, setDirectChatComposerOpen] = useState(false);
   const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
   const [mediaEditor, setMediaEditor] = useState<MediaEditorState | null>(null);
   const [uiNotice, setUiNotice] = useState<string | null>(null);
@@ -757,6 +818,15 @@ export function TindereoApp() {
   const [requestDrafts, setRequestDrafts] = useState<Record<string, string>>({});
   const [selectedAttendeeByEvent, setSelectedAttendeeByEvent] = useState<Record<string, string>>({});
   const [privateDraft, setPrivateDraft] = useState("");
+  const [pendingGroupMessages, setPendingGroupMessages] = useState<Record<string, OptimisticChatMessage[]>>({});
+  const [pendingPrivateMessages, setPendingPrivateMessages] = useState<Record<string, OptimisticChatMessage[]>>({});
+  const [isSendingGroupMessageByEvent, setIsSendingGroupMessageByEvent] = useState<Record<string, boolean>>({});
+  const [isSendingPrivateMessageChatId, setIsSendingPrivateMessageChatId] = useState<string | null>(null);
+  const [isSendingGroupMediaEventId, setIsSendingGroupMediaEventId] = useState<string | null>(null);
+  const [isSendingPrivateMediaChatId, setIsSendingPrivateMediaChatId] = useState<string | null>(null);
+  const [isSendingStoryReply, setIsSendingStoryReply] = useState(false);
+  const [isSavingMediaEdit, setIsSavingMediaEdit] = useState(false);
+  const [isDeletingMedia, setIsDeletingMedia] = useState(false);
   const [profileMediaDraft, setProfileMediaDraft] = useState({ imageUrl: "", caption: "" });
   const [profileStoryDraft, setProfileStoryDraft] = useState({ imageUrl: "", caption: "" });
   const [eventMediaDrafts, setEventMediaDrafts] = useState<
@@ -1411,20 +1481,38 @@ export function TindereoApp() {
   const handleSendGroupMessage = async (eventId: string) => {
     const message = groupDrafts[eventId] ?? "";
     const nextText = buildReplyMessageText(message, groupReplyTargets[eventId] ?? null);
-    if (!nextText.trim()) {
+    if (!nextText.trim() || isSendingGroupMessageByEvent[eventId]) {
       return;
     }
 
-    const payload = await runPlatformMutation({
+    const optimisticMessage = buildOptimisticChatMessage(state.session.currentUserId, nextText);
+    const currentReplyTarget = groupReplyTargets[eventId] ?? null;
+    setGroupDrafts((current) => ({ ...current, [eventId]: "" }));
+    setGroupReplyTargets((current) => ({ ...current, [eventId]: null }));
+    setPendingGroupMessages((current) => ({
+      ...current,
+      [eventId]: [...(current[eventId] ?? []), optimisticMessage]
+    }));
+    setIsSendingGroupMessageByEvent((current) => ({ ...current, [eventId]: true }));
+
+    const payload = await runPlatformActionQuietly({
       type: "send-group-message",
       actorId: state.session.currentUserId,
       eventId,
       text: nextText
     });
 
-    if (payload) {
-      setGroupDrafts((current) => ({ ...current, [eventId]: "" }));
-      setGroupReplyTargets((current) => ({ ...current, [eventId]: null }));
+    setPendingGroupMessages((current) => ({
+      ...current,
+      [eventId]: (current[eventId] ?? []).filter(
+        (messageEntry) => messageEntry.clientId !== optimisticMessage.clientId
+      )
+    }));
+    setIsSendingGroupMessageByEvent((current) => ({ ...current, [eventId]: false }));
+
+    if (!payload) {
+      setGroupDrafts((current) => ({ ...current, [eventId]: message }));
+      setGroupReplyTargets((current) => ({ ...current, [eventId]: currentReplyTarget }));
     }
   };
 
@@ -1530,33 +1618,58 @@ export function TindereoApp() {
   };
 
   const handleSendPrivateMessage = async () => {
-    if (!selectedPrivateChat || !privateDraft.trim()) {
+    if (
+      !selectedPrivateChat ||
+      !privateDraft.trim() ||
+      isSendingPrivateMessageChatId === selectedPrivateChat.id
+    ) {
       return;
     }
 
     const nextText = buildReplyMessageText(privateDraft, privateReplyTarget);
+    const chatId = selectedPrivateChat.id;
+    const optimisticMessage = buildOptimisticChatMessage(state.session.currentUserId, nextText);
+    const currentDraft = privateDraft;
+    const currentReplyTarget = privateReplyTarget;
 
-    const payload = await runPlatformMutation({
+    setPrivateDraft("");
+    setPrivateReplyTarget(null);
+    setPendingPrivateMessages((current) => ({
+      ...current,
+      [chatId]: [...(current[chatId] ?? []), optimisticMessage]
+    }));
+    setIsSendingPrivateMessageChatId(chatId);
+
+    const payload = await runPlatformActionQuietly({
       type: "send-private-message",
       actorId: state.session.currentUserId,
-      chatId: selectedPrivateChat.id,
+      chatId,
       text: nextText
     });
 
-    if (payload) {
-      setPrivateDraft("");
-      setPrivateReplyTarget(null);
+    setPendingPrivateMessages((current) => ({
+      ...current,
+      [chatId]: (current[chatId] ?? []).filter(
+        (messageEntry) => messageEntry.clientId !== optimisticMessage.clientId
+      )
+    }));
+    setIsSendingPrivateMessageChatId((current) => (current === chatId ? null : current));
+
+    if (!payload) {
+      setPrivateDraft(currentDraft);
+      setPrivateReplyTarget(currentReplyTarget);
     }
   };
 
   const handleSendPrivateMediaMessage = async (chatId: string, file: File | null) => {
-    if (!file) {
+    if (!file || isSendingPrivateMediaChatId === chatId) {
       return;
     }
 
+    setIsSendingPrivateMediaChatId(chatId);
     try {
       const imageUrl = await uploadMediaFileForAction(file, "chat");
-      const payload = await runPlatformMutation({
+      const payload = await runPlatformActionQuietly({
         type: "send-private-media-message",
         actorId: state.session.currentUserId,
         chatId,
@@ -1570,17 +1683,20 @@ export function TindereoApp() {
       }
     } catch (error) {
       setUiNotice(error instanceof Error ? error.message : "No se pudo enviar la foto.");
+    } finally {
+      setIsSendingPrivateMediaChatId((current) => (current === chatId ? null : current));
     }
   };
 
   const handleSendEventMediaMessage = async (eventId: string, file: File | null) => {
-    if (!file) {
+    if (!file || isSendingGroupMediaEventId === eventId) {
       return;
     }
 
+    setIsSendingGroupMediaEventId(eventId);
     try {
       const imageUrl = await uploadMediaFileForAction(file, "chat");
-      const payload = await runPlatformMutation({
+      const payload = await runPlatformActionQuietly({
         type: "send-group-media-message",
         actorId: state.session.currentUserId,
         eventId,
@@ -1594,6 +1710,8 @@ export function TindereoApp() {
       }
     } catch (error) {
       setUiNotice(error instanceof Error ? error.message : "No se pudo enviar la foto.");
+    } finally {
+      setIsSendingGroupMediaEventId((current) => (current === eventId ? null : current));
     }
   };
 
@@ -1789,7 +1907,7 @@ export function TindereoApp() {
   };
 
   const handleSaveMediaEdit = async () => {
-    if (!mediaEditor) {
+    if (!mediaEditor || isSavingMediaEdit) {
       return;
     }
 
@@ -1827,7 +1945,9 @@ export function TindereoApp() {
       };
     }
 
+    setIsSavingMediaEdit(true);
     const payload = await runPlatformMutation(action);
+    setIsSavingMediaEdit(false);
     if (payload) {
       setMediaEditor(null);
       setUiNotice(mediaEditor.kind === "story" ? "Historia actualizada." : "Publicacion actualizada.");
@@ -1835,7 +1955,7 @@ export function TindereoApp() {
   };
 
   const handleDeleteMedia = async () => {
-    if (!mediaEditor) {
+    if (!mediaEditor || isDeletingMedia) {
       return;
     }
 
@@ -1869,7 +1989,9 @@ export function TindereoApp() {
       };
     }
 
+    setIsDeletingMedia(true);
     const payload = await runPlatformMutation(action);
+    setIsDeletingMedia(false);
     if (payload) {
       if (storyViewer?.activeStoryId === mediaEditor.id) {
         setStoryViewer(null);
@@ -1967,6 +2089,24 @@ export function TindereoApp() {
       return false;
     } finally {
       setIsSyncing(false);
+    }
+  };
+
+  const runPlatformActionQuietly = async (
+    action: PlatformAction,
+    sessionPatch?: Partial<PersistedState["session"]>
+  ) => {
+    setSyncError(null);
+
+    try {
+      const payload = await executePlatformAction(action);
+      applyPlatformPayload(payload, sessionPatch);
+      return payload;
+    } catch (error) {
+      setSyncError(
+        error instanceof Error ? error.message : "No se pudo guardar la accion en backend."
+      );
+      return null;
     }
   };
 
@@ -2202,13 +2342,13 @@ export function TindereoApp() {
   };
 
   const handleStoryReply = async (message: string, reaction?: string) => {
-    if (!storyViewer) {
-      return;
+    if (!storyViewer || isSendingStoryReply) {
+      return false;
     }
 
     const story = state.stories.find((item) => item.id === storyViewer.activeStoryId);
     if (!story) {
-      return;
+      return false;
     }
 
     const normalizedMessage = message.trim();
@@ -2223,28 +2363,35 @@ export function TindereoApp() {
           : "";
 
     if (!storyPayload || !mode) {
-      return;
+      return false;
     }
+
+    setIsSendingStoryReply(true);
 
     if (story.authorType === "event") {
       if (!hasEventAccess(state, story.authorId, currentUser.id)) {
         setUiNotice("Entra al evento para responder a su historia.");
-        return;
+        setIsSendingStoryReply(false);
+        return false;
       }
 
-      await runPlatformMutation({
+      const payload = await runPlatformActionQuietly({
         type: "send-group-message",
         actorId: state.session.currentUserId,
         eventId: story.authorId,
         text: storyPayload
       });
-      setStoryReplyDraft("");
-      setUiNotice("Respuesta enviada al chat del evento.");
-      return;
+      if (payload) {
+        setStoryReplyDraft("");
+        setUiNotice("Respuesta enviada al chat del evento.");
+      }
+      setIsSendingStoryReply(false);
+      return Boolean(payload);
     }
 
     if (story.authorId === currentUser.id) {
-      return;
+      setIsSendingStoryReply(false);
+      return false;
     }
 
     const existingChat =
@@ -2255,15 +2402,18 @@ export function TindereoApp() {
       ) ?? null;
 
     if (existingChat) {
-      await runPlatformMutation({
+      const payload = await runPlatformActionQuietly({
         type: "send-private-message",
         actorId: state.session.currentUserId,
         chatId: existingChat.id,
         text: storyPayload
       });
-      setStoryReplyDraft("");
-      setUiNotice("Mensaje enviado por privado.");
-      return;
+      if (payload) {
+        setStoryReplyDraft("");
+        setUiNotice("Mensaje enviado por privado.");
+      }
+      setIsSendingStoryReply(false);
+      return Boolean(payload);
     }
 
     const sharedEvent = state.events.find(
@@ -2273,10 +2423,11 @@ export function TindereoApp() {
 
     if (!sharedEvent) {
       setUiNotice("Todavia no compartis evento para abrir privado.");
-      return;
+      setIsSendingStoryReply(false);
+      return false;
     }
 
-    await runPlatformMutation({
+    const payload = await runPlatformActionQuietly({
       type: "send-private-request",
       actorId: state.session.currentUserId,
       eventId: sharedEvent.id,
@@ -2286,8 +2437,28 @@ export function TindereoApp() {
           ? `Quiero abrir privado contigo. Reaccione a tu historia con "${normalizedReaction}".`
           : `Quiero abrir privado contigo. Te comente tu historia: "${normalizedMessage}".`
     });
-    setStoryReplyDraft("");
-    setUiNotice("Solicitud privada enviada desde la historia.");
+    if (payload) {
+      setStoryReplyDraft("");
+      setUiNotice("Solicitud privada enviada desde la historia.");
+    }
+    setIsSendingStoryReply(false);
+    return Boolean(payload);
+  };
+
+  const handleOpenDirectChatComposerChat = async (targetUserId: string) => {
+    const existingChat =
+      privateChats.find(
+        (chat) => !isGroupChat(chat) && chat.participantIds.includes(targetUserId)
+      ) ?? null;
+
+    setDirectChatComposerOpen(false);
+
+    if (existingChat) {
+      openPrivateChat(existingChat.id);
+      return;
+    }
+
+    await handleStartFriendChat(targetUserId);
   };
 
   const focusedProfileUser =
@@ -2305,6 +2476,7 @@ export function TindereoApp() {
       chatMediaViewer ||
       cameraComposer ||
       groupChatComposer ||
+      directChatComposerOpen ||
       notificationCenterOpen ||
       mediaEditor ||
       mobileEventScreen ||
@@ -2370,6 +2542,7 @@ export function TindereoApp() {
           onMarkStoryViewed={(storyId) => void handleMarkStoryViewed(storyId)}
           onOpenNotification={(notificationId) => void handleOpenNotification(notificationId)}
           onOpenNotifications={() => navigateToTab("search")}
+          onOpenDirectChatComposer={() => setDirectChatComposerOpen(true)}
           onOpenProfileTab={() => navigateToTab("profile")}
           onOpenChatMedia={(messageId, authorId, authorLabel, media) =>
             void handleOpenChatMedia(messageId, authorId, authorLabel, media)
@@ -2399,7 +2572,7 @@ export function TindereoApp() {
           onSendPrivateMessage={() => void handleSendPrivateMessage()}
           onSendPrivateMediaMessage={(chatId, file) => void handleSendPrivateMediaMessage(chatId, file)}
           onSendPrivateRequest={handleSendPrivateRequest}
-          onSendStoryReply={(message, reaction) => void handleStoryReply(message, reaction)}
+          onSendStoryReply={handleStoryReply}
           onStartFriendChat={(targetUserId) => void handleStartFriendChat(targetUserId)}
           onSubmitCameraComposer={() => void submitCameraComposer()}
           onToggleEventChatMode={(eventId, mode) => void handleSetEventChatMode(eventId, mode)}
@@ -2435,6 +2608,15 @@ export function TindereoApp() {
           onOpenMediaEditor={setMediaEditor}
           onSaveMediaEdit={() => void handleSaveMediaEdit()}
           setMediaEditor={setMediaEditor}
+          pendingGroupMessages={pendingGroupMessages}
+          pendingPrivateMessages={pendingPrivateMessages}
+          isDeletingMedia={isDeletingMedia}
+          isSavingMediaEdit={isSavingMediaEdit}
+          isSendingGroupMediaEventId={isSendingGroupMediaEventId}
+          isSendingGroupMessageByEvent={isSendingGroupMessageByEvent}
+          isSendingPrivateMediaChatId={isSendingPrivateMediaChatId}
+          isSendingPrivateMessageChatId={isSendingPrivateMessageChatId}
+          isSendingStoryReply={isSendingStoryReply}
           syncError={syncError}
         />
       </div>
@@ -2756,17 +2938,19 @@ export function TindereoApp() {
         {state.session.activeTab === "inbox" ? (
           <InboxSection
             currentUser={currentUser}
-            friends={friends}
             onChangePrivateDraft={setPrivateDraft}
             onCreateGroupChat={() => setGroupChatComposer(GROUP_CHAT_COMPOSER_INITIAL_STATE)}
             onOpenChatMedia={(messageId, authorId, authorLabel, media) =>
               void handleOpenChatMedia(messageId, authorId, authorLabel, media)
             }
             onOpenChat={openPrivateChat}
+            onOpenDirectChatComposer={() => setDirectChatComposerOpen(true)}
             onRespondPrivateRequest={handleRespondPrivateRequest}
             onSendMessage={handleSendPrivateMessage}
             onSendPrivateMediaMessage={(chatId, file) => void handleSendPrivateMediaMessage(chatId, file)}
-            onStartFriendChat={handleStartFriendChat}
+            isSendingMedia={isSendingPrivateMediaChatId === selectedPrivateChat?.id}
+            isSendingMessage={isSendingPrivateMessageChatId === selectedPrivateChat?.id}
+            pendingMessagesByChatId={pendingPrivateMessages}
             privateChats={privateChats}
             privateDraft={privateDraft}
             selectedChatId={selectedPrivateChat?.id ?? null}
@@ -2843,6 +3027,15 @@ export function TindereoApp() {
           onUpdateTitle={(value) =>
             setGroupChatComposer((current) => (current ? { ...current, title: value } : current))
           }
+        />
+      ) : null}
+
+      {directChatComposerOpen ? (
+        <DirectChatComposerSheet
+          friends={friends}
+          onClose={() => setDirectChatComposerOpen(false)}
+          onSelectFriend={(targetUserId) => void handleOpenDirectChatComposerChat(targetUserId)}
+          privateChats={privateChats}
         />
       ) : null}
 
@@ -3004,6 +3197,7 @@ function MobileAppShell({
   onMarkStoryViewed,
   onDisablePushNotifications,
   onEnablePushNotifications,
+  onOpenDirectChatComposer,
   onOpenNotification,
   onOpenNotifications,
   onOpenProfileTab,
@@ -3043,6 +3237,8 @@ function MobileAppShell({
   onDeleteMedia,
   onSaveMediaEdit,
   pendingApprovalsCount,
+  pendingGroupMessages,
+  pendingPrivateMessages,
   pendingEventInvites,
   notifications,
   notificationCenterOpen,
@@ -3062,6 +3258,13 @@ function MobileAppShell({
   unreadNotificationCount,
   uiNotice,
   webPushStatus,
+  isDeletingMedia,
+  isSavingMediaEdit,
+  isSendingGroupMediaEventId,
+  isSendingGroupMessageByEvent,
+  isSendingPrivateMediaChatId,
+  isSendingPrivateMessageChatId,
+  isSendingStoryReply,
   mediaEditor,
   setMediaEditor,
   syncError
@@ -3099,6 +3302,7 @@ function MobileAppShell({
   onMarkStoryViewed: (storyId: string) => void;
   onDisablePushNotifications: () => void;
   onEnablePushNotifications: () => void;
+  onOpenDirectChatComposer: () => void;
   onOpenNotification: (notificationId: string) => void;
   onOpenNotifications: () => void;
   onOpenProfileTab: () => void;
@@ -3130,7 +3334,7 @@ function MobileAppShell({
   onSendPrivateMessage: () => void;
   onSendPrivateMediaMessage: (chatId: string, file: File | null) => void;
   onSendPrivateRequest: (eventId: string, targetUserId: string) => void;
-  onSendStoryReply: (message: string, reaction?: string) => void;
+  onSendStoryReply: (message: string, reaction?: string) => Promise<boolean>;
   onStartFriendChat: (targetUserId: string) => void;
   onSubmitCameraComposer: () => void;
   onToggleEventChatMode: (eventId: string, mode: "open" | "announcements") => void;
@@ -3143,6 +3347,8 @@ function MobileAppShell({
   onDeleteMedia: () => void;
   onSaveMediaEdit: () => void;
   pendingApprovalsCount: number;
+  pendingGroupMessages: Record<string, OptimisticChatMessage[]>;
+  pendingPrivateMessages: Record<string, OptimisticChatMessage[]>;
   pendingEventInvites: EventInvite[];
   notifications: ReturnType<typeof getNotificationsForUser>;
   notificationCenterOpen: boolean;
@@ -3162,6 +3368,13 @@ function MobileAppShell({
   unreadNotificationCount: number;
   uiNotice: string | null;
   webPushStatus: WebPushStatus;
+  isDeletingMedia: boolean;
+  isSavingMediaEdit: boolean;
+  isSendingGroupMediaEventId: string | null;
+  isSendingGroupMessageByEvent: Record<string, boolean>;
+  isSendingPrivateMediaChatId: string | null;
+  isSendingPrivateMessageChatId: string | null;
+  isSendingStoryReply: boolean;
   mediaEditor: MediaEditorState | null;
   setMediaEditor: Dispatch<SetStateAction<MediaEditorState | null>>;
   syncError: string | null;
@@ -3220,16 +3433,17 @@ function MobileAppShell({
     return (
       <StoryViewerOverlay
         activeStory={activeStory}
+        currentUserId={currentUser.id}
+        isSendingReply={isSendingStoryReply}
         onClose={closeStoryViewer}
         onMarkViewed={onMarkStoryViewed}
         onMove={onMoveStory}
         onOpenMediaEditor={onOpenMediaEditor}
         onSendReply={onSendStoryReply}
-        shouldAutoAdvance={storyViewer.storyIds.length > 1}
         replyDraft={storyReplyDraft}
         setReplyDraft={setStoryReplyDraft}
+        storyIds={storyViewer.storyIds}
         state={state}
-        currentUserId={currentUser.id}
       />
     );
   }
@@ -3244,6 +3458,8 @@ function MobileAppShell({
         onClose={onCloseMediaEditor}
         onDelete={onDeleteMedia}
         onSave={onSaveMediaEdit}
+        isDeleting={isDeletingMedia}
+        isSaving={isSavingMediaEdit}
       />
     );
   }
@@ -3312,6 +3528,9 @@ function MobileAppShell({
         onSendMediaMessage={(file) => onSendGroupMediaMessage(selectedEvent.id, file)}
         onSendMessage={() => onSendGroupMessage(selectedEvent.id)}
         onToggleFriendship={onToggleFriendship}
+        isSendingMedia={isSendingGroupMediaEventId === selectedEvent.id}
+        isSendingMessage={Boolean(isSendingGroupMessageByEvent[selectedEvent.id])}
+        pendingMessages={pendingGroupMessages[selectedEvent.id] ?? []}
         replyTarget={groupReplyTargets[selectedEvent.id] ?? null}
         state={state}
         view={state.session.selectedEventView}
@@ -3332,6 +3551,9 @@ function MobileAppShell({
         onReplyMessage={onReplyPrivateMessage}
         onSendMediaMessage={(file) => onSendPrivateMediaMessage(selectedChat.id, file)}
         onSendMessage={onSendPrivateMessage}
+        isSendingMedia={isSendingPrivateMediaChatId === selectedChat.id}
+        isSendingMessage={isSendingPrivateMessageChatId === selectedChat.id}
+        pendingMessages={pendingPrivateMessages[selectedChat.id] ?? []}
         replyTarget={privateReplyTarget}
         state={state}
       />
@@ -3405,13 +3627,12 @@ function MobileAppShell({
       {state.session.activeTab === "inbox" ? (
         <MobileInboxScreen
           currentUser={currentUser}
-          friends={friends}
           incomingRequests={incomingRequests}
           onCreateGroupChat={onCreateGroupChat}
           onOpenChat={onOpenPrivateChat}
+          onOpenDirectChatComposer={onOpenDirectChatComposer}
           onOpenProfileUser={onOpenProfileUser}
           onRespondPrivateRequest={onRespondPrivateRequest}
-          onStartFriendChat={onStartFriendChat}
           privateChats={privateChats}
           state={state}
           unreadChatThreadCount={unreadChatThreadCount}
@@ -3589,65 +3810,120 @@ function NotificationCenterSheet({
 
 function MediaEditorSheet({
   editor,
+  isDeleting,
+  isSaving,
   onChange,
   onClose,
   onDelete,
   onSave
 }: {
   editor: MediaEditorState;
+  isDeleting: boolean;
+  isSaving: boolean;
   onChange: (caption: string) => void;
   onClose: () => void;
   onDelete: () => void;
   onSave: () => void;
 }) {
-  return (
-    <div className="fixed inset-0 z-[72] bg-[#f6efe7] px-3 pb-6 pt-[calc(env(safe-area-inset-top)+1rem)]">
-      <div className="mb-4 flex items-center gap-3">
-        <button
-          className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white text-[#1d160f] shadow-[0_12px_24px_rgba(52,34,22,0.08)]"
-          onClick={onClose}
-          type="button"
-        >
-          <ChevronLeft className="h-5 w-5" />
-        </button>
-        <div className="min-w-0 flex-1">
-          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">
-            Editar
-          </p>
-          <h2 className="text-2xl font-black tracking-tight text-[#1d160f]">
-            {editor.kind === "story" ? "Tu historia" : "Tu publicacion"}
-          </h2>
-        </div>
-      </div>
+  const isStoryEditor = editor.kind === "story";
 
-      <div className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
-        <MediaSurface alt="Contenido" className="h-64 w-full rounded-[22px] object-cover" controls={isVideoMediaUrl(editor.imageUrl)} src={editor.imageUrl} />
-        <label className="mt-4 grid gap-2">
-          <span className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
-            Texto
-          </span>
-          <textarea
-            className="min-h-[120px] resize-none rounded-[18px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm text-[#1d160f] outline-none"
-            onChange={(event) => onChange(event.target.value)}
-            placeholder="Escribe el pie de foto o texto de la historia"
-            value={editor.caption}
+  return (
+    <div
+      className={`fixed inset-0 z-[72] ${
+        isStoryEditor
+          ? "flex items-center justify-center bg-[rgba(18,13,10,0.72)] px-4"
+          : "bg-[#f6efe7] px-3 pb-6 pt-[calc(env(safe-area-inset-top)+1rem)]"
+      }`}
+    >
+      <div
+        className={`${
+          isStoryEditor
+            ? "w-full max-w-md rounded-[30px] border border-white/10 bg-[#1d160f] p-4 text-white shadow-[0_24px_60px_rgba(18,13,10,0.42)]"
+            : ""
+        }`}
+      >
+        <div className="mb-4 flex items-center gap-3">
+          <button
+            className={`inline-flex h-10 w-10 items-center justify-center rounded-full ${
+              isStoryEditor
+                ? "bg-white/10 text-white"
+                : "bg-white text-[#1d160f] shadow-[0_12px_24px_rgba(52,34,22,0.08)]"
+            }`}
+            onClick={onClose}
+            type="button"
+          >
+            <ChevronLeft className="h-5 w-5" />
+          </button>
+          <div className="min-w-0 flex-1">
+            <p
+              className={`text-xs font-semibold uppercase tracking-[0.24em] ${
+                isStoryEditor ? "text-white/60" : "text-[#8f6f59]"
+              }`}
+            >
+              Editar
+            </p>
+            <h2
+              className={`text-2xl font-black tracking-tight ${
+                isStoryEditor ? "text-white" : "text-[#1d160f]"
+              }`}
+            >
+              {editor.kind === "story" ? "Tu historia" : "Tu publicacion"}
+            </h2>
+          </div>
+        </div>
+
+        <div
+          className={`rounded-[28px] border p-4 ${
+            isStoryEditor
+              ? "border-white/10 bg-white/5"
+              : "border-[#eadfd3] bg-white/92 shadow-[0_20px_40px_rgba(52,34,22,0.08)]"
+          }`}
+        >
+          <MediaSurface
+            alt="Contenido"
+            className="h-64 w-full rounded-[22px] object-cover"
+            controls={isVideoMediaUrl(editor.imageUrl)}
+            src={editor.imageUrl}
           />
-        </label>
-        <div className="mt-4 flex gap-2">
-          <button
-            className="flex-1 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
-            onClick={onSave}
-            type="button"
-          >
-            Guardar cambios
-          </button>
-          <button
-            className="rounded-full border border-[#ffcfbb] bg-[#fff4ed] px-4 py-3 text-sm font-semibold text-[#b14a20]"
-            onClick={onDelete}
-            type="button"
-          >
-            Eliminar
-          </button>
+          <label className="mt-4 grid gap-2">
+            <span
+              className={`text-xs font-semibold uppercase tracking-[0.2em] ${
+                isStoryEditor ? "text-white/60" : "text-[#8f6f59]"
+              }`}
+            >
+              Texto
+            </span>
+            <textarea
+              className={`min-h-[120px] resize-none rounded-[18px] border px-4 py-3 text-sm outline-none ${
+                isStoryEditor
+                  ? "border-white/10 bg-white/10 text-white"
+                  : "border-[#eadfd3] bg-[#fffaf6] text-[#1d160f]"
+              }`}
+              onChange={(event) => onChange(event.target.value)}
+              placeholder="Escribe el pie de foto o texto de la historia"
+              value={editor.caption}
+            />
+          </label>
+          <div className="mt-4 flex gap-2">
+            <button
+              className="flex flex-1 items-center justify-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"
+              disabled={isSaving || isDeleting}
+              onClick={onSave}
+              type="button"
+            >
+              {isSaving ? <RefreshCw className="h-4 w-4 animate-spin" /> : null}
+              {isSaving ? "Guardando..." : "Guardar cambios"}
+            </button>
+            <button
+              className="flex items-center justify-center gap-2 rounded-full border border-[#ffcfbb] bg-[#fff4ed] px-4 py-3 text-sm font-semibold text-[#b14a20] disabled:opacity-50"
+              disabled={isSaving || isDeleting}
+              onClick={onDelete}
+              type="button"
+            >
+              {isDeleting ? <RefreshCw className="h-4 w-4 animate-spin" /> : null}
+              {isDeleting ? "Eliminando..." : "Eliminar"}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -3786,6 +4062,98 @@ function GroupChatComposerSheet({
         >
           Crear grupo
         </button>
+      </div>
+    </div>
+  );
+}
+
+function DirectChatComposerSheet({
+  friends,
+  onClose,
+  onSelectFriend,
+  privateChats
+}: {
+  friends: PlatformUser[];
+  onClose: () => void;
+  onSelectFriend: (targetUserId: string) => void;
+  privateChats: ReturnType<typeof getPrivateChatsForUser>;
+}) {
+  const [searchTerm, setSearchTerm] = useState("");
+  const normalizedSearch = searchTerm.trim().toLowerCase();
+  const filteredFriends = friends.filter((friend) => {
+    const haystack = `${friend.name} ${friend.handle} ${friend.city} ${friend.title}`.toLowerCase();
+    return normalizedSearch === "" || haystack.includes(normalizedSearch);
+  });
+
+  return (
+    <div className="fixed inset-0 z-[77] overflow-y-auto bg-[#f6efe7] px-3 pb-6 pt-[calc(env(safe-area-inset-top)+1rem)]">
+      <div className="mb-4 flex items-center gap-3">
+        <button
+          className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white shadow-[0_12px_24px_rgba(52,34,22,0.08)]"
+          onClick={onClose}
+          type="button"
+        >
+          <ChevronLeft className="h-5 w-5 text-[#1d160f]" />
+        </button>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">
+            Nuevo privado
+          </p>
+          <h2 className="text-2xl font-black tracking-tight text-[#1d160f]">
+            Busca a quien quieres escribir
+          </h2>
+        </div>
+      </div>
+
+      <div className="rounded-[30px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+        <label className="flex items-center gap-2 rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3">
+          <Search className="h-4 w-4 text-[#8f6f59]" />
+          <input
+            className="w-full border-none bg-transparent p-0 text-sm text-[#1d160f] outline-none"
+            onChange={(event) => setSearchTerm(event.target.value)}
+            placeholder="Busca por @usuario, nombre o ciudad..."
+            value={searchTerm}
+          />
+        </label>
+
+        <div className="mt-4 space-y-3">
+          {filteredFriends.length === 0 ? (
+            <EmptyState
+              copy="No hay amistades que encajen con ese filtro. Cuando agregues gente, podras abrir privados desde aqui."
+              title="Sin resultados"
+            />
+          ) : (
+            filteredFriends.map((friend) => {
+              const existingChat = privateChats.find(
+                (chat) => !isGroupChat(chat) && chat.participantIds.includes(friend.id)
+              );
+
+              return (
+                <div
+                  key={friend.id}
+                  className="flex items-center gap-3 rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] p-3"
+                >
+                  <AvatarChip user={friend} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-semibold text-[#1d160f]">
+                      {getUserIdentityLabel(friend)}
+                    </p>
+                    <p className="truncate text-sm text-[#8f6f59]">
+                      {getUserIdentityMeta(friend)}
+                    </p>
+                  </div>
+                  <button
+                    className="rounded-full bg-[#1d160f] px-4 py-2 text-sm font-semibold text-white"
+                    onClick={() => onSelectFriend(friend.id)}
+                    type="button"
+                  >
+                    {existingChat ? "Abrir" : "Crear"}
+                  </button>
+                </div>
+              );
+            })
+          )}
+        </div>
       </div>
     </div>
   );
@@ -4306,25 +4674,23 @@ function MobileEventsScreen({
 
 function MobileInboxScreen({
   currentUser,
-  friends,
   incomingRequests,
   onCreateGroupChat,
   onOpenChat,
+  onOpenDirectChatComposer,
   onOpenProfileUser,
   onRespondPrivateRequest,
-  onStartFriendChat,
   privateChats,
   state,
   unreadChatThreadCount
 }: {
   currentUser: PlatformUser;
-  friends: PlatformUser[];
   incomingRequests: ReturnType<typeof getPrivateRequestsForUser>;
   onCreateGroupChat: () => void;
   onOpenChat: (chatId: string) => void;
+  onOpenDirectChatComposer: () => void;
   onOpenProfileUser: (userId: string) => void;
   onRespondPrivateRequest: (requestId: string, accept: boolean) => void;
-  onStartFriendChat: (targetUserId: string) => void;
   privateChats: ReturnType<typeof getPrivateChatsForUser>;
   state: PersistedState;
   unreadChatThreadCount: number;
@@ -4344,6 +4710,13 @@ function MobileInboxScreen({
               {unreadChatThreadCount} pendientes
             </div>
             <button
+              className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-[#eadfd3] bg-white text-[#1d160f]"
+              onClick={onOpenDirectChatComposer}
+              type="button"
+            >
+              <Plus className="h-4 w-4" />
+            </button>
+            <button
               className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-[#1d160f] text-white"
               onClick={onCreateGroupChat}
               type="button"
@@ -4353,49 +4726,6 @@ function MobileInboxScreen({
           </div>
         </div>
       </section>
-
-      {friends.length > 0 ? (
-        <section className="rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">
-                Amigos
-              </p>
-              <p className="mt-1 text-sm text-[#5f4b3f]">
-                Si ya sois amigos, puedes abrir un chat directo sin solicitud.
-              </p>
-            </div>
-          </div>
-          <div className="mt-4 space-y-3">
-            {friends.map((friend) => {
-              const existingChat = privateChats.find(
-                (chat) => !isGroupChat(chat) && chat.participantIds.includes(friend.id)
-              );
-              return (
-                <div
-                  key={friend.id}
-                  className="flex items-center gap-3 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-3"
-                >
-                  <button className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => onOpenProfileUser(friend.id)} type="button">
-                    <AvatarChip user={friend} />
-                    <div className="min-w-0">
-                      <p className="truncate font-semibold text-[#1d160f]">{getUserIdentityLabel(friend)}</p>
-                      <p className="truncate text-sm text-[#8f6f59]">{getUserIdentityMeta(friend)}</p>
-                    </div>
-                  </button>
-                  <button
-                    className="rounded-full bg-[#1d160f] px-4 py-2 text-sm font-semibold text-white"
-                    onClick={() => (existingChat ? onOpenChat(existingChat.id) : onStartFriendChat(friend.id))}
-                    type="button"
-                  >
-                    {existingChat ? "Abrir" : "Escribir"}
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-      ) : null}
 
       {incomingRequests.length > 0 ? (
         <section className="space-y-3">
@@ -4540,123 +4870,76 @@ function MobileProfileScreen({
 
   return (
     <div className="space-y-4">
-      <section className="overflow-hidden rounded-[32px] border border-[#eadfd3] bg-white/92 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
-        <div className="h-32 bg-[#eadfd3]">
-          <img alt={currentUser.name} className="h-full w-full object-cover" src={currentUser.coverImage} />
+      <section className="rounded-[32px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+        <input
+          accept="image/*"
+          className="hidden"
+          onChange={(event) => {
+            const file = event.target.files?.[0] ?? null;
+            void onUpdateAvatar(file);
+            event.target.value = "";
+          }}
+          ref={avatarInputRef}
+          type="file"
+        />
+        <div className="flex items-start gap-4">
+          <div className="relative h-20 w-20 overflow-hidden rounded-full border-4 border-white bg-white shadow-[0_14px_24px_rgba(29,22,15,0.12)]">
+            <img alt={currentUser.name} className="h-full w-full object-cover" src={currentUser.avatar} />
+            <button
+              className="absolute bottom-0 right-0 inline-flex h-8 w-8 items-center justify-center rounded-full bg-[#1d160f] text-white shadow-[0_14px_24px_rgba(29,22,15,0.2)]"
+              onClick={() => avatarInputRef.current?.click()}
+              type="button"
+            >
+              <Camera className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="min-w-0 flex-1 pt-1">
+            <h1 className="truncate text-2xl font-black tracking-tight text-[#1d160f]">
+              {getUserIdentityLabel(currentUser)}
+            </h1>
+            <p className="truncate text-sm text-[#8f6f59]">
+              {currentUser.title} - {currentUser.city}
+            </p>
+            <button
+              className="mt-3 rounded-full border border-[#eadfd3] bg-white px-4 py-2 text-sm font-semibold text-[#6d5749]"
+              onClick={() => avatarInputRef.current?.click()}
+              type="button"
+            >
+              Cambiar foto de perfil
+            </button>
+          </div>
         </div>
-        <div className="px-4 pb-4">
-          <input
-            accept="image/*"
-            className="hidden"
-            onChange={(event) => {
-              const file = event.target.files?.[0] ?? null;
-              void onUpdateAvatar(file);
-              event.target.value = "";
-            }}
-            ref={avatarInputRef}
-            type="file"
-          />
-          <div className="-mt-10 flex items-end gap-3">
-            <div className="relative h-20 w-20 overflow-hidden rounded-full border-4 border-[#f6efe7] bg-white">
-              <img alt={currentUser.name} className="h-full w-full object-cover" src={currentUser.avatar} />
-              <button
-                className="absolute bottom-0 right-0 inline-flex h-8 w-8 items-center justify-center rounded-full bg-[#1d160f] text-white shadow-[0_14px_24px_rgba(29,22,15,0.2)]"
-                onClick={() => avatarInputRef.current?.click()}
-                type="button"
-              >
-                <Camera className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="pb-1">
-              <h1 className="text-2xl font-black tracking-tight text-[#1d160f]">
-                {getUserIdentityLabel(currentUser)}
-              </h1>
-              <p className="text-sm text-[#8f6f59]">
-                {currentUser.title} - {currentUser.city}
-              </p>
-            </div>
-          </div>
-          <button
-            className="mt-4 rounded-full border border-[#eadfd3] bg-white px-4 py-2 text-sm font-semibold text-[#6d5749]"
-            onClick={() => avatarInputRef.current?.click()}
-            type="button"
-          >
-            Cambiar foto de perfil
+        <p className="mt-4 text-sm leading-6 text-[#5f4b3f]">{currentUser.bio}</p>
+        <div className="mt-4 grid grid-cols-4 gap-2">
+          <button className="rounded-[20px] border border-[#eadfd3] bg-[#fffaf6] px-3 py-4" onClick={() => onOpenDetail("created")} type="button">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">Creados</p>
+            <p className="mt-2 text-xl font-black text-[#1d160f]">{hostedCount}</p>
           </button>
-          <p className="mt-4 text-sm leading-6 text-[#5f4b3f]">{currentUser.bio}</p>
-          <div className="mt-4 grid grid-cols-4 gap-2">
-            <button className="rounded-[20px] border border-[#eadfd3] bg-[#fffaf6] px-3 py-4" onClick={() => onOpenDetail("created")} type="button">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">Creados</p>
-              <p className="mt-2 text-xl font-black text-[#1d160f]">{hostedCount}</p>
-            </button>
-            <button className="rounded-[20px] border border-[#eadfd3] bg-[#fffaf6] px-3 py-4" onClick={() => onOpenDetail("agenda")} type="button">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">Agenda</p>
-              <p className="mt-2 text-xl font-black text-[#1d160f]">{joinedCount}</p>
-            </button>
-            <button className="rounded-[20px] border border-[#eadfd3] bg-[#fffaf6] px-3 py-4" onClick={() => onOpenDetail("friends")} type="button">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">Amigos</p>
-              <p className="mt-2 text-xl font-black text-[#1d160f]">{friends.length}</p>
-            </button>
-            <button className="rounded-[20px] border border-[#eadfd3] bg-[#fffaf6] px-3 py-4" onClick={() => onOpenDetail("private")} type="button">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">Privado</p>
-              <p className="mt-2 text-xl font-black text-[#1d160f]">{privateChats.length}</p>
-            </button>
-          </div>
-          <div className="mt-4 flex gap-2">
-            <button className="flex-1 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white" onClick={onOpenCreateEvent} type="button">
-              Crear evento
-            </button>
-            <button className="rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#6d5749]" onClick={onLogout} type="button">
-              Logout
-            </button>
-          </div>
-          <section className="mt-4 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
-            <div className="flex items-start gap-3">
-              <div className="mt-1 rounded-full bg-white p-2 text-[#f08a24] shadow-[0_10px_20px_rgba(52,34,22,0.08)]">
-                <Shield className="h-4 w-4" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
-                  Notificaciones
-                </p>
-                <p className="mt-2 text-sm leading-6 text-[#5f4b3f]">
-                  {webPushStatus.subscribed
-                    ? "Ya tienes activados los avisos reales para mensajes, historias y solicitudes."
-                    : webPushStatus.needsStandaloneInstall
-                      ? "En iPhone, anade la app a pantalla de inicio y abre ese acceso directo para poder recibir push."
-                      : webPushStatus.permission === "denied"
-                        ? "Las notificaciones estan bloqueadas. Reactivalas desde los ajustes del navegador o de la app instalada."
-                        : webPushStatus.supported
-                          ? "Activalas para recibir mensajes privados y del grupo incluso con la app cerrada."
-                          : "Este navegador no soporta notificaciones push para Tindereo."}
-                </p>
-                {webPushStatus.subscribed ? (
-                  <button
-                    className="mt-3 rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#6d5749]"
-                    disabled={isPushSyncing}
-                    onClick={onDisablePushNotifications}
-                    type="button"
-                  >
-                    {isPushSyncing ? "Actualizando..." : "Desactivar"}
-                  </button>
-                ) : webPushStatus.supported || webPushStatus.needsStandaloneInstall ? (
-                  <button
-                    className="mt-3 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
-                    disabled={isPushSyncing}
-                    onClick={onEnablePushNotifications}
-                    type="button"
-                  >
-                    {isPushSyncing ? "Activando..." : "Activar notificaciones"}
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          </section>
-          <div className="mt-2">
-            <button className="w-full rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#6d5749]" onClick={onResetDemo} type="button">
-              Vaciar datos
-            </button>
-          </div>
+          <button className="rounded-[20px] border border-[#eadfd3] bg-[#fffaf6] px-3 py-4" onClick={() => onOpenDetail("agenda")} type="button">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">Agenda</p>
+            <p className="mt-2 text-xl font-black text-[#1d160f]">{joinedCount}</p>
+          </button>
+          <button className="rounded-[20px] border border-[#eadfd3] bg-[#fffaf6] px-3 py-4" onClick={() => onOpenDetail("friends")} type="button">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">Amigos</p>
+            <p className="mt-2 text-xl font-black text-[#1d160f]">{friends.length}</p>
+          </button>
+          <button className="rounded-[20px] border border-[#eadfd3] bg-[#fffaf6] px-3 py-4" onClick={() => onOpenDetail("private")} type="button">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">Privado</p>
+            <p className="mt-2 text-xl font-black text-[#1d160f]">{privateChats.length}</p>
+          </button>
+        </div>
+        <div className="mt-4 flex gap-2">
+          <button className="flex-1 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white" onClick={onOpenCreateEvent} type="button">
+            Crear evento
+          </button>
+          <button className="rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#6d5749]" onClick={onLogout} type="button">
+            Logout
+          </button>
+        </div>
+        <div className="mt-3">
+          <button className="w-full rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#6d5749]" onClick={onResetDemo} type="button">
+            Vaciar datos
+          </button>
         </div>
       </section>
 
@@ -4766,6 +5049,11 @@ function MobileStoriesBar({
   state: PersistedState;
   stories: StoryItem[];
 }) {
+  const storyCountByAuthor = stories.reduce((collection, story) => {
+    const key = `${story.authorType}:${story.authorId}`;
+    collection.set(key, (collection.get(key) ?? 0) + 1);
+    return collection;
+  }, new Map<string, number>());
   const latestStories = Array.from(
     stories.reduce((collection, story) => {
       const key = `${story.authorType}:${story.authorId}`;
@@ -4789,9 +5077,10 @@ function MobileStoriesBar({
           const user = story.authorType === "user" ? getUserById(state, story.authorId) : null;
           const event = story.authorType === "event" ? getEventById(state, story.authorId) : null;
           const label = user ? getUserIdentityLabel(user) : event?.title ?? "Story";
+          const storyCount = storyCountByAuthor.get(`${story.authorType}:${story.authorId}`) ?? 1;
           return (
             <button key={story.id} className="w-[78px] flex-none text-center" onClick={() => onOpenStory(story.id, stories)} type="button">
-              <div className="mx-auto w-fit rounded-full bg-[linear-gradient(135deg,#ff6b57,#f08a24)] p-[2px]">
+              <div className="relative mx-auto w-fit rounded-full bg-[linear-gradient(135deg,#ff6b57,#f08a24)] p-[2px]">
                 <div className="h-[64px] w-[64px] overflow-hidden rounded-full border-2 border-white bg-[#f6efe7]">
                   <MediaSurface
                     alt={label}
@@ -4800,6 +5089,11 @@ function MobileStoriesBar({
                     src={getStoryPreviewImage(story, state)}
                   />
                 </div>
+                {storyCount > 1 ? (
+                  <span className="absolute -bottom-1 -right-1 inline-flex min-w-5 items-center justify-center rounded-full bg-[#1d160f] px-1.5 py-0.5 text-[10px] font-bold text-white">
+                    {storyCount}
+                  </span>
+                ) : null}
               </div>
               <p className="mt-2 line-clamp-2 text-[11px] font-semibold text-[#1d160f]">{label}</p>
             </button>
@@ -4981,26 +5275,28 @@ function ChatMediaMessageCard({
 function StoryViewerOverlay({
   activeStory,
   currentUserId,
+  isSendingReply,
   onClose,
   onMarkViewed,
   onMove,
   onOpenMediaEditor,
   onSendReply,
   replyDraft,
-  shouldAutoAdvance,
   setReplyDraft,
+  storyIds,
   state
 }: {
   activeStory: StoryItem;
   currentUserId: string;
+  isSendingReply: boolean;
   onClose: () => void;
   onMarkViewed: (storyId: string) => void | Promise<void>;
   onMove: (direction: "next" | "prev") => void;
   onOpenMediaEditor: Dispatch<SetStateAction<MediaEditorState | null>>;
-  onSendReply: (message: string, reaction?: string) => void;
+  onSendReply: (message: string, reaction?: string) => Promise<boolean>;
   replyDraft: string;
-  shouldAutoAdvance: boolean;
   setReplyDraft: Dispatch<SetStateAction<string>>;
+  storyIds: string[];
   state: PersistedState;
 }) {
   const authorName = getStoryAuthorLabel(activeStory, state);
@@ -5008,25 +5304,39 @@ function StoryViewerOverlay({
     activeStory.authorType === "user"
       ? activeStory.authorId === currentUserId
       : getEventById(state, activeStory.authorId)?.hostId === currentUserId;
+  const activeStoryIndex = Math.max(0, storyIds.findIndex((storyId) => storyId === activeStory.id));
+  const isVideoStory = isVideoMediaUrl(activeStory.imageUrl);
   const [progress, setProgress] = useState(0);
   const [storyDurationMs, setStoryDurationMs] = useState(STORY_AUTO_ADVANCE_MS);
   const [showViews, setShowViews] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [isReplyFocused, setIsReplyFocused] = useState(false);
+  const [isMuted, setIsMuted] = useState(true);
   const storyStartedAtRef = useRef<number | null>(null);
+  const storyElapsedAtPauseRef = useRef(0);
   const onCloseRef = useRef(onClose);
   const onMoveRef = useRef(onMove);
-  const shouldAutoAdvanceRef = useRef(shouldAutoAdvance);
+  const shouldAutoAdvanceRef = useRef(storyIds.length > 1);
+  const replyInputRef = useRef<HTMLInputElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const viewers = getStoryViews(state, activeStory.id).map((view) => getUserById(state, view.userId));
+  const shouldPausePlayback = isPaused || isReplyFocused || showViews || isSendingReply;
 
   useEffect(() => {
     onCloseRef.current = onClose;
     onMoveRef.current = onMove;
-    shouldAutoAdvanceRef.current = shouldAutoAdvance;
-  }, [onClose, onMove, shouldAutoAdvance]);
+    shouldAutoAdvanceRef.current = storyIds.length > 1;
+  }, [onClose, onMove, storyIds.length]);
 
   useEffect(() => {
     setShowViews(false);
     setProgress(0);
-    storyStartedAtRef.current = Date.now();
+    setIsPaused(false);
+    setIsReplyFocused(false);
+    setIsMuted(true);
+    storyElapsedAtPauseRef.current = 0;
+    storyStartedAtRef.current =
+      typeof window === "undefined" ? Date.now() : window.performance.now();
   }, [activeStory.id]);
 
   useEffect(() => {
@@ -5062,12 +5372,31 @@ function StoryViewerOverlay({
       return undefined;
     }
 
-    if (!storyStartedAtRef.current) {
-      storyStartedAtRef.current = Date.now();
+    if (shouldPausePlayback) {
+      if (storyStartedAtRef.current !== null) {
+        storyElapsedAtPauseRef.current = window.performance.now() - storyStartedAtRef.current;
+        storyStartedAtRef.current = null;
+      }
+      return undefined;
+    }
+
+    if (storyStartedAtRef.current === null) {
+      storyStartedAtRef.current = window.performance.now() - storyElapsedAtPauseRef.current;
+    }
+  }, [shouldPausePlayback]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    if (shouldPausePlayback) {
+      return undefined;
     }
 
     const intervalId = window.setInterval(() => {
-      const elapsed = Date.now() - (storyStartedAtRef.current ?? Date.now());
+      const elapsed = window.performance.now() - (storyStartedAtRef.current ?? window.performance.now());
+      storyElapsedAtPauseRef.current = elapsed;
       const nextProgress = Math.min(elapsed / storyDurationMs, 1);
       setProgress(nextProgress);
 
@@ -5082,38 +5411,91 @@ function StoryViewerOverlay({
     }, 90);
 
     return () => window.clearInterval(intervalId);
-  }, [activeStory.id, storyDurationMs]);
+  }, [activeStory.id, shouldPausePlayback, storyDurationMs]);
+
+  useEffect(() => {
+    if (!isVideoStory || !videoRef.current) {
+      return;
+    }
+
+    if (shouldPausePlayback) {
+      videoRef.current.pause();
+      return;
+    }
+
+    void videoRef.current.play().catch(() => undefined);
+  }, [activeStory.id, isVideoStory, shouldPausePlayback]);
+
+  const handleTogglePause = () => {
+    setIsPaused((current) => !current);
+  };
+
+  const handleSendReplyMessage = async () => {
+    const sent = await onSendReply(replyDraft);
+    if (sent) {
+      replyInputRef.current?.blur();
+      setIsReplyFocused(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-[70] bg-[#120d0a] text-white">
       <div className="flex h-full flex-col">
         <div className="px-4 pt-[max(0.6rem,env(safe-area-inset-top))]">
-          <div className="h-1 overflow-hidden rounded-full bg-white/15">
-            <div
-              className="h-full rounded-full bg-white transition-[width]"
-              style={{ width: `${progress * 100}%` }}
-            />
+          <div className="flex items-center gap-1.5">
+            {storyIds.map((storyId, index) => {
+              const width =
+                index < activeStoryIndex ? "100%" : index === activeStoryIndex ? `${progress * 100}%` : "0%";
+              return (
+                <div key={storyId} className="h-1 flex-1 overflow-hidden rounded-full bg-white/15">
+                  <div className="h-full rounded-full bg-white transition-[width]" style={{ width }} />
+                </div>
+              );
+            })}
           </div>
         </div>
         <div className="flex items-center justify-between gap-3 px-4 pb-3 pt-[max(1rem,env(safe-area-inset-top))]">
-          <div>
-            <p className="font-semibold">{authorName}</p>
+          <div className="min-w-0">
+            <p className="truncate font-semibold">{authorName}</p>
             <p className="text-sm text-white/70">{formatRelativeTime(activeStory.createdAt)}</p>
           </div>
-          <button className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10" onClick={onClose} type="button">
-            <X className="h-5 w-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10"
+              onClick={handleTogglePause}
+              type="button"
+            >
+              {shouldPausePlayback ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
+            </button>
+            {isVideoStory ? (
+              <button
+                className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10"
+                onClick={() => setIsMuted((current) => !current)}
+                type="button"
+              >
+                {isMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+              </button>
+            ) : null}
+            <button className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10" onClick={onClose} type="button">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
         </div>
         <div className="relative flex-1 overflow-hidden">
           <button className="absolute inset-y-0 left-0 z-10 w-1/3" onClick={() => onMove("prev")} type="button" />
           <button className="absolute inset-y-0 right-0 z-10 w-1/3" onClick={() => onMove("next")} type="button" />
-          <MediaSurface
-            alt={authorName}
-            autoPlay={isVideoMediaUrl(activeStory.imageUrl)}
-            className="h-full w-full object-cover"
-            muted={isVideoMediaUrl(activeStory.imageUrl)}
-            src={activeStory.imageUrl}
-          />
+          {isVideoStory ? (
+            <video
+              autoPlay
+              className="h-full w-full object-cover"
+              muted={isMuted}
+              playsInline
+              ref={videoRef}
+              src={activeStory.imageUrl}
+            />
+          ) : (
+            <img alt={authorName} className="h-full w-full object-cover" src={activeStory.imageUrl} />
+          )}
           <div className="absolute inset-x-0 bottom-0 bg-[linear-gradient(180deg,transparent,rgba(0,0,0,0.78))] px-4 pb-6 pt-16">
             <p className="text-base font-semibold">{activeStory.caption}</p>
           </div>
@@ -5185,8 +5567,9 @@ function StoryViewerOverlay({
             ].map((reaction) => (
               <button
                 key={reaction.id}
-                className="rounded-full bg-white/10 px-3 py-2 text-sm font-semibold"
-                onClick={() => onSendReply("", reaction.label)}
+                className="rounded-full bg-white/10 px-3 py-2 text-sm font-semibold disabled:opacity-45"
+                disabled={isSendingReply}
+                onClick={() => void onSendReply("", reaction.label)}
                 type="button"
               >
                 {reaction.label}
@@ -5197,11 +5580,19 @@ function StoryViewerOverlay({
             <input
               className="min-w-0 flex-1 rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm text-white outline-none"
               onChange={(event) => setReplyDraft(event.target.value)}
+              onBlur={() => setIsReplyFocused(false)}
+              onFocus={() => setIsReplyFocused(true)}
               placeholder="Responder historia..."
+              ref={replyInputRef}
               value={replyDraft}
             />
-            <button className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-white text-[#1d160f]" onClick={() => onSendReply(replyDraft)} type="button">
-              <Send className="h-4 w-4" />
+            <button
+              className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-white text-[#1d160f] disabled:opacity-45"
+              disabled={!replyDraft.trim() || isSendingReply}
+              onClick={() => void handleSendReplyMessage()}
+              type="button"
+            >
+              {isSendingReply ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
             </button>
           </div>
         </div>
@@ -5214,6 +5605,8 @@ function MobilePrivateChatScreen({
   chat,
   currentUser,
   draft,
+  isSendingMedia,
+  isSendingMessage,
   onBack,
   onChangeDraft,
   onOpenChatMedia,
@@ -5221,12 +5614,15 @@ function MobilePrivateChatScreen({
   onReplyMessage,
   onSendMediaMessage,
   onSendMessage,
+  pendingMessages,
   replyTarget,
   state
 }: {
   chat: PrivateChat;
   currentUser: PlatformUser;
   draft: string;
+  isSendingMedia: boolean;
+  isSendingMessage: boolean;
   onBack: () => void;
   onChangeDraft: (value: string) => void;
   onOpenChatMedia: (
@@ -5239,6 +5635,7 @@ function MobilePrivateChatScreen({
   onReplyMessage: (replyTarget: ReplyTarget | null) => void;
   onSendMediaMessage: (file: File | null) => void;
   onSendMessage: () => void;
+  pendingMessages: OptimisticChatMessage[];
   replyTarget: ReplyTarget | null;
   state: PersistedState;
 }) {
@@ -5274,6 +5671,9 @@ function MobilePrivateChatScreen({
           const authorUser = getUserById(state, message.authorId);
           const author = getUserIdentityLabel(authorUser);
           const viewed = hasViewedMessageMedia(state, message.id, currentUser.id);
+          const deliveryState = mine
+            ? getPrivateMessageDeliveryState(state, chat, currentUser.id, message.createdAt)
+            : null;
           return (
             <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
               <button
@@ -5307,8 +5707,37 @@ function MobilePrivateChatScreen({
                   />
                 ) : null}
                 {parsed.body ? <p>{parsed.body}</p> : null}
-                <p className="mt-2 text-[11px] text-[#8f6f59]">{formatTime(message.createdAt)}</p>
+                <div
+                  className={`mt-2 flex items-center gap-1 text-[11px] ${
+                    mine ? "justify-end text-[#55725b]" : "text-[#8f6f59]"
+                  }`}
+                >
+                  <span>{formatTime(message.createdAt)}</span>
+                  {mine && deliveryState ? <MessageDeliveryIndicator status={deliveryState} /> : null}
+                </div>
               </button>
+            </div>
+          );
+        })}
+        {pendingMessages.map((message) => {
+          const parsed = parseChatMessage(message.text);
+          return (
+            <div key={message.clientId} className="flex justify-end">
+              <div className="max-w-[82%] rounded-[22px] bg-[#d1f7c4] px-4 py-3 text-left text-sm text-[#1d160f]">
+                {parsed.reply ? (
+                  <div className="mb-2 rounded-[16px] border-l-2 border-[#ff6b57] bg-black/5 px-3 py-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
+                      {parsed.reply.authorLabel}
+                    </p>
+                    <p className="mt-1 text-xs text-[#5f4b3f]">{parsed.reply.snippet}</p>
+                  </div>
+                ) : null}
+                {parsed.body ? <p>{parsed.body}</p> : null}
+                <div className="mt-2 flex items-center justify-end gap-1 text-[11px] text-[#55725b]">
+                  <span>{formatTime(message.createdAt)}</span>
+                  <MessageDeliveryIndicator status="pending" />
+                </div>
+              </div>
             </div>
           );
         })}
@@ -5340,20 +5769,27 @@ function MobilePrivateChatScreen({
         ) : null}
         <div className="flex items-center gap-2">
           <button
-            className="inline-flex h-12 w-12 items-center justify-center rounded-full border border-[#eadfd3] bg-[#fffaf6] text-[#1d160f]"
+            className="inline-flex h-12 w-12 items-center justify-center rounded-full border border-[#eadfd3] bg-[#fffaf6] text-[#1d160f] disabled:opacity-45"
+            disabled={isSendingMedia}
             onClick={() => fileInputRef.current?.click()}
             type="button"
           >
-            <Image className="h-4 w-4" />
+            {isSendingMedia ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Image className="h-4 w-4" />}
           </button>
           <input
             className="min-w-0 flex-1 rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm text-[#1d160f] outline-none"
+            disabled={isSendingMessage}
             onChange={(event) => onChangeDraft(event.target.value)}
             placeholder={`Escribe en ${chatTitle}...`}
             value={draft}
           />
-          <button className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-[#1d160f] text-white" onClick={onSendMessage} type="button">
-            <Send className="h-4 w-4" />
+          <button
+            className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-[#1d160f] text-white disabled:opacity-45"
+            disabled={isSendingMessage || !draft.trim()}
+            onClick={onSendMessage}
+            type="button"
+          >
+            {isSendingMessage ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           </button>
         </div>
       </div>
@@ -5365,6 +5801,8 @@ function MobileEventScreen({
   currentUser,
   draft,
   event,
+  isSendingMedia,
+  isSendingMessage,
   onBack,
   onChangeChatMode,
   onChangeDraft,
@@ -5383,6 +5821,7 @@ function MobileEventScreen({
   onSendMediaMessage,
   onSendMessage,
   onToggleFriendship,
+  pendingMessages,
   replyTarget,
   state,
   view
@@ -5390,6 +5829,8 @@ function MobileEventScreen({
   currentUser: PlatformUser;
   draft: string;
   event: EventItem;
+  isSendingMedia: boolean;
+  isSendingMessage: boolean;
   onBack: () => void;
   onChangeChatMode: (mode: "open" | "announcements") => void;
   onChangeDraft: (value: string) => void;
@@ -5413,6 +5854,7 @@ function MobileEventScreen({
   onSendMediaMessage: (file: File | null) => void;
   onSendMessage: () => void;
   onToggleFriendship: (targetUserId: string) => void;
+  pendingMessages: OptimisticChatMessage[];
   replyTarget: ReplyTarget | null;
   state: PersistedState;
   view: EventDetailTab;
@@ -5608,13 +6050,50 @@ function MobileEventScreen({
                           />
                         ) : null}
                         {parsed.body ? <p>{parsed.body}</p> : null}
-                        <p className="mt-2 text-[11px] text-[#8f6f59]">{formatTime(message.createdAt)}</p>
+                        <div
+                          className={`mt-2 flex items-center gap-1 text-[11px] ${
+                            mine ? "justify-end text-[#55725b]" : "text-[#8f6f59]"
+                          }`}
+                        >
+                          <span>{formatTime(message.createdAt)}</span>
+                          {mine ? <MessageDeliveryIndicator status="sent" /> : null}
+                        </div>
                       </button>
                       {mine && author ? (
                         <button onClick={() => onOpenProfileUser(author.id)} type="button">
                           <AvatarChip user={author} />
                         </button>
                       ) : null}
+                    </div>
+                  );
+                })
+              : null}
+            {canAccess
+              ? pendingMessages.map((message) => {
+                  const parsed = parseChatMessage(message.text);
+                  return (
+                    <div key={message.clientId} className="flex items-end justify-end gap-2">
+                      <div className="max-w-[78%] rounded-[22px] bg-[#d1f7c4] px-4 py-3 text-left text-sm text-[#1d160f]">
+                        <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
+                          {getUserIdentityLabel(currentUser)}
+                        </p>
+                        {parsed.reply ? (
+                          <div className="mb-2 rounded-[16px] border-l-2 border-[#ff6b57] bg-black/5 px-3 py-2">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
+                              {parsed.reply.authorLabel}
+                            </p>
+                            <p className="mt-1 text-xs text-[#5f4b3f]">{parsed.reply.snippet}</p>
+                          </div>
+                        ) : null}
+                        {parsed.body ? <p>{parsed.body}</p> : null}
+                        <div className="mt-2 flex items-center justify-end gap-1 text-[11px] text-[#55725b]">
+                          <span>{formatTime(message.createdAt)}</span>
+                          <MessageDeliveryIndicator status="pending" />
+                        </div>
+                      </div>
+                      <button onClick={() => onOpenProfileUser(currentUser.id)} type="button">
+                        <AvatarChip user={currentUser} />
+                      </button>
                     </div>
                   );
                 })
@@ -5638,11 +6117,11 @@ function MobileEventScreen({
               <div className="flex items-center gap-2">
                 <button
                   className="inline-flex h-12 w-12 items-center justify-center rounded-full border border-[#eadfd3] bg-[#fffaf6] text-[#1d160f] disabled:opacity-45"
-                  disabled={!canWrite}
+                  disabled={!canWrite || isSendingMedia}
                   onClick={() => mediaInputRef.current?.click()}
                   type="button"
                 >
-                  <Image className="h-4 w-4" />
+                  {isSendingMedia ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Image className="h-4 w-4" />}
                 </button>
                 <input
                   className="min-w-0 flex-1 rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm text-[#1d160f] outline-none"
@@ -5650,16 +6129,16 @@ function MobileEventScreen({
                   placeholder={
                     canWrite ? "Responder al grupo..." : "El chat esta en modo solo organizador"
                   }
-                  disabled={!canWrite}
+                  disabled={!canWrite || isSendingMessage}
                   value={draft}
                 />
                 <button
                   className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-[#1d160f] text-white disabled:opacity-45"
-                  disabled={!canWrite}
+                  disabled={!canWrite || isSendingMessage || !draft.trim()}
                   onClick={onSendMessage}
                   type="button"
                 >
-                  <Send className="h-4 w-4" />
+                  {isSendingMessage ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                 </button>
               </div>
             </div>
@@ -9147,22 +9626,23 @@ function EventWorkspace({
 
 function InboxSection({
   currentUser,
-  friends,
   onChangePrivateDraft,
   onCreateGroupChat,
   onOpenChatMedia,
   onOpenChat,
+  onOpenDirectChatComposer,
   onRespondPrivateRequest,
   onSendMessage,
   onSendPrivateMediaMessage,
-  onStartFriendChat,
+  isSendingMedia,
+  isSendingMessage,
+  pendingMessagesByChatId,
   privateChats,
   privateDraft,
   selectedChatId,
   state
 }: {
   currentUser: PlatformUser;
-  friends: PlatformUser[];
   onChangePrivateDraft: (value: string) => void;
   onCreateGroupChat: () => void;
   onOpenChatMedia: (
@@ -9172,10 +9652,13 @@ function InboxSection({
     media: ChatMediaAttachment
   ) => void;
   onOpenChat: (chatId: string) => void;
+  onOpenDirectChatComposer: () => void;
   onRespondPrivateRequest: (requestId: string, accept: boolean) => void;
   onSendMessage: () => void;
   onSendPrivateMediaMessage: (chatId: string, file: File | null) => void;
-  onStartFriendChat: (targetUserId: string) => void;
+  isSendingMedia: boolean;
+  isSendingMessage: boolean;
+  pendingMessagesByChatId: Record<string, OptimisticChatMessage[]>;
   privateChats: ReturnType<typeof getPrivateChatsForUser>;
   privateDraft: string;
   selectedChatId: string | null;
@@ -9191,6 +9674,7 @@ function InboxSection({
     .sort((left, right) => right.requestedAt.localeCompare(left.requestedAt));
   const selectedChat = privateChats.find((chat) => chat.id === selectedChatId) ?? privateChats[0] ?? null;
   const selectedMessages = selectedChat ? getPrivateMessages(state, selectedChat.id) : [];
+  const pendingMessages = selectedChat ? pendingMessagesByChatId[selectedChat.id] ?? [] : [];
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   return (
@@ -9298,56 +9782,25 @@ function InboxSection({
 
           <SectionCard>
           <SectionLabel>Chats abiertos</SectionLabel>
-          <button
-            className="mt-3 inline-flex items-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
-            onClick={onCreateGroupChat}
-            type="button"
-          >
-            <Users className="h-4 w-4" />
-            Nuevo grupo
-          </button>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#1d160f]"
+              onClick={onOpenDirectChatComposer}
+              type="button"
+            >
+              <Plus className="h-4 w-4" />
+              Nuevo privado
+            </button>
+            <button
+              className="inline-flex items-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+              onClick={onCreateGroupChat}
+              type="button"
+            >
+              <Users className="h-4 w-4" />
+              Nuevo grupo
+            </button>
+          </div>
           <div className="mt-4 space-y-3">
-            {friends.length > 0 ? (
-                <div className="rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] p-4">
-                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
-                    Abrir chat con amigos
-                  </p>
-                  <div className="mt-3 space-y-2">
-                    {friends.map((friend) => {
-                      const existingChat = privateChats.find((chat) =>
-                        !isGroupChat(chat) && chat.participantIds.includes(friend.id)
-                      );
-
-                      return (
-                        <div
-                          key={friend.id}
-                          className="flex items-center justify-between gap-3 rounded-[18px] border border-[#eadfd3] bg-white px-3 py-3"
-                        >
-                          <div className="flex items-center gap-3">
-                            <AvatarChip user={friend} />
-                            <div>
-                              <p className="font-semibold text-[#1d160f]">{getUserIdentityLabel(friend)}</p>
-                              <p className="text-sm text-[#6d5749]">{getUserIdentityMeta(friend)}</p>
-                            </div>
-                          </div>
-                          <button
-                            className="rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
-                            onClick={() =>
-                              existingChat
-                                ? onOpenChat(existingChat.id)
-                                : onStartFriendChat(friend.id)
-                            }
-                            type="button"
-                          >
-                            {existingChat ? "Abrir" : "Escribir"}
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : null}
-
               {privateChats.length === 0 ? (
                 <p className="rounded-[22px] border border-dashed border-[#e1d4c7] bg-[#fbf7f2] px-4 py-5 text-sm text-[#7a6455]">
                   Todavia no has abierto ningun chat privado.
@@ -9431,6 +9884,9 @@ function InboxSection({
                   const author = getUserById(state, message.authorId);
                   const authorLabel = getUserIdentityLabel(author);
                   const viewed = hasViewedMessageMedia(state, message.id, currentUser.id);
+                  const deliveryState = mine
+                    ? getPrivateMessageDeliveryState(state, selectedChat, currentUser.id, message.createdAt)
+                    : null;
                   return (
                     <div
                       key={message.id}
@@ -9461,9 +9917,36 @@ function InboxSection({
                           />
                         ) : null}
                         {parsed.body ? <p>{parsed.body}</p> : null}
-                        <p className={`mt-2 text-[11px] ${mine ? "text-white/64" : "text-[#8f6f59]"}`}>
-                          {formatTime(message.createdAt)}
-                        </p>
+                        <div
+                          className={`mt-2 flex items-center gap-1 text-[11px] ${
+                            mine ? "justify-end text-white/64" : "text-[#8f6f59]"
+                          }`}
+                        >
+                          <span>{formatTime(message.createdAt)}</span>
+                          {mine && deliveryState ? <MessageDeliveryIndicator status={deliveryState} /> : null}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+                {pendingMessages.map((message) => {
+                  const parsed = parseChatMessage(message.text);
+                  return (
+                    <div key={message.clientId} className="flex justify-end">
+                      <div className="max-w-[520px] rounded-[24px] bg-[#1d160f] px-4 py-3 text-sm text-white">
+                        {parsed.reply ? (
+                          <div className="mb-2 rounded-[16px] border-l-2 border-[#ff6b57] bg-white/10 px-3 py-2">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/70">
+                              {parsed.reply.authorLabel}
+                            </p>
+                            <p className="mt-1 text-xs text-white/74">{parsed.reply.snippet}</p>
+                          </div>
+                        ) : null}
+                        {parsed.body ? <p>{parsed.body}</p> : null}
+                        <div className="mt-2 flex items-center justify-end gap-1 text-[11px] text-white/64">
+                          <span>{formatTime(message.createdAt)}</span>
+                          <MessageDeliveryIndicator status="pending" />
+                        </div>
                       </div>
                     </div>
                   );
@@ -9472,16 +9955,18 @@ function InboxSection({
               <div className="mt-4 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
                 <div className="mb-3 flex justify-end">
                   <button
-                    className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-white px-4 py-2 text-sm font-semibold text-[#6d5749]"
+                    className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-white px-4 py-2 text-sm font-semibold text-[#6d5749] disabled:opacity-45"
+                    disabled={isSendingMedia}
                     onClick={() => fileInputRef.current?.click()}
                     type="button"
                   >
                     <Image className="h-4 w-4" />
-                    Foto efimera
+                    {isSendingMedia ? "Subiendo..." : "Foto efimera"}
                   </button>
                 </div>
                 <textarea
                   className="w-full resize-none rounded-[18px] border border-[#e7d8cb] bg-white px-4 py-3 text-sm text-[#1d160f] outline-none focus:border-[#ff8d66] focus:ring-2 focus:ring-[#ffd4c5]"
+                  disabled={isSendingMessage}
                   onChange={(eventValue) => onChangePrivateDraft(eventValue.target.value)}
                   placeholder={`Escribe en ${getChatTitle(state, selectedChat, currentUser.id)}...`}
                   rows={3}
@@ -9489,12 +9974,17 @@ function InboxSection({
                 />
                 <div className="mt-3 flex justify-end">
                   <button
-                    className="inline-flex items-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+                    className="inline-flex items-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white disabled:opacity-45"
+                    disabled={isSendingMessage || !privateDraft.trim()}
                     onClick={onSendMessage}
                     type="button"
                   >
-                    <Send className="h-4 w-4" />
-                    Enviar
+                    {isSendingMessage ? (
+                      <RefreshCw className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Send className="h-4 w-4" />
+                    )}
+                    {isSendingMessage ? "Enviando..." : "Enviar"}
                   </button>
                 </div>
               </div>
