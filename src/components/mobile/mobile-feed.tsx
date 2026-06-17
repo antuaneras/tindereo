@@ -3,11 +3,15 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Heart, Play, Plus, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { likePost, markStoryAsViewed } from "@/lib/mobile-api";
 import { formatRelativeMobileTime } from "@/lib/mobile-shared";
 import { MobilePostCarousel } from "@/components/mobile/mobile-post-carousel";
 import type { MobilePost, MobileProfile, MobileStoryCluster } from "@/lib/mobile-types";
+
+function cn(...values: Array<string | false | null | undefined>) {
+  return values.filter(Boolean).join(" ");
+}
 
 function Avatar({ src, label }: { src: string | null; label: string }) {
   if (src) {
@@ -165,8 +169,45 @@ export function StoryStrip({
 export function PostCard({ post }: { post: MobilePost }) {
   const [liked, setLiked] = useState(post.hasLiked);
   const [likeCount, setLikeCount] = useState(post.likeCount);
+  const [likePending, setLikePending] = useState(false);
+  const likedRef = useRef(post.hasLiked);
   const authorHref = `/perfil/${post.authorHandle}`;
   const ownerHref = post.ownerType === "event" && post.eventSlug ? `/evento/${post.eventSlug}` : authorHref;
+
+  useEffect(() => {
+    setLiked(post.hasLiked);
+    setLikeCount(post.likeCount);
+    likedRef.current = post.hasLiked;
+  }, [post.hasLiked, post.id, post.likeCount]);
+
+  const syncLikeState = async (mode: "toggle" | "ensure-liked") => {
+    const wasLiked = likedRef.current;
+    const nextLiked = mode === "ensure-liked" ? true : !wasLiked;
+    const delta = nextLiked === wasLiked ? 0 : nextLiked ? 1 : -1;
+
+    if ((mode === "ensure-liked" && wasLiked) || likePending) {
+      return;
+    }
+
+    if (delta !== 0) {
+      likedRef.current = nextLiked;
+      setLiked(nextLiked);
+      setLikeCount((current) => Math.max(0, current + delta));
+    }
+
+    setLikePending(true);
+    try {
+      await likePost(post.id);
+    } catch {
+      likedRef.current = wasLiked;
+      setLiked(wasLiked);
+      if (delta !== 0) {
+        setLikeCount((current) => Math.max(0, current - delta));
+      }
+    } finally {
+      setLikePending(false);
+    }
+  };
 
   return (
     <article className="overflow-hidden rounded-[2rem] border border-[var(--line-soft)] bg-white/92 shadow-[0_24px_56px_rgba(29,22,15,0.08)]">
@@ -188,21 +229,20 @@ export function PostCard({ post }: { post: MobilePost }) {
         items={post.mediaItems}
         label={post.caption || post.ownerLabel}
         aspectClassName="aspect-[4/5]"
+        onDoubleLike={() => {
+          void syncLikeState("ensure-liked");
+        }}
       />
       <div className="space-y-3 px-4 py-4">
         <button
           type="button"
-          onClick={async () => {
-            setLiked((current) => !current);
-            setLikeCount((current) => current + (liked ? -1 : 1));
-            try {
-              await likePost(post.id);
-            } catch {
-              setLiked(post.hasLiked);
-              setLikeCount(post.likeCount);
-            }
+          onClick={() => {
+            void syncLikeState("toggle");
           }}
-          className="flex items-center gap-2 text-sm font-semibold"
+          className={cn(
+            "flex items-center gap-2 text-sm font-semibold transition-opacity",
+            likePending && "opacity-70"
+          )}
         >
           <Heart className={liked ? "h-5 w-5 fill-[var(--coral)] text-[var(--coral)]" : "h-5 w-5"} />
           {likeCount} likes

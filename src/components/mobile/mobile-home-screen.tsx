@@ -9,10 +9,59 @@ import { formatMobileDateTime } from "@/lib/mobile-shared";
 import { PostCard, StoryStrip } from "@/components/mobile/mobile-feed";
 import type { MobileBootstrapPayload } from "@/lib/mobile-types";
 
-export function MobileHomeScreen({ initialData }: { initialData: MobileBootstrapPayload }) {
+const HOME_CACHE_KEY = "mobile-cache:home";
+
+function readHomeCache() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(HOME_CACHE_KEY);
+    return raw ? (JSON.parse(raw) as MobileBootstrapPayload) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeHomeCache(data: MobileBootstrapPayload) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.sessionStorage.setItem(HOME_CACHE_KEY, JSON.stringify(data));
+}
+
+export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstrapPayload | null }) {
   const router = useRouter();
-  const [data, setData] = useState(initialData);
+  const [data, setData] = useState<MobileBootstrapPayload | null>(() => initialData ?? null);
   const [gestureStart, setGestureStart] = useState<{ x: number; y: number; ignore: boolean } | null>(null);
+
+  useEffect(() => {
+    if (initialData) {
+      writeHomeCache(initialData);
+      return;
+    }
+
+    const cached = readHomeCache();
+    if (cached) {
+      setData(cached);
+    }
+  }, [initialData]);
+
+  useEffect(() => {
+    if (data) {
+      writeHomeCache(data);
+    }
+  }, [data]);
+
+  useEffect(() => {
+    if (data) {
+      return;
+    }
+
+    void fetchMobileBootstrap().then(setData).catch(() => undefined);
+  }, [data]);
 
   useEffect(() => {
     const unsubscribe = subscribeToMobileStream((event) => {
@@ -27,6 +76,20 @@ export function MobileHomeScreen({ initialData }: { initialData: MobileBootstrap
     });
     return unsubscribe;
   }, []);
+
+  if (!data) {
+    return (
+      <div className="space-y-5">
+        <div className="flex items-center justify-between">
+          <div className="h-12 w-24 rounded-full bg-white/80 shadow-sm" />
+          <div className="h-12 w-12 rounded-2xl bg-white/80 shadow-sm" />
+        </div>
+        <div className="h-28 rounded-[2rem] border border-dashed border-[var(--line-warm)] bg-white/75" />
+        <div className="h-36 rounded-[2rem] bg-white/80 shadow-sm" />
+        <div className="h-[420px] rounded-[2rem] bg-white/80 shadow-sm" />
+      </div>
+    );
+  }
 
   return (
     <div

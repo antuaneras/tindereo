@@ -568,6 +568,11 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                       items={post.mediaItems}
                       label={post.caption || `Post de @${post.authorHandle}`}
                       aspectClassName="aspect-[4/5]"
+                      onDoubleLike={() => {
+                        if (!post.hasLiked) {
+                          void handleLike(post.id);
+                        }
+                      }}
                     />
 
                     <div className="space-y-3 px-4 py-4">

@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { Heart } from "lucide-react";
+import { type PointerEvent, useMemo, useRef, useState } from "react";
 import type { MobileMediaAsset } from "@/lib/mobile-types";
 
 function cn(...values: Array<string | false | null | undefined>) {
@@ -34,16 +35,61 @@ export function MobilePostCarousel({
   aspectClassName,
   className,
   items,
-  label
+  label,
+  onDoubleLike
 }: {
   aspectClassName: string;
   className?: string;
   items: MobileMediaAsset[];
   label: string;
+  onDoubleLike?: () => void;
 }) {
-  const trackRef = useRef<HTMLDivElement | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [heartBurstKey, setHeartBurstKey] = useState(0);
+  const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
+  const pointerStartRef = useRef<{ x: number; y: number } | null>(null);
   const normalizedItems = useMemo(() => items.filter((item) => Boolean(item.previewUrl)), [items]);
+
+  const handleTap = (clientX: number, clientY: number) => {
+    const now = Date.now();
+    const previousTap = lastTapRef.current;
+
+    if (
+      previousTap &&
+      now - previousTap.time < 320 &&
+      Math.abs(previousTap.x - clientX) < 28 &&
+      Math.abs(previousTap.y - clientY) < 28
+    ) {
+      lastTapRef.current = null;
+      setHeartBurstKey((current) => current + 1);
+      onDoubleLike?.();
+      return;
+    }
+
+    lastTapRef.current = { time: now, x: clientX, y: clientY };
+  };
+
+  const interactionProps = {
+    onPointerCancel: () => {
+      pointerStartRef.current = null;
+    },
+    onPointerDown: (event: PointerEvent<HTMLDivElement>) => {
+      pointerStartRef.current = { x: event.clientX, y: event.clientY };
+    },
+    onPointerUp: (event: PointerEvent<HTMLDivElement>) => {
+      const pointerStart = pointerStartRef.current;
+      pointerStartRef.current = null;
+
+      if (
+        pointerStart &&
+        (Math.abs(event.clientX - pointerStart.x) > 16 || Math.abs(event.clientY - pointerStart.y) > 16)
+      ) {
+        return;
+      }
+
+      handleTap(event.clientX, event.clientY);
+    }
+  };
 
   if (!normalizedItems.length) {
     return (
@@ -61,16 +107,54 @@ export function MobilePostCarousel({
 
   if (normalizedItems.length === 1) {
     return (
-      <div className={cn("relative overflow-hidden", className)}>
-        <MediaSurface alt={label} className={cn("w-full object-cover", aspectClassName)} item={normalizedItems[0]!} />
+      <div
+        {...interactionProps}
+        className={cn("relative overflow-hidden touch-manipulation", className)}
+      >
+        <MediaSurface
+          alt={label}
+          className={cn("w-full object-cover", aspectClassName)}
+          item={normalizedItems[0]!}
+        />
+        {heartBurstKey > 0 ? (
+          <span
+            key={heartBurstKey}
+            className="pointer-events-none absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2"
+            style={{ animation: "mobile-like-burst 820ms cubic-bezier(0.22, 1, 0.36, 1) forwards" }}
+          >
+            <Heart className="h-24 w-24 fill-[#ff4f88] text-[#ff4f88] drop-shadow-[0_20px_28px_rgba(0,0,0,0.28)]" />
+          </span>
+        ) : null}
+        <style jsx>{`
+          @keyframes mobile-like-burst {
+            0% {
+              opacity: 0;
+              transform: translate(-50%, -46%) scale(0.4);
+            }
+            18% {
+              opacity: 1;
+              transform: translate(-50%, -50%) scale(1.08);
+            }
+            58% {
+              opacity: 1;
+              transform: translate(-50%, -58%) scale(1);
+            }
+            100% {
+              opacity: 0;
+              transform: translate(-50%, -96%) scale(1.12);
+            }
+          }
+        `}</style>
       </div>
     );
   }
 
   return (
-    <div className={cn("relative overflow-hidden bg-black", className)}>
+    <div
+      {...interactionProps}
+      className={cn("relative overflow-hidden bg-black touch-manipulation", className)}
+    >
       <div
-        ref={trackRef}
         className="scrollbar-hide flex snap-x snap-mandatory overflow-x-auto"
         onScroll={(event) => {
           const node = event.currentTarget;
@@ -104,6 +188,37 @@ export function MobilePostCarousel({
           />
         ))}
       </div>
+
+      {heartBurstKey > 0 ? (
+        <span
+          key={heartBurstKey}
+          className="pointer-events-none absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2"
+          style={{ animation: "mobile-like-burst 820ms cubic-bezier(0.22, 1, 0.36, 1) forwards" }}
+        >
+          <Heart className="h-24 w-24 fill-[#ff4f88] text-[#ff4f88] drop-shadow-[0_20px_28px_rgba(0,0,0,0.28)]" />
+        </span>
+      ) : null}
+
+      <style jsx>{`
+        @keyframes mobile-like-burst {
+          0% {
+            opacity: 0;
+            transform: translate(-50%, -46%) scale(0.4);
+          }
+          18% {
+            opacity: 1;
+            transform: translate(-50%, -50%) scale(1.08);
+          }
+          58% {
+            opacity: 1;
+            transform: translate(-50%, -58%) scale(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translate(-50%, -96%) scale(1.12);
+          }
+        }
+      `}</style>
     </div>
   );
 }

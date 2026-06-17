@@ -125,6 +125,19 @@ export interface MobilePost {
   comments: MobilePostComment[];
 }
 
+export interface MobileSuggestedProfile {
+  id: string;
+  handle: string;
+  displayName: string;
+  city: string;
+  bio: string;
+  avatarUrl: string | null;
+  coverUrl: string | null;
+  createdAt: string;
+  mutualFriendCount: number;
+  mutualFriends: Array<Pick<MobileProfile, "id" | "handle" | "avatarUrl">>;
+}
+
 export interface MobileEventMember {
   id: string;
   eventId: string;
@@ -257,6 +270,8 @@ export interface MobileBootstrapPayload {
 export interface MobileSearchPayload {
   profiles: MobileProfile[];
   events: MobileEvent[];
+  suggestedProfiles: MobileSuggestedProfile[];
+  suggestedPosts: MobilePost[];
 }
 
 export interface CreateMobileEventInput {

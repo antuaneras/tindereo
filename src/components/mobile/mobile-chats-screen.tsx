@@ -8,12 +8,51 @@ import { createConversation, fetchConversations, searchMobile, subscribeToMobile
 import { formatRelativeMobileTime } from "@/lib/mobile-shared";
 import type { MobileConversationSummary, MobileProfile } from "@/lib/mobile-types";
 
-export function MobileChatsScreen({ initialChats }: { initialChats: MobileConversationSummary[] }) {
+const CHATS_CACHE_KEY = "mobile-cache:chats";
+
+function readChatsCache() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(CHATS_CACHE_KEY);
+    return raw ? (JSON.parse(raw) as MobileConversationSummary[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeChatsCache(chats: MobileConversationSummary[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.sessionStorage.setItem(CHATS_CACHE_KEY, JSON.stringify(chats));
+}
+
+export function MobileChatsScreen({ initialChats }: { initialChats?: MobileConversationSummary[] | null }) {
   const router = useRouter();
-  const [chats, setChats] = useState(initialChats);
+  const [chats, setChats] = useState<MobileConversationSummary[]>(() => initialChats ?? []);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<MobileProfile[]>([]);
+
+  useEffect(() => {
+    if (initialChats?.length) {
+      writeChatsCache(initialChats);
+      return;
+    }
+
+    const cached = readChatsCache();
+    if (cached?.length) {
+      setChats(cached);
+    }
+  }, [initialChats]);
+
+  useEffect(() => {
+    void fetchConversations().then(setChats).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     const unsubscribe = subscribeToMobileStream((event) => {
@@ -23,6 +62,10 @@ export function MobileChatsScreen({ initialChats }: { initialChats: MobileConver
     });
     return unsubscribe;
   }, []);
+
+  useEffect(() => {
+    writeChatsCache(chats);
+  }, [chats]);
 
   useEffect(() => {
     if (!pickerOpen || !query.trim()) {

@@ -7,12 +7,51 @@ import { fetchEvents } from "@/lib/mobile-api";
 import { formatMobileDateTime } from "@/lib/mobile-shared";
 import type { MobileEvent } from "@/lib/mobile-types";
 
-export function MobileEventsScreen({ initialEvents }: { initialEvents: MobileEvent[] }) {
-  const [events, setEvents] = useState(initialEvents);
+const EVENTS_CACHE_KEY = "mobile-cache:events";
+
+function readEventsCache() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(EVENTS_CACHE_KEY);
+    return raw ? (JSON.parse(raw) as MobileEvent[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeEventsCache(events: MobileEvent[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.sessionStorage.setItem(EVENTS_CACHE_KEY, JSON.stringify(events));
+}
+
+export function MobileEventsScreen({ initialEvents }: { initialEvents?: MobileEvent[] | null }) {
+  const [events, setEvents] = useState<MobileEvent[]>(() => initialEvents ?? []);
+
+  useEffect(() => {
+    if (initialEvents?.length) {
+      writeEventsCache(initialEvents);
+      return;
+    }
+
+    const cached = readEventsCache();
+    if (cached?.length) {
+      setEvents(cached);
+    }
+  }, [initialEvents]);
 
   useEffect(() => {
     void fetchEvents().then(setEvents).catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    writeEventsCache(events);
+  }, [events]);
 
   return (
     <div className="space-y-5">

@@ -21,6 +21,7 @@ import type {
   MobileProfile,
   MobileProfileDetail,
   MobileSearchPayload,
+  MobileSuggestedProfile,
   MobileStory,
   MobileStoryCluster,
   MobileViewerSummary,
@@ -140,6 +141,13 @@ type EventCohostRow = {
   event_id: string;
   id: string;
   user_id: string;
+};
+
+type FriendshipRow = {
+  created_at?: string;
+  id?: string;
+  user_a_id: string;
+  user_b_id: string;
 };
 
 type ConversationRow = {
@@ -300,6 +308,68 @@ function mapMediaAsset(row: MediaAssetRow): MobileMediaAsset {
     purpose: row.purpose,
     createdAt: row.created_at,
     expiresAt: row.expires_at
+  };
+}
+
+function buildFriendAdjacency(friendships: FriendshipRow[]) {
+  const adjacency = new Map<string, Set<string>>();
+
+  for (const friendship of friendships) {
+    if (!adjacency.has(friendship.user_a_id)) {
+      adjacency.set(friendship.user_a_id, new Set<string>());
+    }
+    if (!adjacency.has(friendship.user_b_id)) {
+      adjacency.set(friendship.user_b_id, new Set<string>());
+    }
+
+    adjacency.get(friendship.user_a_id)?.add(friendship.user_b_id);
+    adjacency.get(friendship.user_b_id)?.add(friendship.user_a_id);
+  }
+
+  return adjacency;
+}
+
+function buildSuggestedProfilesForViewer(
+  viewerId: string,
+  profiles: MobileProfile[],
+  friendships: FriendshipRow[]
+) {
+  const adjacency = buildFriendAdjacency(friendships);
+  const profilesById = new Map(profiles.map((profile) => [profile.id, profile]));
+  const viewerFriends = adjacency.get(viewerId) ?? new Set<string>();
+
+  const suggestedProfiles = profiles
+    .filter((profile) => profile.id !== viewerId && !viewerFriends.has(profile.id))
+    .map((profile): MobileSuggestedProfile => {
+      const candidateFriends = adjacency.get(profile.id) ?? new Set<string>();
+      const mutualFriends = [...viewerFriends]
+        .filter((friendId) => candidateFriends.has(friendId))
+        .map((friendId) => profilesById.get(friendId))
+        .filter((friend): friend is MobileProfile => Boolean(friend))
+        .slice(0, 3)
+        .map((friend) => ({
+          id: friend.id,
+          handle: friend.handle,
+          avatarUrl: friend.avatarUrl
+        }));
+
+      return {
+        ...profile,
+        mutualFriendCount: mutualFriends.length,
+        mutualFriends
+      };
+    })
+    .sort((left, right) => {
+      if (right.mutualFriendCount !== left.mutualFriendCount) {
+        return right.mutualFriendCount - left.mutualFriendCount;
+      }
+
+      return right.createdAt.localeCompare(left.createdAt);
+    });
+
+  return {
+    suggestedProfiles,
+    viewerFriendIds: viewerFriends
   };
 }
 
@@ -792,19 +862,39 @@ export async function getMobileBootstrap(viewerId: string) {
 export async function getMobileSearch(viewerId: string, query: string): Promise<MobileSearchPayload> {
   const normalizedQuery = query.trim().toLowerCase();
   if (!normalizedQuery) {
+    const [profileRows, friendships, suggestedPosts] = await Promise.all([
+      selectRows<ProfileRow>(TABLES.profiles, { order: [{ column: "created_at", ascending: false }], limit: 80 }),
+      selectRows<FriendshipRow>(TABLES.friendships),
+      loadPostsForViewer(viewerId)
+    ]);
+    const profiles = profileRows.map(mapProfile);
+    const { suggestedProfiles, viewerFriendIds } = buildSuggestedProfilesForViewer(
+      viewerId,
+      profiles,
+      friendships
+    );
+    const suggestedProfileIds = new Set(suggestedProfiles.map((profile) => profile.id));
+
     return {
       profiles: [],
-      events: []
+      events: [],
+      suggestedProfiles: suggestedProfiles.slice(0, 8),
+      suggestedPosts: suggestedPosts
+        .filter(
+          (post) =>
+            post.mediaItems.length > 0 &&
+            post.authorId !== viewerId &&
+            (suggestedProfileIds.has(post.authorId) || !viewerFriendIds.has(post.authorId))
+        )
+        .slice(0, 18)
     };
   }
 
   const [profileRows, events] = await Promise.all([
     selectRows<ProfileRow>(TABLES.profiles, {
-      filters: [{ column: "handle_lower", op: "ilike", value: `*${normalizedQuery}*` }],
-      limit: 12
-    }).catch(async () =>
-      selectRows<ProfileRow>(TABLES.profiles, { order: [{ column: "created_at", ascending: false }], limit: 50 })
-    ),
+      order: [{ column: "created_at", ascending: false }],
+      limit: 80
+    }),
     loadVisibleEventsForViewer(viewerId)
   ]);
 
@@ -814,7 +904,8 @@ export async function getMobileSearch(viewerId: string, query: string): Promise<
       .filter(
         (profile) =>
           profile.handle.toLowerCase().includes(normalizedQuery) ||
-          profile.displayName.toLowerCase().includes(normalizedQuery)
+          profile.displayName.toLowerCase().includes(normalizedQuery) ||
+          profile.city.toLowerCase().includes(normalizedQuery)
       )
       .slice(0, 12),
     events: events.filter(
@@ -822,7 +913,9 @@ export async function getMobileSearch(viewerId: string, query: string): Promise<
         event.title.toLowerCase().includes(normalizedQuery) ||
         event.city.toLowerCase().includes(normalizedQuery) ||
         event.summary.toLowerCase().includes(normalizedQuery)
-    )
+    ),
+    suggestedProfiles: [],
+    suggestedPosts: []
   };
 }
 

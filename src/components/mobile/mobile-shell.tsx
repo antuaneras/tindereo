@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { Camera, Compass, MessageCircleMore, Search, User2 } from "lucide-react";
+import { Camera, Compass, MessageCircleMore, Search } from "lucide-react";
 import { enableWebPushNotifications } from "@/lib/tindereo-push-client";
 import { fetchViewerSummary, subscribeToMobileStream } from "@/lib/mobile-api";
 import type { MobileViewerSummary } from "@/lib/mobile-types";
@@ -38,6 +38,7 @@ function renderProfileAvatar(summary: MobileViewerSummary) {
 
 export function MobileShell({ children, initialSummary }: MobileShellProps) {
   const currentPath = usePathname();
+  const router = useRouter();
   const [summary, setSummary] = useState(initialSummary);
   const hideNavigation = currentPath.startsWith("/crear");
 
@@ -77,6 +78,21 @@ export function MobileShell({ children, initialSummary }: MobileShellProps) {
     void enableWebPushNotifications().catch(() => undefined);
   }, []);
 
+  useEffect(() => {
+    const routes = ["/inicio", "/buscar", "/crear", "/chats", "/perfil"];
+    const runPrefetch = () => {
+      routes.forEach((href) => router.prefetch(href));
+    };
+
+    if (typeof window.requestIdleCallback === "function") {
+      const idleId = window.requestIdleCallback(runPrefetch, { timeout: 1200 });
+      return () => window.cancelIdleCallback(idleId);
+    }
+
+    const timeoutId = window.setTimeout(runPrefetch, 200);
+    return () => window.clearTimeout(timeoutId);
+  }, [router]);
+
   const items = useMemo(
     () => [
       { href: "/inicio", label: "Inicio", icon: <Compass className="h-5 w-5" />, active: currentPath.startsWith("/inicio") },
@@ -115,6 +131,10 @@ export function MobileShell({ children, initialSummary }: MobileShellProps) {
             <Link
               key={item.href}
               href={item.href}
+              prefetch
+              scroll={false}
+              onMouseEnter={() => router.prefetch(item.href)}
+              onTouchStart={() => router.prefetch(item.href)}
               className={cn(
                 "relative flex min-w-[56px] flex-col items-center gap-1 text-[11px] font-medium text-[var(--text-soft)] transition",
                 item.active && "text-[var(--coral)]",
