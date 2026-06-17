@@ -66,6 +66,40 @@ function createNotification(
   };
 }
 
+function parseStoryNotificationPayload(text: string) {
+  if (!text.startsWith("[story:")) {
+    return null;
+  }
+
+  const closingIndex = text.indexOf("]");
+  if (closingIndex === -1) {
+    return null;
+  }
+
+  const metadata = text.slice("[story:".length, closingIndex).split("|");
+  if (metadata.length < 3) {
+    return null;
+  }
+
+  const storyId = metadata[0] ?? "";
+  const mode =
+    metadata[1] === "reaction"
+      ? "reaction"
+      : metadata[1] === "comment"
+        ? "comment"
+        : null;
+
+  if (!storyId || !mode) {
+    return null;
+  }
+
+  return {
+    mode,
+    storyId,
+    text: decodeURIComponent(metadata.slice(2).join("|"))
+  } as const;
+}
+
 function prependNotifications(state: PersistedState, notifications: AppNotification[]) {
   if (notifications.length === 0) {
     return state;
@@ -2119,14 +2153,26 @@ export function sendPrivateMessage(
   }
 
   const author = getUserById(state, authorId);
+  const storyReply = parseStoryNotificationPayload(trimmed);
   const preview = trimmed.length > 96 ? `${trimmed.slice(0, 93)}...` : trimmed;
 
   return prependNotifications(nextState, [
-    createNotification(partnerId, "private-message", author.name, preview, {
-      chatId,
-      eventId: chat.originEventId ?? undefined,
-      fromUserId: authorId
-    })
+    createNotification(
+      partnerId,
+      "private-message",
+      storyReply
+        ? storyReply.mode === "reaction"
+          ? `${author.name} ha reaccionado a tu historia`
+          : `${author.name} ha respondido a tu historia`
+        : author.name,
+      storyReply ? storyReply.text : preview,
+      {
+        chatId,
+        eventId: chat.originEventId ?? undefined,
+        fromUserId: authorId,
+        storyId: storyReply?.storyId
+      }
+    )
   ]);
 }
 

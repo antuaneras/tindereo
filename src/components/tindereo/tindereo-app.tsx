@@ -297,6 +297,7 @@ const CAMERA_COMPOSER_INITIAL_STATE: CameraComposerState = {
 };
 
 const POST_LIKES_STORAGE_KEY = "tindereo-post-likes-v1";
+const PUSH_ONBOARDING_STORAGE_KEY = "tindereo-push-onboarding-v1";
 const REPLY_PREFIX = "[reply:";
 const STORY_PREFIX = "[story:";
 const STORY_AUTO_ADVANCE_MS = 4500;
@@ -453,6 +454,10 @@ function buildPostLikeKey(userId: string, postId: string) {
   return `${userId}:${postId}`;
 }
 
+function buildPushOnboardingStorageKey(userId: string) {
+  return `${PUSH_ONBOARDING_STORAGE_KEY}:${userId}`;
+}
+
 function readStoredPostLikes() {
   if (typeof window === "undefined") {
     return [] as string[];
@@ -572,6 +577,30 @@ async function readComposerMedia(file: File) {
   } satisfies Pick<CameraComposerState, "durationMs" | "imageUrl" | "mediaType">;
 }
 
+async function readBlobAsDataUrl(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+function getSupportedRecordingMimeType() {
+  if (typeof MediaRecorder === "undefined") {
+    return "";
+  }
+
+  const candidates = [
+    "video/mp4",
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8,opus",
+    "video/webm"
+  ];
+
+  return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) ?? "";
+}
+
 function MediaSurface({
   alt,
   autoPlay,
@@ -635,6 +664,7 @@ export function TindereoApp() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [isRealtimeConnected, setIsRealtimeConnected] = useState(false);
   const [isPushSyncing, setIsPushSyncing] = useState(false);
+  const [pushOnboardingVisible, setPushOnboardingVisible] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [webPushStatus, setWebPushStatus] = useState<WebPushStatus>(INITIAL_WEB_PUSH_STATUS);
   const latestRevisionRef = useRef(0);
@@ -865,6 +895,37 @@ export function TindereoApp() {
     };
   }, [state?.session.currentUserId, state?.session.isAuthenticated, webPushStatus.permission, webPushStatus.supported]);
 
+  useEffect(() => {
+    if (typeof window === "undefined" || !state?.session.isAuthenticated) {
+      setPushOnboardingVisible(false);
+      return;
+    }
+
+    if (
+      webPushStatus.permission !== "default" ||
+      webPushStatus.subscribed ||
+      (!webPushStatus.supported && !webPushStatus.needsStandaloneInstall)
+    ) {
+      setPushOnboardingVisible(false);
+      return;
+    }
+
+    const hasDismissedPrompt = Boolean(
+      window.localStorage.getItem(
+        buildPushOnboardingStorageKey(state.session.currentUserId)
+      )
+    );
+
+    setPushOnboardingVisible(!hasDismissedPrompt);
+  }, [
+    state?.session.currentUserId,
+    state?.session.isAuthenticated,
+    webPushStatus.needsStandaloneInstall,
+    webPushStatus.permission,
+    webPushStatus.subscribed,
+    webPushStatus.supported
+  ]);
+
   const unreadNotificationCount = state?.session.isAuthenticated
     ? getUnreadNotificationCount(state, state.session.currentUserId)
     : 0;
@@ -949,6 +1010,17 @@ export function TindereoApp() {
     }
   };
 
+  const rememberPushOnboardingChoice = (value: "dismissed" | "enabled") => {
+    if (typeof window === "undefined" || !state?.session.isAuthenticated) {
+      return;
+    }
+
+    window.localStorage.setItem(
+      buildPushOnboardingStorageKey(state.session.currentUserId),
+      value
+    );
+  };
+
   const handleEnablePushNotifications = async () => {
     setSyncError(null);
     setIsPushSyncing(true);
@@ -956,6 +1028,8 @@ export function TindereoApp() {
     try {
       const nextStatus = await enableWebPushNotifications();
       setWebPushStatus(nextStatus);
+      rememberPushOnboardingChoice("enabled");
+      setPushOnboardingVisible(false);
       setUiNotice("Notificaciones activadas.");
     } catch (error) {
       setSyncError(
@@ -964,6 +1038,11 @@ export function TindereoApp() {
     } finally {
       setIsPushSyncing(false);
     }
+  };
+
+  const handleDismissPushOnboarding = () => {
+    rememberPushOnboardingChoice("dismissed");
+    setPushOnboardingVisible(false);
   };
 
   const handleDisablePushNotifications = async () => {
@@ -1946,6 +2025,15 @@ export function TindereoApp() {
         state={state}
       />
 
+      {pushOnboardingVisible ? (
+        <PushNotificationsPrompt
+          isLoading={isPushSyncing}
+          needsStandaloneInstall={webPushStatus.needsStandaloneInstall}
+          onDismiss={handleDismissPushOnboarding}
+          onEnable={() => void handleEnablePushNotifications()}
+        />
+      ) : null}
+
       <div className="md:hidden">
         <MobileAppShell
           activeStory={activeStory}
@@ -2466,6 +2554,55 @@ function ThreadReadEffects({
   }, [activeTab, currentUserId, onMarkThreadRead, selectedEvent, selectedEventView, state]);
 
   return null;
+}
+
+function PushNotificationsPrompt({
+  isLoading,
+  needsStandaloneInstall,
+  onDismiss,
+  onEnable
+}: {
+  isLoading: boolean;
+  needsStandaloneInstall: boolean;
+  onDismiss: () => void;
+  onEnable: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[90] flex items-end justify-center bg-[#1d160f]/35 px-4 pb-6 pt-10 md:items-center">
+      <div className="w-full max-w-md rounded-[32px] border border-[#eadfd3] bg-[#fffaf6] p-6 shadow-[0_24px_60px_rgba(29,22,15,0.22)]">
+        <div className="inline-flex rounded-full bg-[#fff1e7] p-3 text-[#f08a24]">
+          <Shield className="h-5 w-5" />
+        </div>
+        <h2 className="mt-4 text-2xl font-black tracking-tight text-[#1d160f]">
+          Activa las notificaciones
+        </h2>
+        <p className="mt-3 text-sm leading-6 text-[#5f4b3f]">
+          {needsStandaloneInstall
+            ? "En iPhone solo funcionan si abres Tindereo desde el acceso directo de pantalla de inicio, no desde Safari normal."
+            : "Asi te llegarán mensajes privados, respuestas de historias y movimiento de tus eventos aunque la app este en segundo plano."}
+        </p>
+        <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+          {!needsStandaloneInstall ? (
+            <button
+              className="flex-1 rounded-full bg-[#1d160f] px-5 py-3 text-sm font-semibold text-white"
+              disabled={isLoading}
+              onClick={onEnable}
+              type="button"
+            >
+              {isLoading ? "Activando..." : "Activar ahora"}
+            </button>
+          ) : null}
+          <button
+            className="flex-1 rounded-full border border-[#eadfd3] bg-white px-5 py-3 text-sm font-semibold text-[#6d5749]"
+            onClick={onDismiss}
+            type="button"
+          >
+            {needsStandaloneInstall ? "Entendido" : "Mas tarde"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function MobileAppShell({
@@ -4218,10 +4355,22 @@ function StoryViewerOverlay({
   const [progress, setProgress] = useState(0);
   const [storyDurationMs, setStoryDurationMs] = useState(STORY_AUTO_ADVANCE_MS);
   const [showViews, setShowViews] = useState(false);
+  const storyStartedAtRef = useRef<number | null>(null);
+  const onCloseRef = useRef(onClose);
+  const onMoveRef = useRef(onMove);
+  const shouldAutoAdvanceRef = useRef(shouldAutoAdvance);
   const viewers = getStoryViews(state, activeStory.id).map((view) => getUserById(state, view.userId));
 
   useEffect(() => {
+    onCloseRef.current = onClose;
+    onMoveRef.current = onMove;
+    shouldAutoAdvanceRef.current = shouldAutoAdvance;
+  }, [onClose, onMove, shouldAutoAdvance]);
+
+  useEffect(() => {
     setShowViews(false);
+    setProgress(0);
+    storyStartedAtRef.current = Date.now();
   }, [activeStory.id]);
 
   useEffect(() => {
@@ -4257,25 +4406,27 @@ function StoryViewerOverlay({
       return undefined;
     }
 
-    setProgress(0);
-    const startedAt = Date.now();
+    if (!storyStartedAtRef.current) {
+      storyStartedAtRef.current = Date.now();
+    }
+
     const intervalId = window.setInterval(() => {
-      const elapsed = Date.now() - startedAt;
+      const elapsed = Date.now() - (storyStartedAtRef.current ?? Date.now());
       const nextProgress = Math.min(elapsed / storyDurationMs, 1);
       setProgress(nextProgress);
 
       if (elapsed >= storyDurationMs) {
         window.clearInterval(intervalId);
-        if (shouldAutoAdvance) {
-          onMove("next");
+        if (shouldAutoAdvanceRef.current) {
+          onMoveRef.current("next");
         } else {
-          onClose();
+          onCloseRef.current();
         }
       }
     }, 90);
 
     return () => window.clearInterval(intervalId);
-  }, [activeStory.id, onClose, onMove, shouldAutoAdvance, storyDurationMs]);
+  }, [activeStory.id, storyDurationMs]);
 
   return (
     <div className="fixed inset-0 z-[70] bg-[#120d0a] text-white">
@@ -5165,18 +5316,208 @@ function MobileCameraComposerScreen({
   const photoCaptureInputRef = useRef<HTMLInputElement>(null);
   const videoCaptureInputRef = useRef<HTMLInputElement>(null);
   const libraryInputRef = useRef<HTMLInputElement>(null);
+  const liveVideoRef = useRef<HTMLVideoElement>(null);
   const holdTimerRef = useRef<number | null>(null);
   const videoCaptureStartedRef = useRef(false);
+  const streamRef = useRef<MediaStream | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingChunksRef = useRef<Blob[]>([]);
+  const recordingStartedAtRef = useRef<number | null>(null);
+  const recordingTimeoutRef = useRef<number | null>(null);
+  const [tagSearchTerm, setTagSearchTerm] = useState("");
+  const [cameraAccessError, setCameraAccessError] = useState<string | null>(null);
+  const [hasLiveCamera, setHasLiveCamera] = useState(false);
+  const [isRecordingVideo, setIsRecordingVideo] = useState(false);
   const selectableUsers =
     composer.target === "event" && currentEvent
       ? getEventMembers(state, currentEvent.id).filter((user) => user.id !== currentUser.id)
       : getFriends(state, currentUser.id);
+  const filteredSelectableUsers = selectableUsers.filter((user) => {
+    const normalizedTerm = tagSearchTerm.trim().toLowerCase();
+    if (!normalizedTerm) {
+      return true;
+    }
+
+    return `${user.name} ${user.handle}`.toLowerCase().includes(normalizedTerm);
+  });
   const videoOnlyStory = composer.mediaType === "video";
 
   const clearCaptureTimer = () => {
     if (holdTimerRef.current !== null && typeof window !== "undefined") {
       window.clearTimeout(holdTimerRef.current);
       holdTimerRef.current = null;
+    }
+  };
+
+  const clearRecordingTimeout = () => {
+    if (recordingTimeoutRef.current !== null && typeof window !== "undefined") {
+      window.clearTimeout(recordingTimeoutRef.current);
+      recordingTimeoutRef.current = null;
+    }
+  };
+
+  const stopLiveStream = () => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    setHasLiveCamera(false);
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const startLiveCamera = async () => {
+      if (
+        composer.imageUrl ||
+        typeof navigator === "undefined" ||
+        !navigator.mediaDevices?.getUserMedia
+      ) {
+        return;
+      }
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: {
+            facingMode: { ideal: "environment" }
+          }
+        });
+
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
+        streamRef.current = stream;
+        if (liveVideoRef.current) {
+          liveVideoRef.current.srcObject = stream;
+          void liveVideoRef.current.play().catch(() => undefined);
+        }
+        setCameraAccessError(null);
+        setHasLiveCamera(true);
+      } catch {
+        if (!cancelled) {
+          setHasLiveCamera(false);
+          setCameraAccessError(
+            "No he podido abrir la camara en directo. Puedes usar la camara del sistema o la fototeca."
+          );
+        }
+      }
+    };
+
+    void startLiveCamera();
+
+    return () => {
+      cancelled = true;
+      clearCaptureTimer();
+      clearRecordingTimeout();
+      mediaRecorderRef.current?.stop?.();
+      mediaRecorderRef.current = null;
+      stopLiveStream();
+    };
+  }, [composer.imageUrl]);
+
+  const capturePhotoFromLiveCamera = async () => {
+    const video = liveVideoRef.current;
+    if (!video || !hasLiveCamera || video.videoWidth === 0 || video.videoHeight === 0) {
+      photoCaptureInputRef.current?.click();
+      return;
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const context = canvas.getContext("2d");
+
+    if (!context) {
+      photoCaptureInputRef.current?.click();
+      return;
+    }
+
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const imageUrl = canvas.toDataURL("image/jpeg", 0.92);
+    onUpdateComposer((current) =>
+      current
+        ? {
+            ...current,
+            durationMs: null,
+            imageUrl,
+            mediaType: "image"
+          }
+        : current
+    );
+  };
+
+  const stopVideoRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
+    clearRecordingTimeout();
+  };
+
+  const startVideoRecording = () => {
+    if (!streamRef.current || typeof MediaRecorder === "undefined" || isSubmitting) {
+      videoCaptureInputRef.current?.click();
+      return;
+    }
+
+    try {
+      recordingChunksRef.current = [];
+      recordingStartedAtRef.current = Date.now();
+      const mimeType = getSupportedRecordingMimeType();
+      const recorder = mimeType
+        ? new MediaRecorder(streamRef.current, { mimeType })
+        : new MediaRecorder(streamRef.current);
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordingChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const durationMs = recordingStartedAtRef.current
+          ? Math.min(Date.now() - recordingStartedAtRef.current, STORY_MAX_VIDEO_MS)
+          : STORY_MAX_VIDEO_MS;
+        const nextMimeType =
+          recordingChunksRef.current[0]?.type || mimeType || "video/webm";
+        const nextBlob = new Blob(recordingChunksRef.current, { type: nextMimeType });
+        void readBlobAsDataUrl(nextBlob)
+          .then((imageUrl) => {
+            onUpdateComposer((current) =>
+              current
+                ? {
+                    ...current,
+                    durationMs,
+                    imageUrl,
+                    mediaType: "video",
+                    mode: "story"
+                  }
+                : current
+            );
+          })
+          .catch(() => {
+            videoCaptureInputRef.current?.click();
+          });
+        recordingChunksRef.current = [];
+        recordingStartedAtRef.current = null;
+        setIsRecordingVideo(false);
+      };
+
+      recorder.onerror = () => {
+        setIsRecordingVideo(false);
+        recordingChunksRef.current = [];
+        recordingStartedAtRef.current = null;
+      };
+
+      recorder.start();
+      setIsRecordingVideo(true);
+      clearRecordingTimeout();
+      recordingTimeoutRef.current = window.setTimeout(() => {
+        stopVideoRecording();
+      }, STORY_MAX_VIDEO_MS);
+    } catch {
+      videoCaptureInputRef.current?.click();
     }
   };
 
@@ -5189,7 +5530,7 @@ function MobileCameraComposerScreen({
     clearCaptureTimer();
     holdTimerRef.current = window.setTimeout(() => {
       videoCaptureStartedRef.current = true;
-      videoCaptureInputRef.current?.click();
+      startVideoRecording();
       holdTimerRef.current = null;
     }, STORY_LONG_PRESS_VIDEO_MS);
   };
@@ -5202,8 +5543,10 @@ function MobileCameraComposerScreen({
     const shouldOpenVideoCapture = videoCaptureStartedRef.current;
     clearCaptureTimer();
 
-    if (!shouldOpenVideoCapture) {
-      photoCaptureInputRef.current?.click();
+    if (shouldOpenVideoCapture) {
+      stopVideoRecording();
+    } else {
+      void capturePhotoFromLiveCamera();
     }
 
     if (typeof window !== "undefined") {
@@ -5215,6 +5558,9 @@ function MobileCameraComposerScreen({
 
   const handleCapturePressCancel = () => {
     clearCaptureTimer();
+    if (videoCaptureStartedRef.current) {
+      stopVideoRecording();
+    }
     videoCaptureStartedRef.current = false;
   };
 
@@ -5246,12 +5592,30 @@ function MobileCameraComposerScreen({
               muted={composer.mediaType === "video"}
               src={composer.imageUrl}
             />
+          ) : hasLiveCamera ? (
+            <div className="relative h-[360px] w-full bg-black">
+              <video
+                autoPlay
+                className="h-full w-full object-cover"
+                muted
+                playsInline
+                ref={liveVideoRef}
+              />
+              <div className="absolute inset-x-0 bottom-0 bg-[linear-gradient(180deg,transparent,rgba(0,0,0,0.72))] px-5 pb-5 pt-14">
+                <p className="text-sm text-white/78">
+                  {isRecordingVideo
+                    ? "Grabando historia en video. Suelta para terminar."
+                    : "Toca para foto. Mantén pulsado para grabar una historia de hasta 20 segundos."}
+                </p>
+              </div>
+            </div>
           ) : (
             <div className="flex h-[360px] flex-col items-center justify-center gap-4 px-6 text-center">
               <Camera className="h-12 w-12 text-white/72" />
               <p className="max-w-xs text-sm text-white/72">
                 Toca el obturador para una foto o mantenlo pulsado para grabar una historia en video de hasta 20 segundos.
               </p>
+              {cameraAccessError ? <p className="max-w-xs text-xs text-[#ffd0c2]">{cameraAccessError}</p> : null}
             </div>
           )}
         </div>
@@ -5290,7 +5654,11 @@ function MobileCameraComposerScreen({
             type="button"
           >
             <div className="flex items-center gap-3">
-              <span className="inline-flex h-14 w-14 items-center justify-center rounded-full bg-white text-[#1d160f]">
+              <span
+                className={`inline-flex h-14 w-14 items-center justify-center rounded-full ${
+                  isRecordingVideo ? "bg-[#ff6b57] text-white" : "bg-white text-[#1d160f]"
+                }`}
+              >
                 <Camera className="h-6 w-6" />
               </span>
               <div>
@@ -5406,9 +5774,20 @@ function MobileCameraComposerScreen({
 
         {selectableUsers.length > 0 ? (
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-white/72">Etiquetar personas</p>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-white/72">Etiquetar personas</p>
+              <p className="text-[11px] uppercase tracking-[0.18em] text-white/52">
+                {composer.taggedUserIds.length} seleccionadas
+              </p>
+            </div>
+            <input
+              className="mt-3 w-full rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm text-white outline-none placeholder:text-white/42"
+              onChange={(event) => setTagSearchTerm(event.target.value)}
+              placeholder="Buscar por nombre o usuario"
+              value={tagSearchTerm}
+            />
             <div className="mt-3 flex flex-wrap gap-2">
-              {selectableUsers.map((user) => {
+              {filteredSelectableUsers.map((user) => {
                 const active = composer.taggedUserIds.includes(user.id);
                 return (
                   <button
@@ -5430,11 +5809,14 @@ function MobileCameraComposerScreen({
                     }
                     type="button"
                   >
-                    {user.handle}
+                    {user.name} · {user.handle}
                   </button>
                 );
               })}
             </div>
+            {filteredSelectableUsers.length === 0 ? (
+              <p className="mt-3 text-sm text-white/52">No he encontrado a nadie con esa búsqueda.</p>
+            ) : null}
           </div>
         ) : null}
       </div>
