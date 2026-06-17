@@ -2144,15 +2144,32 @@ export function TindereoApp() {
     });
   };
 
-  const handleMarkStoryViewed = async (storyId: string) => {
-    setState((current) =>
-      current
-        ? normalizeState(applyStoryViewedState(current, current.session.currentUserId, storyId))
-        : current
-    );
-    await runPlatformMutation({
+  const handleMarkStoryViewed = (storyId: string) => {
+    let shouldSyncView = false;
+    let actorId = state.session.currentUserId;
+
+    setState((current) => {
+      if (!current) {
+        return current;
+      }
+
+      actorId = current.session.currentUserId;
+      const story = current.stories.find((item) => item.id === storyId);
+      if (!story || story.authorId === actorId || hasViewedStory(current, storyId, actorId)) {
+        return current;
+      }
+
+      shouldSyncView = true;
+      return normalizeState(applyStoryViewedState(current, actorId, storyId));
+    });
+
+    if (!shouldSyncView) {
+      return;
+    }
+
+    void runBackgroundPlatformMutation({
       type: "mark-story-viewed",
-      actorId: state.session.currentUserId,
+      actorId,
       storyId
     });
   };
@@ -2377,6 +2394,19 @@ export function TindereoApp() {
       return false;
     } finally {
       setIsSyncing(false);
+    }
+  };
+
+  const runBackgroundPlatformMutation = async (
+    action: PlatformAction,
+    sessionPatch?: Partial<PersistedState["session"]>
+  ) => {
+    try {
+      const payload = await executePlatformAction(action);
+      applyPlatformPayload(payload, sessionPatch);
+      return payload;
+    } catch {
+      return null;
     }
   };
 
