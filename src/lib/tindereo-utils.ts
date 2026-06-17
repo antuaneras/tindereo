@@ -34,6 +34,16 @@ import type {
 } from "@/lib/tindereo-types";
 
 const CHAT_MEDIA_PREFIX = "[media:";
+const DELETED_CHAT_MESSAGE_PREFIX = "[deleted]";
+export const DELETED_CHAT_MESSAGE_LABEL = "Este mensaje ha sido borrado";
+
+export function buildDeletedChatMessageText() {
+  return `${DELETED_CHAT_MESSAGE_PREFIX}${DELETED_CHAT_MESSAGE_LABEL}`;
+}
+
+export function isDeletedChatMessageText(text: string) {
+  return text.startsWith(DELETED_CHAT_MESSAGE_PREFIX);
+}
 
 function cloneState<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -2369,18 +2379,17 @@ export function sendPrivateMessage(
     return state;
   }
 
+  const nextMessage: PrivateMessage = {
+    id: buildId("private"),
+    chatId,
+    authorId,
+    text: trimmed,
+    createdAt: new Date().toISOString()
+  };
+
   const nextState: PersistedState = {
     ...state,
-    privateMessages: [
-      ...state.privateMessages,
-      {
-        id: buildId("private"),
-        chatId,
-        authorId,
-        text: trimmed,
-        createdAt: new Date().toISOString()
-      }
-    ]
+    privateMessages: [...state.privateMessages, nextMessage]
   };
   const recipientIds = chat.participantIds.filter((participantId) => participantId !== authorId);
   if (recipientIds.length === 0) {
@@ -2416,11 +2425,68 @@ export function sendPrivateMessage(
           chatId,
           eventId: chat.originEventId ?? undefined,
           fromUserId: authorId,
+          messageId: nextMessage.id,
           storyId: storyReply?.storyId
         }
       )
     )
   ]);
+}
+
+export function deletePrivateMessage(
+  state: PersistedState,
+  chatId: string,
+  messageId: string,
+  actorId: string
+) {
+  const chat = state.privateChats.find((item) => item.id === chatId);
+  const message = state.privateMessages.find((item) => item.id === messageId && item.chatId === chatId);
+
+  if (!chat || !message || isGroupChat(chat) || message.authorId !== actorId) {
+    return state;
+  }
+
+  if (isDeletedChatMessageText(message.text)) {
+    return state;
+  }
+
+  const recipientIds = chat.participantIds.filter((participantId) => participantId !== actorId);
+  if (recipientIds.length === 0) {
+    return state;
+  }
+
+  const hasBeenRead = recipientIds.some((recipientId) => {
+    const readState = getConversationReadState(state, recipientId, "private", chatId);
+    return Boolean(readState?.lastReadAt && readState.lastReadAt >= message.createdAt);
+  });
+
+  if (hasBeenRead) {
+    return state;
+  }
+
+  const deletedText = buildDeletedChatMessageText();
+
+  return {
+    ...state,
+    notifications: state.notifications.map((notification) =>
+      notification.chatId === chatId &&
+      notification.fromUserId === actorId &&
+      notification.messageId === messageId
+        ? {
+            ...notification,
+            body: DELETED_CHAT_MESSAGE_LABEL
+          }
+        : notification
+    ),
+    privateMessages: state.privateMessages.map((item) =>
+      item.id === messageId
+        ? {
+            ...item,
+            text: deletedText
+          }
+        : item
+    )
+  };
 }
 
 export function sendPrivateMediaMessage(

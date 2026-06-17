@@ -23,6 +23,7 @@ import {
   createEvent,
   createUserPost,
   createUserStory,
+  deletePrivateMessage,
   deleteEventPost,
   deleteEventStory,
   deleteUserPost,
@@ -260,6 +261,13 @@ export async function runPlatformAction(action: PlatformAction): Promise<Platfor
     case "send-private-message":
       return runStateMutation(action.actorId, (state) =>
         sendPrivateMessage(state, action.chatId, action.actorId, action.text)
+      );
+    case "delete-private-message":
+      return runStateMutation(
+        action.actorId,
+        (state) => deletePrivateMessage(state, action.chatId, action.messageId, action.actorId),
+        undefined,
+        { requiresHydratedMessages: true }
       );
     case "send-private-media-message":
       return runStateMutation(action.actorId, (state) =>

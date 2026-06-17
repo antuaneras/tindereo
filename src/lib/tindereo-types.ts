@@ -199,6 +199,7 @@ export interface AppNotification {
   eventId?: string;
   chatId?: string;
   fromUserId?: string;
+  messageId?: string;
   postId?: string;
   storyId?: string;
 }
@@ -311,6 +312,7 @@ export type PlatformAction =
   | { type: "start-friend-chat"; actorId: string; targetUserId: string }
   | { type: "create-group-chat"; actorId: string; title: string; participantIds: string[] }
   | { type: "send-private-message"; actorId: string; chatId: string; text: string }
+  | { type: "delete-private-message"; actorId: string; chatId: string; messageId: string }
   | {
       type: "send-private-media-message";
       actorId: string;

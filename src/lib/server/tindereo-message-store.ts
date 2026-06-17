@@ -166,10 +166,33 @@ export async function persistMessageCollectionsDelta(previous: AppDataset, next:
     return;
   }
 
-  const previousGroupIds = new Set(previous.groupMessages.map((message) => message.id));
-  const previousPrivateIds = new Set(previous.privateMessages.map((message) => message.id));
-  const nextGroupMessages = next.groupMessages.filter((message) => !previousGroupIds.has(message.id));
-  const nextPrivateMessages = next.privateMessages.filter((message) => !previousPrivateIds.has(message.id));
+  const previousGroupMessagesById = new Map(
+    previous.groupMessages.map((message) => [message.id, message])
+  );
+  const previousPrivateMessagesById = new Map(
+    previous.privateMessages.map((message) => [message.id, message])
+  );
+  const nextGroupMessages = next.groupMessages.filter((message) => {
+    const previousMessage = previousGroupMessagesById.get(message.id);
+    return (
+      !previousMessage ||
+      previousMessage.authorId !== message.authorId ||
+      previousMessage.createdAt !== message.createdAt ||
+      previousMessage.eventId !== message.eventId ||
+      previousMessage.kind !== message.kind ||
+      previousMessage.text !== message.text
+    );
+  });
+  const nextPrivateMessages = next.privateMessages.filter((message) => {
+    const previousMessage = previousPrivateMessagesById.get(message.id);
+    return (
+      !previousMessage ||
+      previousMessage.authorId !== message.authorId ||
+      previousMessage.chatId !== message.chatId ||
+      previousMessage.createdAt !== message.createdAt ||
+      previousMessage.text !== message.text
+    );
+  });
 
   await Promise.all([
     upsertRows(

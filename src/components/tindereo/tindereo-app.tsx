@@ -80,7 +80,9 @@ import type {
   StoryItem
 } from "@/lib/tindereo-types";
 import {
+  DELETED_CHAT_MESSAGE_LABEL,
   areFriends,
+  isDeletedChatMessageText,
   canWriteEventChat,
   formatEventDateRange,
   formatRelativeTime,
@@ -274,10 +276,13 @@ type StoryViewerState = {
   storyIds: string[];
 };
 
+type OptimisticMessageStatus = "queued" | "pending";
+
 type OptimisticChatMessage = {
   authorId: string;
   clientId: string;
   createdAt: string;
+  status: OptimisticMessageStatus;
   text: string;
 };
 
@@ -305,7 +310,7 @@ type ChatMediaViewerState = {
   title: string;
 };
 
-type MessageDeliveryState = "pending" | "sent" | "read";
+type MessageDeliveryState = "queued" | "pending" | "sent" | "read";
 
 type CameraComposerState = {
   caption: string;
@@ -502,12 +507,24 @@ function parseStoryMessageText(text: string) {
 
 function parseChatMessage(text: string) {
   const reply = parseReplyMessageText(text);
+  if (isDeletedChatMessageText(reply.body)) {
+    return {
+      body: DELETED_CHAT_MESSAGE_LABEL,
+      deleted: true,
+      media: null as ChatMediaAttachment | null,
+      reply: null as ReplyTarget | null,
+      story: null as StoryChatAttachment | null,
+      summary: DELETED_CHAT_MESSAGE_LABEL
+    };
+  }
+
   const story = parseStoryMessageText(reply.body);
   const media = parseEphemeralMediaMessageText(reply.body);
 
   if (story) {
     return {
       body: story.mode === "comment" ? story.text : "",
+      deleted: false,
       media: null as ChatMediaAttachment | null,
       reply: reply.reply,
       story,
@@ -519,6 +536,7 @@ function parseChatMessage(text: string) {
   if (media) {
     return {
       body: media.caption,
+      deleted: false,
       media,
       reply: reply.reply,
       story: null as StoryChatAttachment | null,
@@ -528,6 +546,7 @@ function parseChatMessage(text: string) {
 
   return {
     body: reply.body,
+    deleted: false,
     media: null as ChatMediaAttachment | null,
     reply: reply.reply,
     story: null as StoryChatAttachment | null,
@@ -665,16 +684,25 @@ async function readFileAsDataUrl(file: File) {
   });
 }
 
-function buildOptimisticChatMessage(authorId: string, text: string): OptimisticChatMessage {
+function buildOptimisticChatMessage(
+  authorId: string,
+  text: string,
+  status: OptimisticMessageStatus = "queued"
+): OptimisticChatMessage {
   return {
     authorId,
     clientId: `optimistic-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     createdAt: new Date().toISOString(),
+    status,
     text,
   };
 }
 
 function MessageDeliveryIndicator({ status }: { status: MessageDeliveryState }) {
+  if (status === "queued") {
+    return <Clock3 className="h-3.5 w-3.5 text-current opacity-70" />;
+  }
+
   if (status === "pending") {
     return <Check className="h-3.5 w-3.5 text-current opacity-70" />;
   }
@@ -687,6 +715,25 @@ function MessageDeliveryIndicator({ status }: { status: MessageDeliveryState }) 
       <Check className="-ml-1 h-3.5 w-3.5" />
     </span>
   );
+}
+
+function updateOptimisticQueueStatus(
+  messages: OptimisticChatMessage[],
+  clientId: string,
+  status: OptimisticMessageStatus
+) {
+  return messages.map((message) =>
+    message.clientId === clientId
+      ? {
+          ...message,
+          status
+        }
+      : message
+  );
+}
+
+function removeOptimisticQueueMessage(messages: OptimisticChatMessage[], clientId: string) {
+  return messages.filter((message) => message.clientId !== clientId);
 }
 
 function getPrivateMessageDeliveryState(
@@ -702,6 +749,27 @@ function getPrivateMessageDeliveryState(
   const partner = getChatPartner(state, chat, currentUserId);
   const readState = getConversationReadState(state, partner.id, "private", chat.id);
   return readState?.lastReadAt && readState.lastReadAt >= messageCreatedAt ? "read" : "sent";
+}
+
+function canDeleteUnreadDirectMessage(
+  state: PersistedState,
+  chat: PrivateChat,
+  currentUserId: string,
+  message: { authorId: string; createdAt: string; text: string }
+) {
+  if (message.authorId !== currentUserId || isGroupChat(chat) || isDeletedChatMessageText(message.text)) {
+    return false;
+  }
+
+  const recipientIds = chat.participantIds.filter((participantId) => participantId !== currentUserId);
+  if (recipientIds.length === 0) {
+    return false;
+  }
+
+  return recipientIds.every((recipientId) => {
+    const readState = getConversationReadState(state, recipientId, "private", chat.id);
+    return !readState?.lastReadAt || readState.lastReadAt < message.createdAt;
+  });
 }
 
 function revokePreviewUrlIfNeeded(url: string) {
@@ -890,7 +958,7 @@ export function TindereoApp() {
   const [pendingGroupMessages, setPendingGroupMessages] = useState<Record<string, OptimisticChatMessage[]>>({});
   const [pendingPrivateMessages, setPendingPrivateMessages] = useState<Record<string, OptimisticChatMessage[]>>({});
   const [isSendingGroupMessageByEvent, setIsSendingGroupMessageByEvent] = useState<Record<string, boolean>>({});
-  const [isSendingPrivateMessageChatId, setIsSendingPrivateMessageChatId] = useState<string | null>(null);
+  const [isSendingPrivateMessageByChat, setIsSendingPrivateMessageByChat] = useState<Record<string, boolean>>({});
   const [isSendingGroupMediaEventId, setIsSendingGroupMediaEventId] = useState<string | null>(null);
   const [isSendingPrivateMediaChatId, setIsSendingPrivateMediaChatId] = useState<string | null>(null);
   const [isSendingStoryReply, setIsSendingStoryReply] = useState(false);
@@ -910,6 +978,10 @@ export function TindereoApp() {
   const [syncError, setSyncError] = useState<string | null>(null);
   const [webPushStatus, setWebPushStatus] = useState<WebPushStatus>(INITIAL_WEB_PUSH_STATUS);
   const latestRevisionRef = useRef(0);
+  const pendingGroupMessagesRef = useRef<Record<string, OptimisticChatMessage[]>>({});
+  const pendingPrivateMessagesRef = useRef<Record<string, OptimisticChatMessage[]>>({});
+  const groupMessageQueueProcessingRef = useRef<Record<string, boolean>>({});
+  const privateMessageQueueProcessingRef = useRef<Record<string, boolean>>({});
   const applyPlatformPayloadRef = useRef<
     | ((
         payload: PlatformDataEnvelope,
@@ -917,6 +989,34 @@ export function TindereoApp() {
       ) => void)
     | null
   >(null);
+
+  const commitPendingGroupMessages = (
+    updater: (
+      current: Record<string, OptimisticChatMessage[]>
+    ) => Record<string, OptimisticChatMessage[]>
+  ) => {
+    const next = updater(pendingGroupMessagesRef.current);
+    pendingGroupMessagesRef.current = next;
+    setPendingGroupMessages(next);
+  };
+
+  const commitPendingPrivateMessages = (
+    updater: (
+      current: Record<string, OptimisticChatMessage[]>
+    ) => Record<string, OptimisticChatMessage[]>
+  ) => {
+    const next = updater(pendingPrivateMessagesRef.current);
+    pendingPrivateMessagesRef.current = next;
+    setPendingPrivateMessages(next);
+  };
+
+  useEffect(() => {
+    pendingGroupMessagesRef.current = pendingGroupMessages;
+  }, [pendingGroupMessages]);
+
+  useEffect(() => {
+    pendingPrivateMessagesRef.current = pendingPrivateMessages;
+  }, [pendingPrivateMessages]);
 
   const getStoredSession = () => {
     if (typeof window === "undefined") {
@@ -1547,42 +1647,71 @@ export function TindereoApp() {
     );
   };
 
+  const processQueuedGroupMessages = async (eventId: string) => {
+    if (groupMessageQueueProcessingRef.current[eventId]) {
+      return;
+    }
+
+    groupMessageQueueProcessingRef.current[eventId] = true;
+    setIsSendingGroupMessageByEvent((current) => ({ ...current, [eventId]: true }));
+
+    try {
+      while (true) {
+        const nextMessage = pendingGroupMessagesRef.current[eventId]?.[0] ?? null;
+        if (!nextMessage) {
+          break;
+        }
+
+        commitPendingGroupMessages((current) => ({
+          ...current,
+          [eventId]: updateOptimisticQueueStatus(current[eventId] ?? [], nextMessage.clientId, "pending")
+        }));
+
+        const payload = await runPlatformActionQuietly({
+          type: "send-group-message",
+          actorId: state.session.currentUserId,
+          eventId,
+          text: nextMessage.text
+        });
+
+        if (!payload) {
+          commitPendingGroupMessages((current) => ({
+            ...current,
+            [eventId]: updateOptimisticQueueStatus(current[eventId] ?? [], nextMessage.clientId, "queued")
+          }));
+          break;
+        }
+
+        commitPendingGroupMessages((current) => ({
+          ...current,
+          [eventId]: removeOptimisticQueueMessage(current[eventId] ?? [], nextMessage.clientId)
+        }));
+      }
+    } finally {
+      delete groupMessageQueueProcessingRef.current[eventId];
+      setIsSendingGroupMessageByEvent((current) => {
+        const next = { ...current };
+        delete next[eventId];
+        return next;
+      });
+    }
+  };
+
   const handleSendGroupMessage = async (eventId: string) => {
     const message = groupDrafts[eventId] ?? "";
     const nextText = buildReplyMessageText(message, groupReplyTargets[eventId] ?? null);
-    if (!nextText.trim() || isSendingGroupMessageByEvent[eventId]) {
+    if (!nextText.trim()) {
       return;
     }
 
     const optimisticMessage = buildOptimisticChatMessage(state.session.currentUserId, nextText);
-    const currentReplyTarget = groupReplyTargets[eventId] ?? null;
     setGroupDrafts((current) => ({ ...current, [eventId]: "" }));
     setGroupReplyTargets((current) => ({ ...current, [eventId]: null }));
-    setPendingGroupMessages((current) => ({
+    commitPendingGroupMessages((current) => ({
       ...current,
       [eventId]: [...(current[eventId] ?? []), optimisticMessage]
     }));
-    setIsSendingGroupMessageByEvent((current) => ({ ...current, [eventId]: true }));
-
-    const payload = await runPlatformActionQuietly({
-      type: "send-group-message",
-      actorId: state.session.currentUserId,
-      eventId,
-      text: nextText
-    });
-
-    setPendingGroupMessages((current) => ({
-      ...current,
-      [eventId]: (current[eventId] ?? []).filter(
-        (messageEntry) => messageEntry.clientId !== optimisticMessage.clientId
-      )
-    }));
-    setIsSendingGroupMessageByEvent((current) => ({ ...current, [eventId]: false }));
-
-    if (!payload) {
-      setGroupDrafts((current) => ({ ...current, [eventId]: message }));
-      setGroupReplyTargets((current) => ({ ...current, [eventId]: currentReplyTarget }));
-    }
+    void processQueuedGroupMessages(eventId);
   };
 
   const handleSendPrivateRequest = async (eventId: string, targetUserId: string) => {
@@ -1686,48 +1815,88 @@ export function TindereoApp() {
     setUiNotice("Grupo creado.");
   };
 
+  const processQueuedPrivateMessages = async (chatId: string) => {
+    if (privateMessageQueueProcessingRef.current[chatId]) {
+      return;
+    }
+
+    privateMessageQueueProcessingRef.current[chatId] = true;
+    setIsSendingPrivateMessageByChat((current) => ({ ...current, [chatId]: true }));
+
+    try {
+      while (true) {
+        const nextMessage = pendingPrivateMessagesRef.current[chatId]?.[0] ?? null;
+        if (!nextMessage) {
+          break;
+        }
+
+        commitPendingPrivateMessages((current) => ({
+          ...current,
+          [chatId]: updateOptimisticQueueStatus(current[chatId] ?? [], nextMessage.clientId, "pending")
+        }));
+
+        const payload = await runPlatformActionQuietly({
+          type: "send-private-message",
+          actorId: state.session.currentUserId,
+          chatId,
+          text: nextMessage.text
+        });
+
+        if (!payload) {
+          commitPendingPrivateMessages((current) => ({
+            ...current,
+            [chatId]: updateOptimisticQueueStatus(current[chatId] ?? [], nextMessage.clientId, "queued")
+          }));
+          break;
+        }
+
+        commitPendingPrivateMessages((current) => ({
+          ...current,
+          [chatId]: removeOptimisticQueueMessage(current[chatId] ?? [], nextMessage.clientId)
+        }));
+      }
+    } finally {
+      delete privateMessageQueueProcessingRef.current[chatId];
+      setIsSendingPrivateMessageByChat((current) => {
+        const next = { ...current };
+        delete next[chatId];
+        return next;
+      });
+    }
+  };
+
   const handleSendPrivateMessage = async () => {
-    if (
-      !selectedPrivateChat ||
-      !privateDraft.trim() ||
-      isSendingPrivateMessageChatId === selectedPrivateChat.id
-    ) {
+    if (!selectedPrivateChat || !privateDraft.trim()) {
       return;
     }
 
     const nextText = buildReplyMessageText(privateDraft, privateReplyTarget);
     const chatId = selectedPrivateChat.id;
     const optimisticMessage = buildOptimisticChatMessage(state.session.currentUserId, nextText);
-    const currentDraft = privateDraft;
-    const currentReplyTarget = privateReplyTarget;
 
     setPrivateDraft("");
     setPrivateReplyTarget(null);
-    setPendingPrivateMessages((current) => ({
+    commitPendingPrivateMessages((current) => ({
       ...current,
       [chatId]: [...(current[chatId] ?? []), optimisticMessage]
     }));
-    setIsSendingPrivateMessageChatId(chatId);
+    void processQueuedPrivateMessages(chatId);
+  };
 
-    const payload = await runPlatformActionQuietly({
-      type: "send-private-message",
+  const handleDeletePendingPrivateMessage = (chatId: string, clientId: string) => {
+    commitPendingPrivateMessages((current) => ({
+      ...current,
+      [chatId]: removeOptimisticQueueMessage(current[chatId] ?? [], clientId)
+    }));
+  };
+
+  const handleDeletePrivateMessage = async (chatId: string, messageId: string) => {
+    await runPlatformActionQuietly({
+      type: "delete-private-message",
       actorId: state.session.currentUserId,
       chatId,
-      text: nextText
+      messageId
     });
-
-    setPendingPrivateMessages((current) => ({
-      ...current,
-      [chatId]: (current[chatId] ?? []).filter(
-        (messageEntry) => messageEntry.clientId !== optimisticMessage.clientId
-      )
-    }));
-    setIsSendingPrivateMessageChatId((current) => (current === chatId ? null : current));
-
-    if (!payload) {
-      setPrivateDraft(currentDraft);
-      setPrivateReplyTarget(currentReplyTarget);
-    }
   };
 
   const handleSendPrivateMediaMessage = async (chatId: string, file: File | null) => {
@@ -2209,6 +2378,10 @@ export function TindereoApp() {
       setRequestDrafts({});
       setSelectedAttendeeByEvent({});
       setPrivateDraft("");
+      setPendingGroupMessages({});
+      setPendingPrivateMessages({});
+      setIsSendingGroupMessageByEvent({});
+      setIsSendingPrivateMessageByChat({});
       setProfileMediaDraft({ imageUrl: "", caption: "" });
       setProfileStoryDraft({ imageUrl: "", caption: "" });
       setEventMediaDrafts({});
@@ -2226,6 +2399,10 @@ export function TindereoApp() {
       setUiNotice("Datos vaciados.");
       setLoginForm(INITIAL_LOGIN_FORM);
       setRegisterForm(INITIAL_REGISTER_FORM);
+      pendingGroupMessagesRef.current = {};
+      pendingPrivateMessagesRef.current = {};
+      groupMessageQueueProcessingRef.current = {};
+      privateMessageQueueProcessingRef.current = {};
     } catch (error) {
       setSyncError(
         error instanceof Error ? error.message : "No se pudieron vaciar los datos."
@@ -2688,6 +2865,8 @@ export function TindereoApp() {
           onRespondPrivateRequest={handleRespondPrivateRequest}
           onRequestEventAccess={handleRequestEventAccess}
           onResetDemo={() => void handleResetDemo()}
+          onDeletePendingPrivateMessage={handleDeletePendingPrivateMessage}
+          onDeletePrivateMessage={(chatId, messageId) => void handleDeletePrivateMessage(chatId, messageId)}
           onSendGroupMessage={handleSendGroupMessage}
           onSendGroupMediaMessage={(eventId, file) => void handleSendEventMediaMessage(eventId, file)}
           onSendPrivateMessage={() => void handleSendPrivateMessage()}
@@ -2736,7 +2915,7 @@ export function TindereoApp() {
           isSendingGroupMediaEventId={isSendingGroupMediaEventId}
           isSendingGroupMessageByEvent={isSendingGroupMessageByEvent}
           isSendingPrivateMediaChatId={isSendingPrivateMediaChatId}
-          isSendingPrivateMessageChatId={isSendingPrivateMessageChatId}
+          isSendingPrivateMessageByChat={isSendingPrivateMessageByChat}
           isSendingStoryReply={isSendingStoryReply}
           syncError={syncError}
         />
@@ -3067,10 +3246,11 @@ export function TindereoApp() {
             onOpenChat={openPrivateChat}
             onOpenDirectChatComposer={() => setDirectChatComposerOpen(true)}
             onRespondPrivateRequest={handleRespondPrivateRequest}
+            onDeletePrivateMessage={(chatId, messageId) => void handleDeletePrivateMessage(chatId, messageId)}
             onSendMessage={handleSendPrivateMessage}
             onSendPrivateMediaMessage={(chatId, file) => void handleSendPrivateMediaMessage(chatId, file)}
             isSendingMedia={isSendingPrivateMediaChatId === selectedPrivateChat?.id}
-            isSendingMessage={isSendingPrivateMessageChatId === selectedPrivateChat?.id}
+            isSendingMessage={Boolean(selectedPrivateChat && isSendingPrivateMessageByChat[selectedPrivateChat.id])}
             pendingMessagesByChatId={pendingPrivateMessages}
             privateChats={privateChats}
             privateDraft={privateDraft}
@@ -3340,6 +3520,8 @@ function MobileAppShell({
   onRespondPrivateRequest,
   onRequestEventAccess,
   onResetDemo,
+  onDeletePendingPrivateMessage,
+  onDeletePrivateMessage,
   onSendGroupMessage,
   onSendGroupMediaMessage,
   onSendPrivateMessage,
@@ -3384,7 +3566,7 @@ function MobileAppShell({
   isSendingGroupMediaEventId,
   isSendingGroupMessageByEvent,
   isSendingPrivateMediaChatId,
-  isSendingPrivateMessageChatId,
+  isSendingPrivateMessageByChat,
   isSendingStoryReply,
   mediaEditor,
   setMediaEditor,
@@ -3450,6 +3632,8 @@ function MobileAppShell({
   onRespondPrivateRequest: (requestId: string, accept: boolean) => void;
   onRequestEventAccess: (eventId: string) => void;
   onResetDemo: () => void;
+  onDeletePendingPrivateMessage: (chatId: string, clientId: string) => void;
+  onDeletePrivateMessage: (chatId: string, messageId: string) => void;
   onSendGroupMessage: (eventId: string) => void;
   onSendGroupMediaMessage: (eventId: string, file: File | null) => void;
   onSendPrivateMessage: () => void;
@@ -3494,7 +3678,7 @@ function MobileAppShell({
   isSendingGroupMediaEventId: string | null;
   isSendingGroupMessageByEvent: Record<string, boolean>;
   isSendingPrivateMediaChatId: string | null;
-  isSendingPrivateMessageChatId: string | null;
+  isSendingPrivateMessageByChat: Record<string, boolean>;
   isSendingStoryReply: boolean;
   mediaEditor: MediaEditorState | null;
   setMediaEditor: Dispatch<SetStateAction<MediaEditorState | null>>;
@@ -3669,11 +3853,13 @@ function MobileAppShell({
         onChangeDraft={onChangePrivateDraft}
         onOpenChatMedia={onOpenChatMedia}
         onOpenProfileUser={onOpenProfileUser}
+        onDeleteMessage={onDeletePrivateMessage}
+        onDeletePendingMessage={onDeletePendingPrivateMessage}
         onReplyMessage={onReplyPrivateMessage}
         onSendMediaMessage={(file) => onSendPrivateMediaMessage(selectedChat.id, file)}
         onSendMessage={onSendPrivateMessage}
         isSendingMedia={isSendingPrivateMediaChatId === selectedChat.id}
-        isSendingMessage={isSendingPrivateMessageChatId === selectedChat.id}
+        isSendingMessage={Boolean(isSendingPrivateMessageByChat[selectedChat.id])}
         pendingMessages={pendingPrivateMessages[selectedChat.id] ?? []}
         replyTarget={privateReplyTarget}
         state={state}
@@ -5348,6 +5534,88 @@ function StoryMessageCard({
   );
 }
 
+function SwipeReplySurface({
+  children,
+  disabled = false,
+  onReply
+}: {
+  children: ReactNode;
+  disabled?: boolean;
+  onReply: () => void;
+}) {
+  const [offsetX, setOffsetX] = useState(0);
+  const gestureRef = useRef<{ originX: number; originY: number } | null>(null);
+
+  const resetGesture = () => {
+    gestureRef.current = null;
+    setOffsetX(0);
+  };
+
+  return (
+    <div
+      className="relative"
+      onTouchEnd={() => {
+        if (!disabled && offsetX >= 56) {
+          onReply();
+        }
+        resetGesture();
+      }}
+      onTouchMove={(event) => {
+        if (disabled || !gestureRef.current) {
+          return;
+        }
+
+        const touch = event.touches[0];
+        if (!touch) {
+          return;
+        }
+
+        const deltaX = touch.clientX - gestureRef.current.originX;
+        const deltaY = touch.clientY - gestureRef.current.originY;
+        if (Math.abs(deltaY) > Math.abs(deltaX) && Math.abs(deltaY) > 10) {
+          resetGesture();
+          return;
+        }
+
+        setOffsetX(Math.max(0, Math.min(deltaX, 72)));
+      }}
+      onTouchStart={(event) => {
+        if (disabled) {
+          return;
+        }
+
+        const touch = event.touches[0];
+        if (!touch) {
+          return;
+        }
+
+        gestureRef.current = {
+          originX: touch.clientX,
+          originY: touch.clientY
+        };
+      }}
+      onTouchCancel={resetGesture}
+      style={{ touchAction: "pan-y" }}
+    >
+      <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center">
+        <div
+          className={`inline-flex h-9 w-9 items-center justify-center rounded-full bg-[#fff0e8] text-[#ff6b57] transition ${
+            offsetX > 6 ? "scale-100 opacity-100" : "scale-90 opacity-0"
+          }`}
+        >
+          <ArrowRight className="h-4 w-4" />
+        </div>
+      </div>
+      <div
+        className="transition-transform duration-150 ease-out"
+        style={{ transform: `translateX(${offsetX}px)` }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function ChatMediaMessageCard({
   dark,
   media,
@@ -5373,14 +5641,15 @@ function ChatMediaMessageCard({
 
   return (
     <button
-      className={`mb-2 flex w-full items-center gap-3 rounded-[18px] border p-3 text-left ${
+      className={`mb-2 flex w-full items-center gap-3 rounded-[20px] border p-3.5 text-left shadow-[0_10px_22px_rgba(29,22,15,0.07)] transition active:scale-[0.99] ${
         dark ? "border-white/10 bg-white/10 text-white" : "border-[#eadfd3] bg-[#fffaf6] text-[#1d160f]"
       } ${canOpen ? "" : "opacity-75"}`}
+      disabled={!canOpen}
       onClick={onOpen}
       type="button"
     >
       <div
-        className={`flex h-12 w-12 items-center justify-center rounded-[14px] ${
+        className={`flex h-14 w-14 items-center justify-center rounded-[16px] ${
           dark ? "bg-white/12" : "bg-[#f3e7dc]"
         }`}
       >
@@ -5395,7 +5664,19 @@ function ChatMediaMessageCard({
           Foto efimera
         </p>
         <p className="truncate text-sm font-semibold">{media.caption || "Toca para abrirla"}</p>
-        <p className={`mt-1 text-xs ${dark ? "text-white/72" : "text-[#6d5749]"}`}>{statusLabel}</p>
+        <div className="mt-1 flex items-center justify-between gap-2">
+          <p className={`text-xs ${dark ? "text-white/72" : "text-[#6d5749]"}`}>{statusLabel}</p>
+          {canOpen ? (
+            <span
+              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                dark ? "bg-white/12 text-white/85" : "bg-[#fff0e8] text-[#c86730]"
+              }`}
+            >
+              Abrir
+              <ArrowRight className="h-3 w-3" />
+            </span>
+          ) : null}
+        </div>
       </div>
     </button>
   );
@@ -5730,6 +6011,8 @@ function MobilePrivateChatScreen({
   isSendingMessage,
   onBack,
   onChangeDraft,
+  onDeleteMessage,
+  onDeletePendingMessage,
   onOpenChatMedia,
   onOpenProfileUser,
   onReplyMessage,
@@ -5746,6 +6029,8 @@ function MobilePrivateChatScreen({
   isSendingMessage: boolean;
   onBack: () => void;
   onChangeDraft: (value: string) => void;
+  onDeleteMessage: (chatId: string, messageId: string) => void;
+  onDeletePendingMessage: (chatId: string, clientId: string) => void;
   onOpenChatMedia: (
     messageId: string,
     authorId: string,
@@ -5766,6 +6051,8 @@ function MobilePrivateChatScreen({
   const groupChat = isGroupChat(chat);
   const chatTitle = getChatTitle(state, chat, currentUser.id);
   const chatSubtitle = getChatSubtitle(state, chat, currentUser.id);
+  const queuedMessageCount = pendingMessages.filter((message) => message.status === "queued").length;
+  const sendingMessageCount = pendingMessages.filter((message) => message.status === "pending").length;
 
   return (
     <div className="fixed inset-0 z-[60] flex flex-col bg-[#efe8df]">
@@ -5792,51 +6079,66 @@ function MobilePrivateChatScreen({
           const authorUser = getUserById(state, message.authorId);
           const author = getUserIdentityLabel(authorUser);
           const viewed = hasViewedMessageMedia(state, message.id, currentUser.id);
+          const canDelete = canDeleteUnreadDirectMessage(state, chat, currentUser.id, message);
           const deliveryState = mine
             ? getPrivateMessageDeliveryState(state, chat, currentUser.id, message.createdAt)
             : null;
           return (
             <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-              <button
-                className={`max-w-[82%] rounded-[22px] px-4 py-3 text-left text-sm ${
-                  mine ? "bg-[#d1f7c4] text-[#1d160f]" : "bg-white text-[#1d160f]"
-                }`}
-                onClick={() => onReplyMessage(buildReplyTarget(author, message.id, parsed.summary))}
-                type="button"
+              <SwipeReplySurface
+                disabled={parsed.deleted}
+                onReply={() => onReplyMessage(buildReplyTarget(author, message.id, parsed.summary))}
               >
-                {groupChat ? (
-                  <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
-                    {author}
-                  </p>
-                ) : null}
-                {parsed.reply ? (
-                  <div className="mb-2 rounded-[16px] border-l-2 border-[#ff6b57] bg-black/5 px-3 py-2">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
-                      {parsed.reply.authorLabel}
-                    </p>
-                    <p className="mt-1 text-xs text-[#5f4b3f]">{parsed.reply.snippet}</p>
-                  </div>
-                ) : null}
-                {parsed.story ? <StoryMessageCard dark={mine} state={state} storyAttachment={parsed.story} /> : null}
-                {parsed.media ? (
-                  <ChatMediaMessageCard
-                    dark={mine}
-                    media={parsed.media}
-                    mine={mine}
-                    onOpen={() => onOpenChatMedia(message.id, message.authorId, author, parsed.media!)}
-                    viewed={viewed}
-                  />
-                ) : null}
-                {parsed.body ? <p>{parsed.body}</p> : null}
                 <div
-                  className={`mt-2 flex items-center gap-1 text-[11px] ${
-                    mine ? "justify-end text-[#55725b]" : "text-[#8f6f59]"
+                  className={`max-w-[82%] rounded-[22px] px-4 py-3 text-left text-sm ${
+                    mine ? "bg-[#d1f7c4] text-[#1d160f]" : "bg-white text-[#1d160f]"
                   }`}
                 >
-                  <span>{formatTime(message.createdAt)}</span>
-                  {mine && deliveryState ? <MessageDeliveryIndicator status={deliveryState} /> : null}
+                  {groupChat ? (
+                    <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
+                      {author}
+                    </p>
+                  ) : null}
+                  {parsed.reply ? (
+                    <div className="mb-2 rounded-[16px] border-l-2 border-[#ff6b57] bg-black/5 px-3 py-2">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
+                        {parsed.reply.authorLabel}
+                      </p>
+                      <p className="mt-1 text-xs text-[#5f4b3f]">{parsed.reply.snippet}</p>
+                    </div>
+                  ) : null}
+                  {parsed.story ? <StoryMessageCard dark={mine} state={state} storyAttachment={parsed.story} /> : null}
+                  {parsed.media ? (
+                    <ChatMediaMessageCard
+                      dark={mine}
+                      media={parsed.media}
+                      mine={mine}
+                      onOpen={() => onOpenChatMedia(message.id, message.authorId, author, parsed.media!)}
+                      viewed={viewed}
+                    />
+                  ) : null}
+                  {parsed.body ? (
+                    <p className={parsed.deleted ? "italic text-[#8f6f59]" : ""}>{parsed.body}</p>
+                  ) : null}
+                  <div
+                    className={`mt-2 flex items-center gap-1 text-[11px] ${
+                      mine ? "justify-end text-[#55725b]" : "text-[#8f6f59]"
+                    }`}
+                  >
+                    <span>{formatTime(message.createdAt)}</span>
+                    {mine && deliveryState ? <MessageDeliveryIndicator status={deliveryState} /> : null}
+                    {canDelete ? (
+                      <button
+                        className="ml-1 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black/5 text-[#8f6f59]"
+                        onClick={() => onDeleteMessage(chat.id, message.id)}
+                        type="button"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
-              </button>
+              </SwipeReplySurface>
             </div>
           );
         })}
@@ -5856,7 +6158,17 @@ function MobilePrivateChatScreen({
                 {parsed.body ? <p>{parsed.body}</p> : null}
                 <div className="mt-2 flex items-center justify-end gap-1 text-[11px] text-[#55725b]">
                   <span>{formatTime(message.createdAt)}</span>
-                  <MessageDeliveryIndicator status="pending" />
+                  <span>{message.status === "queued" ? "En cola" : "Enviando"}</span>
+                  <MessageDeliveryIndicator status={message.status === "queued" ? "queued" : "pending"} />
+                  {message.status === "queued" ? (
+                    <button
+                      className="ml-1 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black/5 text-[#8f6f59]"
+                      onClick={() => onDeletePendingMessage(chat.id, message.clientId)}
+                      type="button"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -5864,6 +6176,11 @@ function MobilePrivateChatScreen({
         })}
       </div>
       <div className="border-t border-[#eadfd3] bg-white/95 px-3 pb-[calc(env(safe-area-inset-bottom)+0.85rem)] pt-3">
+        <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
+          {isSendingMessage || pendingMessages.length > 0
+            ? `${sendingMessageCount ? `${sendingMessageCount} enviando` : "0 enviando"}${queuedMessageCount ? ` · ${queuedMessageCount} en cola` : ""}`
+            : "Desliza a la derecha para responder"}
+        </p>
         <input
           accept="image/*"
           capture="environment"
@@ -5899,18 +6216,17 @@ function MobilePrivateChatScreen({
           </button>
           <input
             className="min-w-0 flex-1 rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm text-[#1d160f] outline-none"
-            disabled={isSendingMessage}
             onChange={(event) => onChangeDraft(event.target.value)}
             placeholder={`Escribe en ${chatTitle}...`}
             value={draft}
           />
           <button
             className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-[#1d160f] text-white disabled:opacity-45"
-            disabled={isSendingMessage || !draft.trim()}
+            disabled={!draft.trim()}
             onClick={onSendMessage}
             type="button"
           >
-            {isSendingMessage ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+            <Send className="h-4 w-4" />
           </button>
         </div>
       </div>
@@ -5995,6 +6311,8 @@ function MobileEventScreen({
   const [shareNotice, setShareNotice] = useState<string | null>(null);
   const shareUrl = buildEventShareUrl(event.slug);
   const shareCopy = buildEventShareCopy(event, shareUrl);
+  const queuedMessageCount = pendingMessages.filter((message) => message.status === "queued").length;
+  const sendingMessageCount = pendingMessages.filter((message) => message.status === "pending").length;
 
   useEffect(() => {
     if (!shareNotice || typeof window === "undefined") {
@@ -6099,11 +6417,7 @@ function MobileEventScreen({
                   if (message.authorId === "system") {
                     return (
                       <div key={message.id} className="flex justify-center">
-                        <button
-                          className="max-w-[84%] rounded-[22px] bg-white px-4 py-3 text-left text-sm text-[#5f4b3f]"
-                          onClick={() => onReplyMessage(buildReplyTarget(authorLabel, message.id, parsed.body))}
-                          type="button"
-                        >
+                        <div className="max-w-[84%] rounded-[22px] bg-white px-4 py-3 text-left text-sm text-[#5f4b3f]">
                           {parsed.reply ? (
                             <div className="mb-2 rounded-[16px] border-l-2 border-[#ff6b57] bg-black/5 px-3 py-2">
                               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
@@ -6123,9 +6437,9 @@ function MobileEventScreen({
                               viewed={viewed}
                             />
                           ) : null}
-                          {parsed.body ? <p>{parsed.body}</p> : null}
+                          {parsed.body ? <p className={parsed.deleted ? "italic text-[#8f6f59]" : ""}>{parsed.body}</p> : null}
                           <p className="mt-2 text-[11px] text-[#8f6f59]">{formatTime(message.createdAt)}</p>
-                        </button>
+                        </div>
                       </div>
                     );
                   }
@@ -6140,46 +6454,51 @@ function MobileEventScreen({
                           <AvatarChip user={author} />
                         </button>
                       ) : null}
-                      <button
-                        className={`max-w-[78%] rounded-[22px] px-4 py-3 text-left text-sm ${
-                          mine ? "bg-[#d1f7c4] text-[#1d160f]" : "bg-white text-[#1d160f]"
-                        }`}
-                        onClick={() => onReplyMessage(buildReplyTarget(authorLabel, message.id, parsed.body))}
-                        type="button"
+                      <SwipeReplySurface
+                        disabled={parsed.deleted}
+                        onReply={() => onReplyMessage(buildReplyTarget(authorLabel, message.id, parsed.summary))}
                       >
-                        <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
-                          {authorLabel}
-                        </p>
-                        {parsed.reply ? (
-                          <div className="mb-2 rounded-[16px] border-l-2 border-[#ff6b57] bg-black/5 px-3 py-2">
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
-                              {parsed.reply.authorLabel}
-                            </p>
-                            <p className="mt-1 text-xs text-[#5f4b3f]">{parsed.reply.snippet}</p>
-                          </div>
-                        ) : null}
-                        {parsed.story ? <StoryMessageCard dark={message.authorId !== "system" && mine} state={state} storyAttachment={parsed.story} /> : null}
-                        {parsed.media ? (
-                          <ChatMediaMessageCard
-                            dark={message.authorId !== "system" && mine}
-                            media={parsed.media}
-                            mine={mine}
-                            onOpen={() =>
-                              onOpenChatMedia(message.id, message.authorId, authorLabel, parsed.media!)
-                            }
-                            viewed={viewed}
-                          />
-                        ) : null}
-                        {parsed.body ? <p>{parsed.body}</p> : null}
                         <div
-                          className={`mt-2 flex items-center gap-1 text-[11px] ${
-                            mine ? "justify-end text-[#55725b]" : "text-[#8f6f59]"
+                          className={`max-w-[78%] rounded-[22px] px-4 py-3 text-left text-sm ${
+                            mine ? "bg-[#d1f7c4] text-[#1d160f]" : "bg-white text-[#1d160f]"
                           }`}
                         >
-                          <span>{formatTime(message.createdAt)}</span>
-                          {mine ? <MessageDeliveryIndicator status="sent" /> : null}
+                          <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
+                            {authorLabel}
+                          </p>
+                          {parsed.reply ? (
+                            <div className="mb-2 rounded-[16px] border-l-2 border-[#ff6b57] bg-black/5 px-3 py-2">
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
+                                {parsed.reply.authorLabel}
+                              </p>
+                              <p className="mt-1 text-xs text-[#5f4b3f]">{parsed.reply.snippet}</p>
+                            </div>
+                          ) : null}
+                          {parsed.story ? <StoryMessageCard dark={message.authorId !== "system" && mine} state={state} storyAttachment={parsed.story} /> : null}
+                          {parsed.media ? (
+                            <ChatMediaMessageCard
+                              dark={message.authorId !== "system" && mine}
+                              media={parsed.media}
+                              mine={mine}
+                              onOpen={() =>
+                                onOpenChatMedia(message.id, message.authorId, authorLabel, parsed.media!)
+                              }
+                              viewed={viewed}
+                            />
+                          ) : null}
+                          {parsed.body ? (
+                            <p className={parsed.deleted ? "italic text-[#8f6f59]" : ""}>{parsed.body}</p>
+                          ) : null}
+                          <div
+                            className={`mt-2 flex items-center gap-1 text-[11px] ${
+                              mine ? "justify-end text-[#55725b]" : "text-[#8f6f59]"
+                            }`}
+                          >
+                            <span>{formatTime(message.createdAt)}</span>
+                            {mine ? <MessageDeliveryIndicator status="sent" /> : null}
+                          </div>
                         </div>
-                      </button>
+                      </SwipeReplySurface>
                       {mine && author ? (
                         <button onClick={() => onOpenProfileUser(author.id)} type="button">
                           <AvatarChip user={author} />
@@ -6209,7 +6528,8 @@ function MobileEventScreen({
                         {parsed.body ? <p>{parsed.body}</p> : null}
                         <div className="mt-2 flex items-center justify-end gap-1 text-[11px] text-[#55725b]">
                           <span>{formatTime(message.createdAt)}</span>
-                          <MessageDeliveryIndicator status="pending" />
+                          <span>{message.status === "queued" ? "En cola" : "Enviando"}</span>
+                          <MessageDeliveryIndicator status={message.status === "queued" ? "queued" : "pending"} />
                         </div>
                       </div>
                       <button onClick={() => onOpenProfileUser(currentUser.id)} type="button">
@@ -6222,6 +6542,11 @@ function MobileEventScreen({
           </div>
           {canAccess ? (
             <div className="border-t border-[#eadfd3] bg-white/95 px-3 pb-[calc(env(safe-area-inset-bottom)+0.85rem)] pt-3">
+              <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
+                {isSendingMessage || pendingMessages.length > 0
+                  ? `${sendingMessageCount ? `${sendingMessageCount} enviando` : "0 enviando"}${queuedMessageCount ? ` · ${queuedMessageCount} en cola` : ""}`
+                  : "Desliza a la derecha para responder"}
+              </p>
               {replyTarget ? (
                 <div className="mb-3 flex items-start justify-between gap-3 rounded-[18px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3">
                   <div>
@@ -6250,16 +6575,16 @@ function MobileEventScreen({
                   placeholder={
                     canWrite ? "Responder al grupo..." : "El chat esta en modo solo organizador"
                   }
-                  disabled={!canWrite || isSendingMessage}
+                  disabled={!canWrite}
                   value={draft}
                 />
                 <button
                   className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-[#1d160f] text-white disabled:opacity-45"
-                  disabled={!canWrite || isSendingMessage || !draft.trim()}
+                  disabled={!canWrite || !draft.trim()}
                   onClick={onSendMessage}
                   type="button"
                 >
-                  {isSendingMessage ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                  <Send className="h-4 w-4" />
                 </button>
               </div>
             </div>
@@ -9822,6 +10147,7 @@ function InboxSection({
   currentUser,
   onChangePrivateDraft,
   onCreateGroupChat,
+  onDeletePrivateMessage,
   onOpenChatMedia,
   onOpenChat,
   onOpenDirectChatComposer,
@@ -9839,6 +10165,7 @@ function InboxSection({
   currentUser: PlatformUser;
   onChangePrivateDraft: (value: string) => void;
   onCreateGroupChat: () => void;
+  onDeletePrivateMessage: (chatId: string, messageId: string) => void;
   onOpenChatMedia: (
     messageId: string,
     authorId: string,
@@ -9869,6 +10196,8 @@ function InboxSection({
   const selectedChat = privateChats.find((chat) => chat.id === selectedChatId) ?? privateChats[0] ?? null;
   const selectedMessages = selectedChat ? getPrivateMessages(state, selectedChat.id) : [];
   const pendingMessages = selectedChat ? pendingMessagesByChatId[selectedChat.id] ?? [] : [];
+  const queuedMessageCount = pendingMessages.filter((message) => message.status === "queued").length;
+  const sendingMessageCount = pendingMessages.filter((message) => message.status === "pending").length;
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   return (
@@ -10078,6 +10407,7 @@ function InboxSection({
                   const author = getUserById(state, message.authorId);
                   const authorLabel = getUserIdentityLabel(author);
                   const viewed = hasViewedMessageMedia(state, message.id, currentUser.id);
+                  const canDelete = canDeleteUnreadDirectMessage(state, selectedChat, currentUser.id, message);
                   const deliveryState = mine
                     ? getPrivateMessageDeliveryState(state, selectedChat, currentUser.id, message.createdAt)
                     : null;
@@ -10110,7 +10440,7 @@ function InboxSection({
                             viewed={viewed}
                           />
                         ) : null}
-                        {parsed.body ? <p>{parsed.body}</p> : null}
+                        {parsed.body ? <p className={parsed.deleted ? "italic opacity-80" : ""}>{parsed.body}</p> : null}
                         <div
                           className={`mt-2 flex items-center gap-1 text-[11px] ${
                             mine ? "justify-end text-white/64" : "text-[#8f6f59]"
@@ -10118,6 +10448,17 @@ function InboxSection({
                         >
                           <span>{formatTime(message.createdAt)}</span>
                           {mine && deliveryState ? <MessageDeliveryIndicator status={deliveryState} /> : null}
+                          {canDelete ? (
+                            <button
+                              className={`ml-1 inline-flex h-6 w-6 items-center justify-center rounded-full ${
+                                mine ? "bg-white/10 text-white/78" : "bg-black/5 text-[#8f6f59]"
+                              }`}
+                              onClick={() => onDeletePrivateMessage(selectedChat.id, message.id)}
+                              type="button"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          ) : null}
                         </div>
                       </div>
                     </div>
@@ -10139,7 +10480,8 @@ function InboxSection({
                         {parsed.body ? <p>{parsed.body}</p> : null}
                         <div className="mt-2 flex items-center justify-end gap-1 text-[11px] text-white/64">
                           <span>{formatTime(message.createdAt)}</span>
-                          <MessageDeliveryIndicator status="pending" />
+                          <span>{message.status === "queued" ? "En cola" : "Enviando"}</span>
+                          <MessageDeliveryIndicator status={message.status === "queued" ? "queued" : "pending"} />
                         </div>
                       </div>
                     </div>
@@ -10147,6 +10489,11 @@ function InboxSection({
                 })}
               </div>
               <div className="mt-4 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
+                <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
+                  {isSendingMessage || pendingMessages.length > 0
+                    ? `${sendingMessageCount ? `${sendingMessageCount} enviando` : "0 enviando"}${queuedMessageCount ? ` · ${queuedMessageCount} en cola` : ""}`
+                    : "Los nuevos mensajes aparecen al momento y se consolidan en segundo plano"}
+                </p>
                 <div className="mb-3 flex justify-end">
                   <button
                     className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-white px-4 py-2 text-sm font-semibold text-[#6d5749] disabled:opacity-45"
@@ -10160,7 +10507,6 @@ function InboxSection({
                 </div>
                 <textarea
                   className="w-full resize-none rounded-[18px] border border-[#e7d8cb] bg-white px-4 py-3 text-sm text-[#1d160f] outline-none focus:border-[#ff8d66] focus:ring-2 focus:ring-[#ffd4c5]"
-                  disabled={isSendingMessage}
                   onChange={(eventValue) => onChangePrivateDraft(eventValue.target.value)}
                   placeholder={`Escribe en ${getChatTitle(state, selectedChat, currentUser.id)}...`}
                   rows={3}
@@ -10169,16 +10515,12 @@ function InboxSection({
                 <div className="mt-3 flex justify-end">
                   <button
                     className="inline-flex items-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white disabled:opacity-45"
-                    disabled={isSendingMessage || !privateDraft.trim()}
+                    disabled={!privateDraft.trim()}
                     onClick={onSendMessage}
                     type="button"
                   >
-                    {isSendingMessage ? (
-                      <RefreshCw className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Send className="h-4 w-4" />
-                    )}
-                    {isSendingMessage ? "Enviando..." : "Enviar"}
+                    <Send className="h-4 w-4" />
+                    Enviar
                   </button>
                 </div>
               </div>
