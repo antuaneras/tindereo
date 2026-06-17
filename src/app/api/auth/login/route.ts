@@ -30,7 +30,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Las credenciales no son validas." }, { status: 400 });
     }
 
-    const { token, userId } = authenticateUser(body.username, body.password);
+    const { token, userId } = await authenticateUser(body.username, body.password);
     setAuthenticatedUserCookie(await cookies(), token);
     const data = await readAppDataset();
 

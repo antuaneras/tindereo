@@ -27,7 +27,7 @@ function bindActorToAuthenticatedUser(action: PlatformAction, currentUserId: str
 export async function POST(request: Request) {
   try {
     const cookieStore = await cookies();
-    const currentUserId = getAuthenticatedUserId(cookieStore);
+    const currentUserId = await getAuthenticatedUserId(cookieStore);
     const body = (await request.json().catch(() => null)) as unknown;
     if (!isPlatformAction(body)) {
       return NextResponse.json({ error: "La accion enviada no es valida." }, { status: 400 });

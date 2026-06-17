@@ -23,7 +23,7 @@ function serializeSseMessage(payload: PlatformDataEnvelope) {
 
 export async function GET(request: Request) {
   const cookieStore = await cookies();
-  const currentUserId = getAuthenticatedUserId(cookieStore);
+  const currentUserId = await getAuthenticatedUserId(cookieStore);
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream<Uint8Array>({

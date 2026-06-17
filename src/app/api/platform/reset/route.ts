@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST() {
   try {
-    resetAuthState();
+    await resetAuthState();
     clearAuthenticatedUserCookie(await cookies());
     const payload = await resetPlatformData();
 

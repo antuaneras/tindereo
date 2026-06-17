@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     const cookieStore = await cookies();
-    const currentUserId = getAuthenticatedUserId(cookieStore);
+    const currentUserId = await getAuthenticatedUserId(cookieStore);
     const payload = await getPlatformEnvelope();
 
     return NextResponse.json({

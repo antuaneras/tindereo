@@ -3,6 +3,10 @@ import path from "node:path";
 import { DEFAULT_STATE } from "../tindereo-data";
 import { stripSession } from "../tindereo-session";
 import type { AppDataset } from "../tindereo-types";
+import {
+  callSupabase,
+  isSupabaseConfigured
+} from "./tindereo-supabase";
 
 const PLATFORM_STATE_ID = "main";
 const LOCAL_STATE_PATH = path.join(process.cwd(), "storage", "platform-state.json");
@@ -42,18 +46,6 @@ const LEGACY_DEMO_EVENT_IDS = new Set([
   "design-night-lab",
   "cena-secreta-estudio"
 ]);
-
-function getSupabaseUrl() {
-  return process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? null;
-}
-
-function getSupabaseServiceRoleKey() {
-  return process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY ?? null;
-}
-
-function isSupabaseConfigured() {
-  return Boolean(getSupabaseUrl() && getSupabaseServiceRoleKey());
-}
 
 function cloneData<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -129,60 +121,6 @@ function removeLegacyLocalDatabaseFiles() {
       // Ignore legacy cleanup failures to avoid blocking app resets.
     }
   }
-}
-
-function buildSupabaseHeaders() {
-  const apiKey = getSupabaseServiceRoleKey();
-
-  if (!apiKey) {
-    throw new Error("Falta SUPABASE_SERVICE_ROLE_KEY para usar la persistencia remota.");
-  }
-
-  return {
-    apikey: apiKey,
-    Authorization: `Bearer ${apiKey}`,
-    "Content-Type": "application/json"
-  };
-}
-
-async function parseSupabaseResponse<T>(response: Response) {
-  const payload = (await response.json().catch(() => null)) as
-    | { message?: string; error?: string }
-    | T
-    | null;
-
-  if (!response.ok) {
-    throw new Error(
-      payload && typeof payload === "object" && payload !== null
-        ? "message" in payload && payload.message
-          ? payload.message
-          : "error" in payload && payload.error
-            ? payload.error
-            : "No se pudo completar la operacion con Supabase."
-        : "No se pudo completar la operacion con Supabase."
-    );
-  }
-
-  return payload as T;
-}
-
-async function callSupabase<T>(pathName: string, init?: RequestInit) {
-  const url = getSupabaseUrl();
-
-  if (!url) {
-    throw new Error("Falta SUPABASE_URL para usar la persistencia remota.");
-  }
-
-  const response = await fetch(`${url}${pathName}`, {
-    ...init,
-    headers: {
-      ...buildSupabaseHeaders(),
-      ...(init?.headers ?? {})
-    },
-    cache: "no-store"
-  });
-
-  return parseSupabaseResponse<T>(response);
 }
 
 async function setSupabasePlatformState(data: AppDataset) {

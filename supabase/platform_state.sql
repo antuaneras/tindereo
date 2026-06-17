@@ -8,6 +8,16 @@ create table if not exists public.platform_state (
 alter table public.platform_state enable row level security;
 
 revoke all on public.platform_state from anon, authenticated;
+grant all on public.platform_state to service_role;
+
+drop policy if exists "platform_state_no_direct_access" on public.platform_state;
+create policy "platform_state_no_direct_access"
+  on public.platform_state
+  as restrictive
+  for all
+  to anon, authenticated
+  using (false)
+  with check (false);
 
 create or replace function public.set_platform_state(next_data jsonb)
 returns table (
@@ -32,3 +42,7 @@ begin
     where state.id = 'main';
 end;
 $$;
+
+revoke all on function public.set_platform_state(jsonb) from public, anon, authenticated;
+grant execute on function public.set_platform_state(jsonb) to service_role;
+alter function public.set_platform_state(jsonb) set search_path = public;

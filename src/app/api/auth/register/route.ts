@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import {
   createAuthAccount,
+  deleteAuthAccountByUsername,
   createSessionAfterRegistration,
   setAuthenticatedUserCookie
 } from "@/lib/server/tindereo-auth";
@@ -46,10 +47,16 @@ export async function POST(request: Request) {
       throw new Error("No se pudo crear la cuenta.");
     }
 
-    createAuthAccount(createdUser.id, createdUser.handle, body.password);
-
     const nextData = stripSession(nextState);
-    await replaceAppDataset(nextData);
+    await createAuthAccount(createdUser.id, createdUser.handle, body.password);
+
+    try {
+      await replaceAppDataset(nextData);
+    } catch (error) {
+      await deleteAuthAccountByUsername(createdUser.handle).catch(() => undefined);
+      throw error;
+    }
+
     const revision = await getDatasetRevision();
     publishPlatformUpdate({
       data: nextData,
@@ -58,7 +65,7 @@ export async function POST(request: Request) {
       }
     });
 
-    const token = createSessionAfterRegistration(createdUser.id);
+    const token = await createSessionAfterRegistration(createdUser.id);
     setAuthenticatedUserCookie(await cookies(), token);
 
     return NextResponse.json({

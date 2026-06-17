@@ -12,7 +12,7 @@ export async function POST() {
   try {
     const cookieStore = await cookies();
     const token = cookieStore.get("tindereo_session")?.value ?? null;
-    revokeSession(token);
+    await revokeSession(token);
     clearAuthenticatedUserCookie(cookieStore);
     return NextResponse.json({ ok: true });
   } catch (error) {

@@ -31,7 +31,7 @@ function isPushSubscriptionPayload(value: unknown): value is PushSubscriptionPay
 
 export async function POST(request: Request) {
   try {
-    const currentUserId = getAuthenticatedUserId(await cookies());
+    const currentUserId = await getAuthenticatedUserId(await cookies());
     if (!currentUserId) {
       return NextResponse.json(
         { error: "Necesitas iniciar sesion para activar las notificaciones." },
@@ -68,7 +68,7 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
-    const currentUserId = getAuthenticatedUserId(await cookies());
+    const currentUserId = await getAuthenticatedUserId(await cookies());
     if (!currentUserId) {
       return NextResponse.json({ ok: true });
     }
