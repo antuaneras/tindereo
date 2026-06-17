@@ -66,6 +66,10 @@ function createNotification(
   };
 }
 
+function getUserIdentityLabel(user: Pick<PlatformUser, "handle" | "name">) {
+  return user.handle?.trim() || user.name;
+}
+
 function parseStoryNotificationPayload(text: string) {
   if (!text.startsWith("[story:")) {
     return null;
@@ -2219,6 +2223,25 @@ export function registerUser(state: PersistedState, input: RegisterUserInput) {
   return {
     ...state,
     users: [nextUser, ...state.users]
+  };
+}
+
+export function updateUserAvatar(state: PersistedState, actorId: string, imageUrl: string) {
+  const nextImageUrl = imageUrl.trim();
+  if (!nextImageUrl) {
+    throw new Error("Selecciona una imagen valida para tu foto de perfil.");
+  }
+
+  return {
+    ...state,
+    users: state.users.map((user) =>
+      user.id === actorId
+        ? {
+            ...user,
+            avatar: nextImageUrl
+          }
+        : user
+    )
   };
 }
 

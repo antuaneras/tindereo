@@ -40,6 +40,7 @@ import {
   sendPrivateMessage,
   startFriendChat,
   toggleFriendship,
+  updateUserAvatar,
   updateEventPost,
   updateEventStory,
   updateUserPost,
@@ -123,6 +124,10 @@ export async function runPlatformAction(action: PlatformAction): Promise<Platfor
       publishPlatformUpdate(payload);
       return payload;
     }
+    case "update-user-avatar":
+      return runStateMutation(action.actorId, (state) =>
+        updateUserAvatar(state, action.actorId, action.imageUrl)
+      );
     case "create-event":
       return createEventRecord(action.actorId, action.input);
     case "request-event-access":

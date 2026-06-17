@@ -164,6 +164,28 @@ function buildEventShareCopy(event: EventItem, shareUrl: string) {
   return `Te paso ${event.title} en Tindereo. ${event.summary} Únete aquí: ${shareUrl}`;
 }
 
+function getUserIdentityLabel(user: Pick<PlatformUser, "handle" | "name">) {
+  return user.handle?.trim() || user.name;
+}
+
+function getUserIdentityMeta(user: Pick<PlatformUser, "city" | "title">) {
+  return user.city?.trim() || user.title;
+}
+
+function getStoryPreviewImage(story: StoryItem, state: PersistedState) {
+  if (story.authorType === "user") {
+    return getUserById(state, story.authorId).avatar;
+  }
+
+  return getEventById(state, story.authorId)?.coverImage ?? story.imageUrl;
+}
+
+function getStoryAuthorLabel(story: StoryItem, state: PersistedState) {
+  return story.authorType === "user"
+    ? getUserIdentityLabel(getUserById(state, story.authorId))
+    : getEventById(state, story.authorId)?.title ?? "Story";
+}
+
 async function copyToClipboard(value: string) {
   if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
     return false;
@@ -1005,6 +1027,32 @@ export function TindereoApp() {
       setRegisterForm(INITIAL_REGISTER_FORM);
     } catch (error) {
       setSyncError(error instanceof Error ? error.message : "No se pudo crear la cuenta.");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleUpdateCurrentUserAvatar = async (file: File | null) => {
+    if (!file || !state?.session.currentUserId) {
+      return;
+    }
+
+    setSyncError(null);
+    setIsSyncing(true);
+
+    try {
+      const imageUrl = await readFileAsDataUrl(file);
+      const payload = await executePlatformAction({
+        type: "update-user-avatar",
+        actorId: state.session.currentUserId,
+        imageUrl
+      });
+      applyPlatformPayload(payload);
+      setUiNotice("Foto de perfil actualizada.");
+    } catch (error) {
+      setSyncError(
+        error instanceof Error ? error.message : "No se pudo actualizar la foto de perfil."
+      );
     } finally {
       setIsSyncing(false);
     }
@@ -2070,6 +2118,7 @@ export function TindereoApp() {
           onOpenNotification={(notificationId) => void handleOpenNotification(notificationId)}
           onOpenNotifications={() => navigateToTab("search")}
           onOpenProfileTab={() => navigateToTab("profile")}
+          onUpdateAvatar={(file) => void handleUpdateCurrentUserAvatar(file)}
           onEnablePushNotifications={() => void handleEnablePushNotifications()}
           onDisablePushNotifications={() => void handleDisablePushNotifications()}
           onOpenCamera={openCameraComposer}
@@ -2479,6 +2528,7 @@ export function TindereoApp() {
 
       <MobileNavigation
         activeTab={state.session.activeTab}
+        currentUser={currentUser}
         hidden={shouldHideMobileNavigation}
         onChange={navigateToTab}
         onOpenCamera={() => openCameraComposer()}
@@ -2641,6 +2691,7 @@ function MobileAppShell({
   onOpenNotification,
   onOpenNotifications,
   onOpenProfileTab,
+  onUpdateAvatar,
   onOpenCamera,
   onOpenEvent,
   onOpenMediaEditor,
@@ -2729,6 +2780,7 @@ function MobileAppShell({
   onOpenNotification: (notificationId: string) => void;
   onOpenNotifications: () => void;
   onOpenProfileTab: () => void;
+  onUpdateAvatar: (file: File | null) => void;
   onOpenCamera: (draft?: Partial<CameraComposerState>) => void;
   onOpenEvent: (eventId: string, tab: AppTab) => void;
   onOpenMediaEditor: Dispatch<SetStateAction<MediaEditorState | null>>;
@@ -2953,6 +3005,7 @@ function MobileAppShell({
     <div className="min-h-screen px-3 pb-28 pt-[calc(env(safe-area-inset-top)+1.35rem)]">
       <MobileTopBar
         activeTab={state.session.activeTab}
+        currentUser={currentUser}
         onOpenProfileTab={onOpenProfileTab}
         onOpenSearchTab={onOpenNotifications}
         title={mobileTabLabel}
@@ -3036,6 +3089,7 @@ function MobileAppShell({
           onOpenMediaEditor={onOpenMediaEditor}
           onOpenProfileUser={onOpenProfileUser}
           onOpenStory={onOpenStory}
+          onUpdateAvatar={onUpdateAvatar}
           onLogout={onLogout}
           onResetDemo={onResetDemo}
           onToggleFriendship={onToggleFriendship}
@@ -3071,11 +3125,13 @@ function MobileAppShell({
 
 function MobileTopBar({
   activeTab,
+  currentUser,
   onOpenProfileTab,
   onOpenSearchTab,
   title
 }: {
   activeTab: AppTab;
+  currentUser: PlatformUser;
   onOpenProfileTab: () => void;
   onOpenSearchTab: () => void;
   title: string;
@@ -3092,7 +3148,17 @@ function MobileTopBar({
         onClick={showingSearch ? onOpenSearchTab : onOpenProfileTab}
         type="button"
       >
-        {showingSearch ? <Search className="h-5 w-5" /> : <User className="h-5 w-5" />}
+        {showingSearch ? (
+          <Search className="h-5 w-5" />
+        ) : (
+          <div className="h-9 w-9 overflow-hidden rounded-full border border-[#eadfd3] bg-[#f5e4d6]">
+            <img
+              alt={getUserIdentityLabel(currentUser)}
+              className="h-full w-full object-cover"
+              src={currentUser.avatar}
+            />
+          </div>
+        )}
       </button>
     </div>
   );
@@ -3298,7 +3364,9 @@ function MobileHomeScreen({
                 <h2 className="mt-2 text-xl font-black tracking-tight text-[#1d160f]">
                   {event.title}
                 </h2>
-                <p className="mt-2 text-sm text-[#5f4b3f]">{sender.name} te ha invitado personalmente.</p>
+                <p className="mt-2 text-sm text-[#5f4b3f]">
+                  {getUserIdentityLabel(sender)} te ha invitado personalmente.
+                </p>
                 <div className="mt-4 flex gap-2">
                   <button
                     className="flex-1 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
@@ -3417,8 +3485,8 @@ function MobileSearchScreen({
               >
                 <AvatarChip user={user} />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate font-semibold text-[#1d160f]">{user.name}</p>
-                  <p className="truncate text-sm text-[#8f6f59]">{user.handle} - {user.city}</p>
+                  <p className="truncate font-semibold text-[#1d160f]">{getUserIdentityLabel(user)}</p>
+                  <p className="truncate text-sm text-[#8f6f59]">{getUserIdentityMeta(user)}</p>
                 </div>
                 <ArrowRight className="h-4 w-4 text-[#8f6f59]" />
               </button>
@@ -3543,8 +3611,8 @@ function SearchHubSection({
                 >
                   <AvatarChip user={user} />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate font-semibold text-[#1d160f]">{user.name}</p>
-                    <p className="truncate text-sm text-[#6d5749]">{user.handle} - {user.city}</p>
+                    <p className="truncate font-semibold text-[#1d160f]">{getUserIdentityLabel(user)}</p>
+                    <p className="truncate text-sm text-[#6d5749]">{getUserIdentityMeta(user)}</p>
                   </div>
                   <ArrowRight className="h-4 w-4 text-[#8f6f59]" />
                 </button>
@@ -3814,8 +3882,8 @@ function MobileInboxScreen({
                   <button className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => onOpenProfileUser(friend.id)} type="button">
                     <AvatarChip user={friend} />
                     <div className="min-w-0">
-                      <p className="truncate font-semibold text-[#1d160f]">{friend.name}</p>
-                      <p className="truncate text-sm text-[#8f6f59]">{friend.handle}</p>
+                      <p className="truncate font-semibold text-[#1d160f]">{getUserIdentityLabel(friend)}</p>
+                      <p className="truncate text-sm text-[#8f6f59]">{getUserIdentityMeta(friend)}</p>
                     </div>
                   </button>
                   <button
@@ -3844,8 +3912,8 @@ function MobileInboxScreen({
                 <button className="flex items-center gap-3" onClick={() => onOpenProfileUser(sender.id)} type="button">
                   <AvatarChip user={sender} />
                   <div className="text-left">
-                    <p className="font-semibold text-[#1d160f]">{sender.name}</p>
-                    <p className="text-sm text-[#8f6f59]">{sender.handle}</p>
+                    <p className="font-semibold text-[#1d160f]">{getUserIdentityLabel(sender)}</p>
+                    <p className="text-sm text-[#8f6f59]">{getUserIdentityMeta(sender)}</p>
                   </div>
                 </button>
                 <p className="mt-3 text-sm text-[#5f4b3f]">{request.message}</p>
@@ -3892,7 +3960,7 @@ function MobileInboxScreen({
                 <AvatarChip user={partner} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
-                    <p className="truncate font-semibold text-[#1d160f]">{partner.name}</p>
+                    <p className="truncate font-semibold text-[#1d160f]">{getUserIdentityLabel(partner)}</p>
                     <div className="flex items-center gap-2">
                       {unreadCount > 0 ? (
                         <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-[#ff6b57] px-2 py-1 text-[10px] font-bold text-white">
@@ -3932,6 +4000,7 @@ function MobileProfileScreen({
   onOpenMediaEditor,
   onOpenProfileUser,
   onOpenStory,
+  onUpdateAvatar,
   onResetDemo,
   onToggleFriendship,
   pendingApprovalsCount,
@@ -3955,6 +4024,7 @@ function MobileProfileScreen({
   onOpenMediaEditor: Dispatch<SetStateAction<MediaEditorState | null>>;
   onOpenProfileUser: (userId: string) => void;
   onOpenStory: (storyId: string, stories: StoryItem[]) => void;
+  onUpdateAvatar: (file: File | null) => void;
   onResetDemo: () => void;
   onToggleFriendship: (targetUserId: string) => void;
   pendingApprovalsCount: number;
@@ -3965,6 +4035,7 @@ function MobileProfileScreen({
   webPushStatus: WebPushStatus;
 }) {
   const privateChats = getPrivateChatsForUser(state, currentUser.id);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
 
   return (
     <div className="space-y-4">
@@ -3973,15 +4044,44 @@ function MobileProfileScreen({
           <img alt={currentUser.name} className="h-full w-full object-cover" src={currentUser.coverImage} />
         </div>
         <div className="px-4 pb-4">
+          <input
+            accept="image/*"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0] ?? null;
+              void onUpdateAvatar(file);
+              event.target.value = "";
+            }}
+            ref={avatarInputRef}
+            type="file"
+          />
           <div className="-mt-10 flex items-end gap-3">
-            <div className="h-20 w-20 overflow-hidden rounded-[26px] border-4 border-[#f6efe7] bg-white">
+            <div className="relative h-20 w-20 overflow-hidden rounded-full border-4 border-[#f6efe7] bg-white">
               <img alt={currentUser.name} className="h-full w-full object-cover" src={currentUser.avatar} />
+              <button
+                className="absolute bottom-0 right-0 inline-flex h-8 w-8 items-center justify-center rounded-full bg-[#1d160f] text-white shadow-[0_14px_24px_rgba(29,22,15,0.2)]"
+                onClick={() => avatarInputRef.current?.click()}
+                type="button"
+              >
+                <Camera className="h-4 w-4" />
+              </button>
             </div>
             <div className="pb-1">
-              <h1 className="text-2xl font-black tracking-tight text-[#1d160f]">{currentUser.name}</h1>
-              <p className="text-sm text-[#8f6f59]">{currentUser.title}</p>
+              <h1 className="text-2xl font-black tracking-tight text-[#1d160f]">
+                {getUserIdentityLabel(currentUser)}
+              </h1>
+              <p className="text-sm text-[#8f6f59]">
+                {currentUser.title} - {currentUser.city}
+              </p>
             </div>
           </div>
+          <button
+            className="mt-4 rounded-full border border-[#eadfd3] bg-white px-4 py-2 text-sm font-semibold text-[#6d5749]"
+            onClick={() => avatarInputRef.current?.click()}
+            type="button"
+          >
+            Cambiar foto de perfil
+          </button>
           <p className="mt-4 text-sm leading-6 text-[#5f4b3f]">{currentUser.bio}</p>
           <div className="mt-4 grid grid-cols-4 gap-2">
             <button className="rounded-[20px] border border-[#eadfd3] bg-[#fffaf6] px-3 py-4" onClick={() => onOpenDetail("created")} type="button">
@@ -4134,8 +4234,8 @@ function MobileProfileScreen({
               <button className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => onOpenProfileUser(user.id)} type="button">
                 <AvatarChip user={user} />
                 <div className="min-w-0">
-                  <p className="truncate font-semibold text-[#1d160f]">{user.name}</p>
-                  <p className="truncate text-sm text-[#8f6f59]">{user.handle}</p>
+                  <p className="truncate font-semibold text-[#1d160f]">{getUserIdentityLabel(user)}</p>
+                  <p className="truncate text-sm text-[#8f6f59]">{getUserIdentityMeta(user)}</p>
                 </div>
               </button>
               <button className="rounded-full bg-[#1d160f] px-4 py-2 text-sm font-semibold text-white" onClick={() => onToggleFriendship(user.id)} type="button">
@@ -4184,15 +4284,20 @@ function MobileStoriesBar({
       }
     >
       <div className={`flex gap-3 overflow-x-auto pb-1 ${bare ? "px-1" : ""}`}>
-        {latestStories.map((story) => {
+      {latestStories.map((story) => {
           const user = story.authorType === "user" ? getUserById(state, story.authorId) : null;
           const event = story.authorType === "event" ? getEventById(state, story.authorId) : null;
-          const label = user?.name ?? event?.title ?? "Story";
+          const label = user ? getUserIdentityLabel(user) : event?.title ?? "Story";
           return (
             <button key={story.id} className="w-[78px] flex-none text-center" onClick={() => onOpenStory(story.id, stories)} type="button">
               <div className="mx-auto w-fit rounded-full bg-[linear-gradient(135deg,#ff6b57,#f08a24)] p-[2px]">
                 <div className="h-[64px] w-[64px] overflow-hidden rounded-full border-2 border-white bg-[#f6efe7]">
-                  <MediaSurface alt={label} className="h-full w-full object-cover" muted src={story.imageUrl} />
+                  <MediaSurface
+                    alt={label}
+                    className="h-full w-full object-cover"
+                    muted
+                    src={getStoryPreviewImage(story, state)}
+                  />
                 </div>
               </div>
               <p className="mt-2 line-clamp-2 text-[11px] font-semibold text-[#1d160f]">{label}</p>
@@ -4262,8 +4367,8 @@ function MobileFeedPostCard({
       <button className="flex w-full items-center gap-3 p-4 text-left" onClick={() => onOpenProfileUser(author.id)} type="button">
         <AvatarChip user={author} />
         <div className="min-w-0 flex-1">
-          <p className="truncate font-semibold text-[#1d160f]">{author.name}</p>
-          <p className="text-sm text-[#8f6f59]">{author.handle}</p>
+          <p className="truncate font-semibold text-[#1d160f]">{getUserIdentityLabel(author)}</p>
+          <p className="text-sm text-[#8f6f59]">{formatRelativeTime(post.createdAt)}</p>
         </div>
       </button>
       <MediaSurface alt={author.name} className="h-[340px] w-full object-cover" src={post.imageUrl} />
@@ -4292,7 +4397,7 @@ function StoryMessageCard({
     story?.authorType === "event"
       ? getEventById(state, story.authorId)?.title ?? "Evento"
       : story
-        ? getUserById(state, story.authorId).name
+        ? getUserIdentityLabel(getUserById(state, story.authorId))
         : "Historia";
 
   return (
@@ -4344,10 +4449,7 @@ function StoryViewerOverlay({
   setReplyDraft: Dispatch<SetStateAction<string>>;
   state: PersistedState;
 }) {
-  const authorName =
-    activeStory.authorType === "user"
-      ? getUserById(state, activeStory.authorId).name
-      : getEventById(state, activeStory.authorId)?.title ?? "Story";
+  const authorName = getStoryAuthorLabel(activeStory, state);
   const editable =
     activeStory.authorType === "user"
       ? activeStory.authorId === currentUserId
@@ -4511,8 +4613,8 @@ function StoryViewerOverlay({
                     <div key={viewer.id} className="flex items-center gap-3">
                       <AvatarChip user={viewer} />
                       <div>
-                        <p className="text-sm font-semibold text-white">{viewer.name}</p>
-                        <p className="text-xs text-white/70">{viewer.handle}</p>
+                        <p className="text-sm font-semibold text-white">{getUserIdentityLabel(viewer)}</p>
+                        <p className="text-xs text-white/70">{getUserIdentityMeta(viewer)}</p>
                       </div>
                     </div>
                   ))}
@@ -4589,8 +4691,8 @@ function MobilePrivateChatScreen({
         <button className="flex min-w-0 items-center gap-3 text-left" onClick={() => onOpenProfileUser(partner.id)} type="button">
           <AvatarChip user={partner} />
           <div className="min-w-0">
-            <p className="truncate font-semibold text-[#1d160f]">{partner.name}</p>
-            <p className="truncate text-sm text-[#8f6f59]">{partner.handle}</p>
+            <p className="truncate font-semibold text-[#1d160f]">{getUserIdentityLabel(partner)}</p>
+            <p className="truncate text-sm text-[#8f6f59]">{getUserIdentityMeta(partner)}</p>
           </div>
         </button>
       </div>
@@ -4598,7 +4700,7 @@ function MobilePrivateChatScreen({
         {messages.map((message) => {
           const mine = message.authorId === currentUser.id;
           const parsed = parseChatMessage(message.text);
-          const author = mine ? currentUser.name : partner.name;
+          const author = mine ? getUserIdentityLabel(currentUser) : getUserIdentityLabel(partner);
           return (
             <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
               <button
@@ -4642,7 +4744,7 @@ function MobilePrivateChatScreen({
           <input
             className="min-w-0 flex-1 rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm text-[#1d160f] outline-none"
             onChange={(event) => onChangeDraft(event.target.value)}
-            placeholder={`Escribe a ${partner.name.split(" ")[0]}...`}
+            placeholder={`Escribe a ${getUserIdentityLabel(partner)}...`}
             value={draft}
           />
           <button className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-[#1d160f] text-white" onClick={onSendMessage} type="button">
@@ -4786,29 +4888,55 @@ function MobileEventScreen({
             {canAccess
               ? messages.map((message) => {
                   const mine = message.authorId === currentUser.id;
-                  const authorLabel =
-                    message.authorId === "system"
-                      ? "Sistema"
-                      : getUserById(state, message.authorId).name;
+                  const author =
+                    message.authorId === "system" ? null : getUserById(state, message.authorId);
+                  const authorLabel = author ? getUserIdentityLabel(author) : "Sistema";
                   const parsed = parseChatMessage(message.text);
+
+                  if (message.authorId === "system") {
+                    return (
+                      <div key={message.id} className="flex justify-center">
+                        <button
+                          className="max-w-[84%] rounded-[22px] bg-white px-4 py-3 text-left text-sm text-[#5f4b3f]"
+                          onClick={() => onReplyMessage(buildReplyTarget(authorLabel, message.id, parsed.body))}
+                          type="button"
+                        >
+                          {parsed.reply ? (
+                            <div className="mb-2 rounded-[16px] border-l-2 border-[#ff6b57] bg-black/5 px-3 py-2">
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
+                                {parsed.reply.authorLabel}
+                              </p>
+                              <p className="mt-1 text-xs text-[#5f4b3f]">{parsed.reply.snippet}</p>
+                            </div>
+                          ) : null}
+                          {parsed.story ? <StoryMessageCard state={state} storyAttachment={parsed.story} /> : null}
+                          {parsed.body ? <p>{parsed.body}</p> : null}
+                          <p className="mt-2 text-[11px] text-[#8f6f59]">{formatTime(message.createdAt)}</p>
+                        </button>
+                      </div>
+                    );
+                  }
+
                   return (
-                    <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
+                    <div
+                      key={message.id}
+                      className={`flex items-end gap-2 ${mine ? "justify-end" : "justify-start"}`}
+                    >
+                      {!mine && author ? (
+                        <button onClick={() => onOpenProfileUser(author.id)} type="button">
+                          <AvatarChip user={author} />
+                        </button>
+                      ) : null}
                       <button
-                        className={`max-w-[84%] rounded-[22px] px-4 py-3 text-left text-sm ${
-                          message.authorId === "system"
-                            ? "bg-white text-[#5f4b3f]"
-                            : mine
-                              ? "bg-[#d1f7c4] text-[#1d160f]"
-                              : "bg-white text-[#1d160f]"
+                        className={`max-w-[78%] rounded-[22px] px-4 py-3 text-left text-sm ${
+                          mine ? "bg-[#d1f7c4] text-[#1d160f]" : "bg-white text-[#1d160f]"
                         }`}
                         onClick={() => onReplyMessage(buildReplyTarget(authorLabel, message.id, parsed.body))}
                         type="button"
                       >
-                        {message.authorId !== "system" ? (
-                          <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
-                            {authorLabel}
-                          </p>
-                        ) : null}
+                        <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
+                          {authorLabel}
+                        </p>
                         {parsed.reply ? (
                           <div className="mb-2 rounded-[16px] border-l-2 border-[#ff6b57] bg-black/5 px-3 py-2">
                             <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">
@@ -4821,6 +4949,11 @@ function MobileEventScreen({
                         {parsed.body ? <p>{parsed.body}</p> : null}
                         <p className="mt-2 text-[11px] text-[#8f6f59]">{formatTime(message.createdAt)}</p>
                       </button>
+                      {mine && author ? (
+                        <button onClick={() => onOpenProfileUser(author.id)} type="button">
+                          <AvatarChip user={author} />
+                        </button>
+                      ) : null}
                     </div>
                   );
                 })
@@ -4892,7 +5025,7 @@ function MobileEventScreen({
                       {event.venue}, {event.city}
                     </div>
                     <button className="rounded-[18px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-left text-sm text-[#5f4b3f]" onClick={() => onOpenProfileUser(host.id)} type="button">
-                      Creado por {host.name}
+                      Creado por {getUserIdentityLabel(host)}
                     </button>
                   </div>
                 </div>
@@ -4984,8 +5117,8 @@ function MobileEventScreen({
                           <button className="flex items-center gap-3" onClick={() => onOpenProfileUser(attendee.id)} type="button">
                             <AvatarChip user={attendee} />
                             <div className="text-left">
-                              <p className="font-semibold text-[#1d160f]">{attendee.name}</p>
-                              <p className="text-sm text-[#8f6f59]">{attendee.handle}</p>
+                              <p className="font-semibold text-[#1d160f]">{getUserIdentityLabel(attendee)}</p>
+                              <p className="text-sm text-[#8f6f59]">{getUserIdentityMeta(attendee)}</p>
                             </div>
                           </button>
                           <div className="mt-3 flex gap-2">
@@ -5014,8 +5147,8 @@ function MobileEventScreen({
                       <button className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => onOpenProfileUser(member.id)} type="button">
                         <AvatarChip user={member} />
                         <div className="min-w-0">
-                          <p className="truncate font-semibold text-[#1d160f]">{member.name}</p>
-                          <p className="truncate text-sm text-[#8f6f59]">{member.handle}</p>
+                          <p className="truncate font-semibold text-[#1d160f]">{getUserIdentityLabel(member)}</p>
+                          <p className="truncate text-sm text-[#8f6f59]">{getUserIdentityMeta(member)}</p>
                         </div>
                       </button>
                       {member.id !== currentUser.id ? (
@@ -5138,8 +5271,8 @@ function MobileProfileCollectionScreen({
               <button key={user.id} className="flex w-full items-center gap-3 rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 text-left shadow-[0_20px_40px_rgba(52,34,22,0.08)]" onClick={() => onOpenProfileUser(user.id)} type="button">
                 <AvatarChip user={user} />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate font-semibold text-[#1d160f]">{user.name}</p>
-                  <p className="text-sm text-[#8f6f59]">{user.handle}</p>
+                  <p className="truncate font-semibold text-[#1d160f]">{getUserIdentityLabel(user)}</p>
+                  <p className="text-sm text-[#8f6f59]">{getUserIdentityMeta(user)}</p>
                 </div>
               </button>
             ))
@@ -5151,8 +5284,8 @@ function MobileProfileCollectionScreen({
                 <button key={chat.id} className="flex w-full items-center gap-3 rounded-[28px] border border-[#eadfd3] bg-white/92 p-4 text-left shadow-[0_20px_40px_rgba(52,34,22,0.08)]" onClick={() => onOpenChat(chat.id)} type="button">
                   <AvatarChip user={partner} />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate font-semibold text-[#1d160f]">{partner.name}</p>
-                    <p className="text-sm text-[#8f6f59]">{partner.handle}</p>
+                    <p className="truncate font-semibold text-[#1d160f]">{getUserIdentityLabel(partner)}</p>
+                    <p className="text-sm text-[#8f6f59]">{getUserIdentityMeta(partner)}</p>
                   </div>
                 </button>
               );
@@ -5202,13 +5335,13 @@ function MobileUserProfileScreen({
       <div className="px-3">
         <section className="-mt-10 rounded-[30px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
           <div className="flex items-end gap-3">
-            <div className="h-20 w-20 overflow-hidden rounded-[26px] border-4 border-[#f6efe7] bg-white">
+            <div className="h-20 w-20 overflow-hidden rounded-full border-4 border-[#f6efe7] bg-white">
               <img alt={user.name} className="h-full w-full object-cover" src={user.avatar} />
             </div>
             <div className="min-w-0 flex-1">
-              <h1 className="text-2xl font-black tracking-tight text-[#1d160f]">{user.name}</h1>
-              <p className="text-sm text-[#8f6f59]">{user.handle}</p>
-              <p className="mt-1 text-sm text-[#5f4b3f]">{user.title}</p>
+              <h1 className="text-2xl font-black tracking-tight text-[#1d160f]">{getUserIdentityLabel(user)}</h1>
+              <p className="text-sm text-[#8f6f59]">{user.title}</p>
+              <p className="mt-1 text-sm text-[#5f4b3f]">{user.city}</p>
             </div>
           </div>
           <p className="mt-4 text-sm leading-6 text-[#5f4b3f]">{user.bio}</p>
@@ -5809,7 +5942,7 @@ function MobileCameraComposerScreen({
                     }
                     type="button"
                   >
-                    {user.name} · {user.handle}
+                    {getUserIdentityLabel(user)} - {getUserIdentityMeta(user)}
                   </button>
                 );
               })}
@@ -6116,12 +6249,14 @@ function DesktopNavigation({
 
 function MobileNavigation({
   activeTab,
+  currentUser,
   hidden,
   onChange,
   onOpenCamera,
   unreadChatThreadCount
 }: {
   activeTab: AppTab;
+  currentUser: PlatformUser;
   hidden?: boolean;
   onChange: (tab: AppTab) => void;
   onOpenCamera: () => void;
@@ -6207,7 +6342,17 @@ function MobileNavigation({
                       active ? "bg-[#fff0e8]" : "bg-transparent"
                     }`}
                   >
-                    {item.icon}
+                    {item.id === "profile" ? (
+                      <div className="h-8 w-8 overflow-hidden rounded-full border border-[#eadfd3] bg-[#f5e4d6]">
+                        <img
+                          alt={getUserIdentityLabel(currentUser)}
+                          className="h-full w-full object-cover"
+                          src={currentUser.avatar}
+                        />
+                      </div>
+                    ) : (
+                      item.icon
+                    )}
                   </span>
                   {item.id === "inbox" && unreadChatThreadCount > 0 ? (
                     <span className="absolute -right-1 top-0 inline-flex min-w-5 items-center justify-center rounded-full bg-[#ff6b57] px-1.5 py-1 text-[10px] font-bold text-white">
@@ -6243,12 +6388,12 @@ function SummaryBanner({
     <section className="mb-5 overflow-hidden rounded-[34px] border border-[#eadfd3] bg-white/88 p-4 shadow-[0_26px_64px_rgba(52,34,22,0.08)] md:p-5">
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_0.8fr]">
         <div className="flex flex-wrap items-center gap-4">
-          <div className="relative h-20 w-20 overflow-hidden rounded-[26px] border border-white/80 bg-[#f4e3d8] shadow-[0_14px_24px_rgba(52,34,22,0.08)]">
-            <img alt={currentUser.name} className="h-full w-full object-cover" src={currentUser.avatar} />
-          </div>
+            <div className="relative h-20 w-20 overflow-hidden rounded-full border border-white/80 bg-[#f4e3d8] shadow-[0_14px_24px_rgba(52,34,22,0.08)]">
+              <img alt={currentUser.name} className="h-full w-full object-cover" src={currentUser.avatar} />
+            </div>
           <div className="max-w-2xl">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-2xl font-black tracking-tight md:text-[2rem]">{currentUser.name}</h2>
+              <h2 className="text-2xl font-black tracking-tight md:text-[2rem]">{getUserIdentityLabel(currentUser)}</h2>
               {currentUser.verified ? (
                 <span className="inline-flex items-center gap-1 rounded-full border border-[#e7dacd] bg-[#fff7f2] px-3 py-1 text-xs font-semibold text-[#c86730]">
                   <BadgeCheck className="h-3.5 w-3.5" />
@@ -6308,7 +6453,7 @@ function SocialHomeSection({
               </p>
             </div>
             <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-2 text-sm text-[#6d5749]">
-              Hola, {currentUser.name.split(" ")[0]}
+              Hola, {getUserIdentityLabel(currentUser)}
             </div>
           </div>
 
@@ -6372,7 +6517,7 @@ function SocialHomeSection({
                         </p>
                         <h3 className="mt-1 text-lg font-bold text-[#1d160f]">{event.title}</h3>
                         <p className="mt-2 text-sm text-[#5f4b3f]">
-                          {sender.name} te ha invitado personalmente a este evento.
+                          {getUserIdentityLabel(sender)} te ha invitado personalmente a este evento.
                         </p>
                         <p className="mt-2 text-xs text-[#8f6f59]">
                           {formatEventDateRange(event)} - {event.venue}, {event.city}
@@ -6476,9 +6621,9 @@ function StoriesRail({
         const isUserStory = story.authorType === "user";
         const user = isUserStory ? getUserById(state, story.authorId) : null;
         const event = isUserStory ? null : getEventById(state, story.authorId);
-        const label = isUserStory ? user?.name ?? "Perfil" : event?.title ?? "Evento";
+        const label = isUserStory ? getUserIdentityLabel(user ?? { handle: "", name: "Perfil" }) : event?.title ?? "Evento";
         const subtitle = isUserStory
-          ? user?.handle ?? "Story"
+          ? getUserIdentityMeta(user ?? { city: "", title: "Story" })
           : `${formatRelativeTime(story.createdAt)} - evento`;
         const isCurrentUser = isUserStory && story.authorId === currentUserId;
         const canOpenEvent = Boolean(event && onOpenEvent);
@@ -6499,9 +6644,13 @@ function StoriesRail({
             }}
             type="button"
           >
-            <div className="rounded-[24px] bg-[linear-gradient(135deg,#ff6b57,#f08a24)] p-[2px]">
-              <div className="h-[92px] overflow-hidden rounded-[22px] border border-white/50 bg-[#f7e7dc]">
-                <img alt={label} className="h-full w-full object-cover" src={story.imageUrl} />
+            <div className="mx-auto w-fit rounded-full bg-[linear-gradient(135deg,#ff6b57,#f08a24)] p-[2px]">
+              <div className="h-[76px] w-[76px] overflow-hidden rounded-full border-2 border-white bg-[#f7e7dc]">
+                <img
+                  alt={label}
+                  className="h-full w-full object-cover"
+                  src={getStoryPreviewImage(story, state)}
+                />
               </div>
             </div>
             <p className="mt-3 truncate text-sm font-semibold text-[#1d160f]">
@@ -6579,7 +6728,7 @@ function SocialPostCard({
       <div className="flex items-center gap-3">
         <AvatarChip user={author} />
         <div className="min-w-0 flex-1">
-          <p className="font-semibold text-[#1d160f]">{author.name}</p>
+          <p className="font-semibold text-[#1d160f]">{getUserIdentityLabel(author)}</p>
           <p className="text-sm text-[#6d5749]">{formatRelativeTime(post.createdAt)}</p>
         </div>
         <div className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-[#fffaf6] px-3 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[#8f6f59]">
@@ -6841,7 +6990,7 @@ function EventWorkspace({
             </div>
             <div className="rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-4">
               <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">Creador</p>
-              <p className="mt-2 text-sm font-semibold text-[#1d160f]">{host.name}</p>
+              <p className="mt-2 text-sm font-semibold text-[#1d160f]">{getUserIdentityLabel(host)}</p>
             </div>
           </div>
         </SectionCard>
@@ -6939,7 +7088,7 @@ function EventWorkspace({
               </button>
 
               <div className="rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm text-white/72">
-                Crea {host.name}
+                Crea {getUserIdentityLabel(host)}
               </div>
             </div>
           </div>
@@ -6983,7 +7132,7 @@ function EventWorkspace({
                           className="rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4"
                         >
                           <p className="text-sm leading-6 text-[#5f4b3f]">
-                            {sender.name} te ha invitado personalmente. Si aceptas, entras
+                            {getUserIdentityLabel(sender)} te ha invitado personalmente. Si aceptas, entras
                             directamente en el grupo del evento.
                           </p>
                           <div className="mt-4 flex flex-wrap gap-2">
@@ -7261,8 +7410,8 @@ function EventWorkspace({
                             <div className="flex items-center gap-3">
                               <AvatarChip user={friend} />
                               <div>
-                                <p className="font-semibold text-[#1d160f]">{friend.name}</p>
-                                <p className="text-sm text-[#6d5749]">{friend.title}</p>
+                                <p className="font-semibold text-[#1d160f]">{getUserIdentityLabel(friend)}</p>
+                                <p className="text-sm text-[#6d5749]">{getUserIdentityMeta(friend)}</p>
                               </div>
                             </div>
                             <button
@@ -7315,17 +7464,22 @@ function EventWorkspace({
 
                     const author = getUserById(state, message.authorId);
                     const mine = message.authorId === currentUser.id;
+                    const authorLabel = getUserIdentityLabel(author);
 
                     if (mine) {
                       return (
-                        <div key={message.id} className="flex justify-end">
+                        <div key={message.id} className="flex items-end justify-end gap-3">
                           <div className="max-w-[560px] rounded-[24px] bg-[#1d160f] px-4 py-3 text-sm text-white shadow-[0_18px_34px_rgba(29,22,15,0.14)]">
+                            <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-white/68">
+                              {authorLabel}
+                            </p>
                             {parsed.story ? <StoryMessageCard dark state={state} storyAttachment={parsed.story} /> : null}
                             {parsed.body ? <p>{parsed.body}</p> : null}
                             <p className="mt-2 text-[11px] text-white/64">
                               {formatTime(message.createdAt)}
                             </p>
                           </div>
+                          <AvatarChip user={author} />
                         </div>
                       );
                     }
@@ -7335,7 +7489,7 @@ function EventWorkspace({
                         <AvatarChip user={author} />
                         <div className="max-w-[620px] rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-sm text-[#5f4b3f]">
                           <div className="flex items-center justify-between gap-2">
-                            <p className="truncate font-semibold text-[#1d160f]">{author.name}</p>
+                            <p className="truncate font-semibold text-[#1d160f]">{authorLabel}</p>
                             <span className="text-xs text-[#8f6f59]">{formatTime(message.createdAt)}</span>
                           </div>
                           {parsed.story ? <StoryMessageCard state={state} storyAttachment={parsed.story} /> : null}
@@ -7421,7 +7575,7 @@ function EventWorkspace({
                               >
                                 <div className="flex items-center justify-between gap-3">
                                   <div>
-                                    <p className="font-semibold text-[#1d160f]">{applicant.name}</p>
+                                    <p className="font-semibold text-[#1d160f]">{getUserIdentityLabel(applicant)}</p>
                                     <p className="text-xs text-[#8f6f59]">
                                       {formatRelativeTime(membership.requestedAt)}
                                     </p>
@@ -7468,7 +7622,7 @@ function EventWorkspace({
                           <AvatarChip user={member} />
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2">
-                              <p className="truncate font-semibold text-[#1d160f]">{member.name}</p>
+                              <p className="truncate font-semibold text-[#1d160f]">{getUserIdentityLabel(member)}</p>
                               {member.id === event.hostId ? (
                                 <span className="rounded-full bg-[#1d160f] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-white">
                                   Host
@@ -7493,13 +7647,13 @@ function EventWorkspace({
                   {attendee ? (
                     <div>
                       <div className="flex flex-wrap items-center gap-4">
-                        <div className="h-20 w-20 overflow-hidden rounded-[26px] border border-[#eadfd3] bg-[#f5e4d6]">
+                        <div className="h-20 w-20 overflow-hidden rounded-full border border-[#eadfd3] bg-[#f5e4d6]">
                           <img alt={attendee.name} className="h-full w-full object-cover" src={attendee.avatar} />
                         </div>
                         <div>
                           <div className="flex flex-wrap items-center gap-2">
                             <h3 className="text-2xl font-black tracking-tight text-[#1d160f]">
-                              {attendee.name}
+                              {getUserIdentityLabel(attendee)}
                             </h3>
                             {attendee.id === event.hostId ? (
                               <span className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-3 py-1 text-xs font-semibold text-[#6d5749]">
@@ -7562,7 +7716,7 @@ function EventWorkspace({
                             <textarea
                               className="w-full resize-none rounded-[18px] border border-[#e7d8cb] bg-white px-4 py-3 text-sm text-[#1d160f] outline-none focus:border-[#ff8d66] focus:ring-2 focus:ring-[#ffd4c5]"
                               onChange={(eventValue) => onChangeRequestDraft(attendee.id, eventValue.target.value)}
-                              placeholder={`Hola ${attendee.name.split(" ")[0]}, me encantaria conocerte mejor antes del evento.`}
+                              placeholder={`Hola ${getUserIdentityLabel(attendee)}, me encantaria conocerte mejor antes del evento.`}
                               rows={4}
                               value={requestDraft}
                             />
@@ -7591,7 +7745,7 @@ function EventWorkspace({
                         {connectionState?.kind === "incoming-request" ? (
                           <div className="mt-3 rounded-[18px] border border-[#eadfd3] bg-white px-4 py-4 text-sm text-[#5f4b3f]">
                             <p className="font-semibold text-[#1d160f]">
-                              {getUserById(state, connectionState.request.fromUserId).name} quiere hablar
+                              {getUserIdentityLabel(getUserById(state, connectionState.request.fromUserId))} quiere hablar
                               contigo
                             </p>
                             <p className="mt-2">{connectionState.request.message}</p>
@@ -7693,8 +7847,8 @@ function EventWorkspace({
                             >
                               <AvatarChip user={member} />
                               <div className="min-w-0 flex-1">
-                                <p className="truncate font-semibold text-[#1d160f]">{member.name}</p>
-                                <p className="truncate text-sm text-[#6d5749]">{member.title}</p>
+                              <p className="truncate font-semibold text-[#1d160f]">{getUserIdentityLabel(member)}</p>
+                              <p className="truncate text-sm text-[#6d5749]">{getUserIdentityMeta(member)}</p>
                               </div>
                               <ChevronRight className="h-4 w-4 text-[#8f6f59]" />
                             </button>
@@ -7709,12 +7863,12 @@ function EventWorkspace({
                   {attendee ? (
                     <div>
                       <div className="flex flex-wrap items-center gap-4">
-                        <div className="h-20 w-20 overflow-hidden rounded-[26px] border border-[#eadfd3] bg-[#f5e4d6]">
+                        <div className="h-20 w-20 overflow-hidden rounded-full border border-[#eadfd3] bg-[#f5e4d6]">
                           <img alt={attendee.name} className="h-full w-full object-cover" src={attendee.avatar} />
                         </div>
                         <div>
                           <h3 className="text-2xl font-black tracking-tight text-[#1d160f]">
-                            {attendee.name}
+                            {getUserIdentityLabel(attendee)}
                           </h3>
                           <p className="mt-1 text-sm font-semibold text-[#8f6f59]">{attendee.title}</p>
                           <p className="mt-2 text-sm text-[#5f4b3f]">
@@ -7799,7 +7953,7 @@ function EventWorkspace({
                 <div className="mt-3 flex items-center gap-3">
                   <AvatarChip user={host} />
                   <div>
-                    <p className="font-semibold text-[#1d160f]">{host.name}</p>
+                    <p className="font-semibold text-[#1d160f]">{getUserIdentityLabel(host)}</p>
                     <p className="text-sm text-[#6d5749]">
                       {host.title}
                       {host.company ? ` · ${host.company}` : ""}
@@ -7968,7 +8122,7 @@ function InboxSection({
                       <div className="flex items-start gap-3">
                         <AvatarChip user={sender} />
                         <div className="min-w-0 flex-1">
-                          <p className="font-semibold text-[#1d160f]">{sender.name}</p>
+                          <p className="font-semibold text-[#1d160f]">{getUserIdentityLabel(sender)}</p>
                           <p className="text-sm text-[#8f6f59]">{event?.title}</p>
                           <p className="mt-2 text-sm text-[#5f4b3f]">{request.message}</p>
                           <div className="mt-3 flex flex-wrap gap-2">
@@ -8018,8 +8172,8 @@ function InboxSection({
                           <div className="flex items-center gap-3">
                             <AvatarChip user={friend} />
                             <div>
-                              <p className="font-semibold text-[#1d160f]">{friend.name}</p>
-                              <p className="text-sm text-[#6d5749]">{friend.handle}</p>
+                              <p className="font-semibold text-[#1d160f]">{getUserIdentityLabel(friend)}</p>
+                              <p className="text-sm text-[#6d5749]">{getUserIdentityMeta(friend)}</p>
                             </div>
                           </div>
                           <button
@@ -8061,7 +8215,7 @@ function InboxSection({
                       <AvatarChip user={partner} />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center justify-between gap-2">
-                          <p className="truncate font-semibold text-[#1d160f]">{partner.name}</p>
+                          <p className="truncate font-semibold text-[#1d160f]">{getUserIdentityLabel(partner)}</p>
                           <span className="text-xs text-[#8f6f59]">
                             {lastMessage ? formatTime(lastMessage.createdAt) : ""}
                           </span>
@@ -8085,8 +8239,8 @@ function InboxSection({
                 <div className="flex items-center gap-3">
                   <AvatarChip user={selectedPartner} />
                   <div>
-                    <p className="font-semibold text-[#1d160f]">{selectedPartner.name}</p>
-                    <p className="text-sm text-[#6d5749]">{selectedPartner.title}</p>
+                    <p className="font-semibold text-[#1d160f]">{getUserIdentityLabel(selectedPartner)}</p>
+                    <p className="text-sm text-[#6d5749]">{getUserIdentityMeta(selectedPartner)}</p>
                   </div>
                 </div>
                 <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-2 text-sm text-[#6d5749]">
@@ -8123,7 +8277,7 @@ function InboxSection({
                 <textarea
                   className="w-full resize-none rounded-[18px] border border-[#e7d8cb] bg-white px-4 py-3 text-sm text-[#1d160f] outline-none focus:border-[#ff8d66] focus:ring-2 focus:ring-[#ffd4c5]"
                   onChange={(eventValue) => onChangePrivateDraft(eventValue.target.value)}
-                  placeholder={`Escribe a ${selectedPartner.name.split(" ")[0]}...`}
+                  placeholder={`Escribe a ${getUserIdentityLabel(selectedPartner)}...`}
                   rows={3}
                   value={privateDraft}
                 />
@@ -8203,12 +8357,12 @@ function ProfileSection({
         </div>
         <div className="relative px-5 pb-5">
           <div className="-mt-12 flex flex-wrap items-end gap-4">
-            <div className="h-24 w-24 overflow-hidden rounded-[30px] border-4 border-[#f6efe7] bg-white shadow-[0_16px_30px_rgba(29,22,15,0.12)]">
+            <div className="h-24 w-24 overflow-hidden rounded-full border-4 border-[#f6efe7] bg-white shadow-[0_16px_30px_rgba(29,22,15,0.12)]">
               <img alt={currentUser.name} className="h-full w-full object-cover" src={currentUser.avatar} />
             </div>
             <div className="pb-2">
               <div className="flex flex-wrap items-center gap-2">
-                <h1 className="text-3xl font-black tracking-tight">{currentUser.name}</h1>
+                <h1 className="text-3xl font-black tracking-tight">{getUserIdentityLabel(currentUser)}</h1>
                 {currentUser.verified ? (
                   <span className="rounded-full bg-[#1d160f] px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-white">
                     Verificado
@@ -8431,8 +8585,8 @@ function ProfileSection({
                   <div className="flex items-center gap-3">
                     <AvatarChip user={friend} />
                     <div>
-                      <p className="font-semibold text-[#1d160f]">{friend.name}</p>
-                      <p className="text-sm text-[#6d5749]">{friend.title}</p>
+                      <p className="font-semibold text-[#1d160f]">{getUserIdentityLabel(friend)}</p>
+                      <p className="text-sm text-[#6d5749]">{getUserIdentityMeta(friend)}</p>
                     </div>
                   </div>
                   <button
@@ -8465,8 +8619,8 @@ function ProfileSection({
                   <div className="flex items-center gap-3">
                     <AvatarChip user={user} />
                     <div>
-                      <p className="font-semibold text-[#1d160f]">{user.name}</p>
-                      <p className="text-sm text-[#6d5749]">{user.title}</p>
+                      <p className="font-semibold text-[#1d160f]">{getUserIdentityLabel(user)}</p>
+                      <p className="text-sm text-[#6d5749]">{getUserIdentityMeta(user)}</p>
                     </div>
                   </div>
                   <button
@@ -8506,7 +8660,7 @@ function ProfileSection({
                       >
                         <p className="font-semibold text-[#1d160f]">{inviteEvent.title}</p>
                         <p className="mt-1 text-sm text-[#6d5749]">
-                          Invitacion de {sender.name}
+                          Invitacion de {getUserIdentityLabel(sender)}
                         </p>
                       </div>
                     );
@@ -8689,12 +8843,12 @@ function Pill({ children, tone }: { children: ReactNode; tone: "dark" | "light" 
 function AvatarChip({ user }: { user: PlatformUser }) {
   return (
     <div className="flex items-center gap-3">
-      <div className="h-11 w-11 overflow-hidden rounded-2xl border border-[#eadfd3] bg-[#f5e4d6]">
+      <div className="h-11 w-11 overflow-hidden rounded-full border border-[#eadfd3] bg-[#f5e4d6]">
         {user.avatar ? (
-          <img alt={user.name} className="h-full w-full object-cover" src={user.avatar} />
+          <img alt={getUserIdentityLabel(user)} className="h-full w-full object-cover" src={user.avatar} />
         ) : (
           <div className="flex h-full w-full items-center justify-center text-sm font-black text-[#1d160f]">
-            {getInitials(user.name)}
+            {getInitials(getUserIdentityLabel(user).replace(/^@/, ""))}
           </div>
         )}
       </div>

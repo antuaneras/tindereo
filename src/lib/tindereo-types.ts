@@ -250,6 +250,7 @@ export interface RegisterAccountInput extends RegisterUserInput {
 
 export type PlatformAction =
   | { type: "register-user"; input: RegisterUserInput }
+  | { type: "update-user-avatar"; actorId: string; imageUrl: string }
   | { type: "create-event"; actorId: string; input: CreateEventInput }
   | { type: "request-event-access"; actorId: string; eventId: string }
   | { type: "respond-event-access"; actorId: string; membershipId: string; accept: boolean }
