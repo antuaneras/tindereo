@@ -5,6 +5,7 @@ import type {
   MobileConversationDetail,
   MobileConversationSummary,
   MobileEventDetail,
+  MobileEventTicket,
   MobilePostComment,
   MobileProfile,
   MobileProfileDetail,
@@ -124,6 +125,12 @@ export async function fetchCheckInToken(slug: string) {
   );
 }
 
+export async function fetchEventTicket(slug: string) {
+  return readJson<MobileEventTicket>(
+    await fetch(`/api/mobile/events/${slug}/ticket`, { cache: "no-store" })
+  );
+}
+
 export async function submitCheckInToken(token: string) {
   return readJson<{ eventId: string }>(
     await fetch("/api/mobile/checkin", {
@@ -183,6 +190,16 @@ export async function createConversation(input: CreateConversationInput) {
 export async function fetchConversation(id: string) {
   return readJson<MobileConversationDetail>(
     await fetch(`/api/mobile/conversations/${id}`, { cache: "no-store" })
+  );
+}
+
+export async function updateConversationCover(id: string, coverImage: string | null) {
+  return readJson<{ ok: boolean; avatarUrl: string | null }>(
+    await fetch(`/api/mobile/conversations/${id}/cover`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ coverImage })
+    })
   );
 }
 

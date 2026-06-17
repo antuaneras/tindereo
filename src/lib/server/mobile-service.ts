@@ -10,6 +10,7 @@ import type {
   MobileEventCohost,
   MobileEventDetail,
   MobileEventMember,
+  MobileEventTicket,
   MobileFaqItem,
   MobileMediaAsset,
   MobileMessage,
@@ -1007,6 +1008,54 @@ export async function updateMobileProfile(viewerId: string, input: UpdateMobileP
   return mapProfile(row);
 }
 
+export async function updateConversationCover(viewerId: string, conversationId: string, coverImage: string | null) {
+  const [conversationRows, memberRows] = await Promise.all([
+    selectRows<ConversationRow>(TABLES.conversations, {
+      filters: [{ column: "id", op: "eq", value: conversationId }],
+      limit: 1
+    }),
+    selectRows<ConversationMemberRow>(TABLES.conversationMembers, {
+      filters: [{ column: "conversation_id", op: "eq", value: conversationId }]
+    })
+  ]);
+
+  const conversation = conversationRows[0];
+  if (!conversation) {
+    throw new Error("Este grupo ya no existe.");
+  }
+
+  if (conversation.kind !== "group") {
+    throw new Error("Solo los grupos pueden cambiar su icono.");
+  }
+
+  if (!memberRows.some((row) => row.user_id === viewerId)) {
+    throw new Error("No puedes cambiar el icono de este grupo.");
+  }
+
+  const rows = await patchRows<ConversationRow>(
+    TABLES.conversations,
+    [{ column: "id", op: "eq", value: conversationId }],
+    {
+      cover_image: coverImage,
+      updated_at: new Date().toISOString()
+    }
+  );
+
+  const updatedConversation = rows[0];
+  if (!updatedConversation) {
+    throw new Error("No se pudo actualizar el icono del grupo.");
+  }
+
+  for (const member of memberRows) {
+    publishMobileRealtimeEvent({ type: "conversation", conversationId, viewerId: member.user_id });
+  }
+
+  return {
+    avatarUrl: resolveMediaUrl(updatedConversation.cover_image),
+    ok: true
+  };
+}
+
 async function createConversationBase(input: {
   id: string;
   kind: MobileConversationKind;
@@ -1588,10 +1637,23 @@ function getCheckInSecret() {
   return process.env.MOBILE_CHECKIN_SECRET ?? process.env.SUPABASE_SERVICE_ROLE_KEY ?? "mobile-checkin-secret";
 }
 
-export function createCheckInToken(eventId: string, issuedByUserId: string) {
+export function createCheckInToken(eventId: string, issuedByUserId: string, expiresAtMs: number) {
   const issuedAt = Date.now();
-  const expiresAt = issuedAt + 1000 * 60 * 30;
+  const expiresAt = Math.max(issuedAt + 1000 * 60 * 30, expiresAtMs);
   const payload = `${eventId}.${issuedByUserId}.${issuedAt}.${expiresAt}`;
+  const signature = createHmac("sha256", getCheckInSecret()).update(payload).digest("hex");
+  return `${payload}.${signature}`;
+}
+
+export function createEventAccessTicketToken(
+  eventId: string,
+  viewerId: string,
+  memberReference: string,
+  expiresAtMs: number
+) {
+  const issuedAt = Date.now();
+  const expiresAt = Math.max(issuedAt + 1000 * 60 * 30, expiresAtMs);
+  const payload = `ticket.${eventId}.${viewerId}.${memberReference}.${issuedAt}.${expiresAt}`;
   const signature = createHmac("sha256", getCheckInSecret()).update(payload).digest("hex");
   return `${payload}.${signature}`;
 }
@@ -1626,14 +1688,91 @@ export async function getEventCheckInToken(viewerId: string, eventId: string) {
     throw new Error("No puedes generar el QR.");
   }
 
-  const token = createCheckInToken(eventId, viewerId);
+  const eventRows = await selectRows<EventRow>(TABLES.events, {
+    filters: [{ column: "id", op: "eq", value: eventId }],
+    limit: 1
+  });
+  const eventRow = eventRows[0];
+  if (!eventRow) {
+    throw new Error("Este evento ya no existe.");
+  }
+
+  const fallbackEndAt = new Date(eventRow.starts_at).getTime() + 1000 * 60 * 60 * 6;
+  const expiresAtMs = Number.isFinite(new Date(eventRow.ends_at).getTime())
+    ? new Date(eventRow.ends_at).getTime()
+    : fallbackEndAt;
+
+  const token = createCheckInToken(eventId, viewerId, expiresAtMs);
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "";
   const checkInUrl = `${appUrl}/evento/${eventId}?checkin=${encodeURIComponent(token)}`;
   return {
     token,
-    expiresAt: new Date(Date.now() + 1000 * 60 * 30).toISOString(),
+    expiresAt: new Date(Math.max(Date.now() + 1000 * 60 * 30, expiresAtMs)).toISOString(),
     url: checkInUrl,
     qrImageUrl: `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(checkInUrl)}`
+  };
+}
+
+export async function getEventAccessTicket(viewerId: string, eventId: string): Promise<MobileEventTicket> {
+  const [eventRows, membershipRows, cohostRows, viewerProfiles] = await Promise.all([
+    selectRows<EventRow>(TABLES.events, {
+      filters: [{ column: "id", op: "eq", value: eventId }],
+      limit: 1
+    }),
+    selectRows<EventMemberRow>(TABLES.eventMembers, {
+      filters: [
+        { column: "event_id", op: "eq", value: eventId },
+        { column: "user_id", op: "eq", value: viewerId }
+      ],
+      limit: 1
+    }),
+    selectRows<EventCohostRow>(TABLES.eventCohosts, {
+      filters: [
+        { column: "event_id", op: "eq", value: eventId },
+        { column: "user_id", op: "eq", value: viewerId }
+      ],
+      limit: 1
+    }),
+    loadProfiles([viewerId])
+  ]);
+
+  const eventRow = eventRows[0];
+  if (!eventRow) {
+    throw new Error("Este evento ya no existe.");
+  }
+
+  const membership = membershipRows[0] ?? null;
+  const isStaff = eventRow.host_id === viewerId || Boolean(cohostRows[0]);
+  const isApprovedMember = membership?.status === "approved";
+
+  if (!isStaff && !isApprovedMember) {
+    throw new Error("Tu entrada solo aparece cuando ya estas aprobado en el evento.");
+  }
+
+  const fallbackEndAt = new Date(eventRow.starts_at).getTime() + 1000 * 60 * 60 * 6;
+  const expiresAtMs = Number.isFinite(new Date(eventRow.ends_at).getTime())
+    ? new Date(eventRow.ends_at).getTime()
+    : fallbackEndAt;
+  const token = createEventAccessTicketToken(
+    eventId,
+    viewerId,
+    membership?.id ?? (isStaff ? `staff-${viewerId}` : viewerId),
+    expiresAtMs
+  );
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "";
+  const shareUrl = `${appUrl}/evento/${eventRow.slug}`;
+  const qrTarget = `${shareUrl}?entry=${encodeURIComponent(token)}`;
+  const viewerProfile = viewerProfiles[0] ?? null;
+  const holderLabel = viewerProfile?.handle ? `@${viewerProfile.handle}` : "Mi entrada";
+
+  return {
+    token,
+    ticketCode: `TDR-${eventRow.slug.slice(0, 3).toUpperCase()}-${token.slice(-6).toUpperCase()}`,
+    qrImageUrl: `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(qrTarget)}`,
+    shareUrl,
+    validUntil: new Date(Math.max(Date.now() + 1000 * 60 * 30, expiresAtMs)).toISOString(),
+    holderLabel,
+    roleLabel: isStaff ? "Staff" : "Entrada confirmada"
   };
 }
 

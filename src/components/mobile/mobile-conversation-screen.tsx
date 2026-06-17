@@ -3,7 +3,14 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, ImagePlus, Info, MessageSquareReply, Send, Shield, Users, X } from "lucide-react";
-import { fetchConversation, fetchEventDetail, markConversationAsRead, sendConversationMessage, subscribeToMobileStream } from "@/lib/mobile-api";
+import {
+  fetchConversation,
+  fetchEventDetail,
+  markConversationAsRead,
+  sendConversationMessage,
+  subscribeToMobileStream,
+  updateConversationCover
+} from "@/lib/mobile-api";
 import { formatMobileDateTime, formatMobileTime } from "@/lib/mobile-shared";
 import { uploadManagedMediaFromClient } from "@/lib/tindereo-api";
 import type { MobileConversationDetail, MobileEventDetail, MobileMessage, MobileProfile } from "@/lib/mobile-types";
@@ -28,6 +35,27 @@ function ProfileDot({ profile }: { profile: MobileProfile | undefined }) {
   );
 }
 
+function ConversationAvatar({
+  src,
+  label
+}: {
+  src: string | null;
+  label: string;
+}) {
+  if (src) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img src={src} alt={label} className="h-11 w-11 rounded-full object-cover shadow-sm" />
+    );
+  }
+
+  return (
+    <span className="flex h-11 w-11 items-center justify-center rounded-full bg-[var(--bg-soft)] text-sm font-semibold text-[var(--text-main)] shadow-sm">
+      {label.slice(0, 2).toUpperCase()}
+    </span>
+  );
+}
+
 type ConversationScreenProps = {
   initialConversation: MobileConversationDetail;
   initialEvent?: MobileEventDetail | null;
@@ -45,6 +73,7 @@ export function MobileConversationScreen({
   const [infoOpen, setInfoOpen] = useState(false);
   const [threadRoot, setThreadRoot] = useState<MobileMessage | null>(null);
   const [sending, setSending] = useState(false);
+  const [updatingConversationAvatar, setUpdatingConversationAvatar] = useState(false);
   const participantsById = useMemo(
     () => new Map(conversation.participants.map((participant) => [participant.id, participant])),
     [conversation.participants]
@@ -62,6 +91,7 @@ export function MobileConversationScreen({
     [messages, threadRoot]
   );
   const viewer = participantsById.get(conversation.viewerId);
+  const conversationAvatarLabel = conversation.summary.title.replace(/^@/, "") || "Chat";
   const canWrite =
     !eventDetail ||
     eventDetail.event.chatMode === "open" ||
@@ -157,6 +187,44 @@ export function MobileConversationScreen({
           >
             <ArrowLeft className="h-5 w-5" />
           </Link>
+          {conversation.summary.kind === "group" ? (
+            <label className="relative block cursor-pointer">
+              <ConversationAvatar src={conversation.summary.avatarUrl} label={conversationAvatarLabel} />
+              <span className="absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--coral)] text-[10px] font-bold text-white shadow-sm">
+                +
+              </span>
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                disabled={updatingConversationAvatar}
+                onChange={async (event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) {
+                    return;
+                  }
+
+                  setUpdatingConversationAvatar(true);
+                  try {
+                    const upload = await uploadManagedMediaFromClient(file, "avatar");
+                    const next = await updateConversationCover(conversation.summary.id, upload.assetRef);
+                    setConversation((current) => ({
+                      ...current,
+                      summary: {
+                        ...current.summary,
+                        avatarUrl: next.avatarUrl
+                      }
+                    }));
+                  } finally {
+                    setUpdatingConversationAvatar(false);
+                    event.currentTarget.value = "";
+                  }
+                }}
+              />
+            </label>
+          ) : (
+            <ConversationAvatar src={conversation.summary.avatarUrl} label={conversationAvatarLabel} />
+          )}
           <div className="min-w-0 flex-1">
             <button type="button" onClick={() => setInfoOpen(true)} className="w-full text-left">
               <div className="truncate text-lg font-black tracking-[-0.03em]">{conversation.summary.title}</div>
@@ -184,7 +252,7 @@ export function MobileConversationScreen({
               >
                 {!mine ? <ProfileDot profile={author} /> : null}
                 <div className={cn("max-w-[78%]", mine && "items-end")}>
-                  {!mine && author ? (
+                  {!mine && author && conversation.summary.kind !== "direct" ? (
                     <Link href={`/perfil/${author.handle}`} className="mb-1 block text-xs font-semibold text-[var(--coral)]">
                       @{author.handle}
                     </Link>
@@ -229,7 +297,7 @@ export function MobileConversationScreen({
           })}
         </div>
 
-        <div className="fixed bottom-0 left-1/2 z-30 flex w-full max-w-[480px] -translate-x-1/2 items-end gap-3 border-t border-[var(--line-soft)] bg-[rgba(246,239,231,0.96)] px-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-3 backdrop-blur-xl">
+        <div className="fixed bottom-0 left-1/2 z-30 flex w-full max-w-[480px] -translate-x-1/2 items-end gap-2 border-t border-[var(--line-soft)] bg-[rgba(246,239,231,0.96)] px-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-3 backdrop-blur-xl">
           <label className="flex h-12 w-12 shrink-0 cursor-pointer items-center justify-center rounded-full border border-[var(--line-soft)] bg-white">
             <ImagePlus className="h-5 w-5" />
             <input
@@ -245,7 +313,7 @@ export function MobileConversationScreen({
               }}
             />
           </label>
-          <div className="flex-1 rounded-[1.6rem] border border-[var(--line-warm)] bg-white px-4 py-3">
+          <div className="min-w-0 flex-1 rounded-[1.6rem] border border-[var(--line-warm)] bg-white px-4 py-3">
             {replyRoot ? (
               <div className="mb-2 flex items-center justify-between rounded-2xl bg-[var(--bg-soft)] px-3 py-2 text-xs text-[var(--text-soft)]">
                 <span className="truncate">
@@ -310,7 +378,8 @@ export function MobileConversationScreen({
                 setSending(false);
               }
             }}
-            className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[var(--text-main)] text-white disabled:opacity-50"
+            className="flex h-12 w-12 shrink-0 self-end items-center justify-center rounded-full bg-[var(--text-main)] text-white disabled:opacity-50"
+            aria-label="Enviar mensaje"
           >
             <Send className="h-5 w-5" />
           </button>

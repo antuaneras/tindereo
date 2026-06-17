@@ -234,6 +234,16 @@ export interface MobileEventDetail {
   posts: MobilePost[];
 }
 
+export interface MobileEventTicket {
+  token: string;
+  ticketCode: string;
+  qrImageUrl: string;
+  shareUrl: string;
+  validUntil: string;
+  holderLabel: string;
+  roleLabel: string;
+}
+
 export interface MobileProfileDetail {
   viewer: MobileProfile;
   profile: MobileProfile;

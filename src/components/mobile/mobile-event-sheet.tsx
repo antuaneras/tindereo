@@ -1,11 +1,11 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Link2, MapPin, QrCode, Shield, Users, X } from "lucide-react";
-import { addEventCohost, fetchCheckInToken, joinEvent, moderateEventMember, setArrivalStatus, setEventChatMode } from "@/lib/mobile-api";
+import { CalendarPlus, Download, Link2, MapPin, QrCode, Share2, Shield, Ticket, Users, X } from "lucide-react";
+import { addEventCohost, fetchCheckInToken, fetchEventTicket, joinEvent, moderateEventMember, setArrivalStatus, setEventChatMode } from "@/lib/mobile-api";
 import { StoryStrip, PostCard } from "@/components/mobile/mobile-feed";
 import { formatMobileDateTime, getArrivalStatusLabel, getMapLink } from "@/lib/mobile-shared";
-import type { MobileConversationDetail, MobileEventDetail, MobileProfile } from "@/lib/mobile-types";
+import type { MobileConversationDetail, MobileEventDetail, MobileEventTicket, MobileProfile } from "@/lib/mobile-types";
 
 function cn(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
@@ -26,6 +26,132 @@ function Avatar({ profile }: { profile: MobileProfile }) {
   );
 }
 
+function escapeIcsText(value: string) {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/\n/g, "\\n")
+    .replace(/,/g, "\\,")
+    .replace(/;/g, "\\;");
+}
+
+function formatIcsDate(value: string) {
+  return new Date(value).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+
+function triggerDownload(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+async function urlToDataUrl(url: string) {
+  const response = await fetch(url);
+  const blob = await response.blob();
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("No pude preparar la imagen."));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function escapeXml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function EventTicketPreview({
+  event,
+  ticket,
+  onClose,
+  onDownload,
+  onCalendar,
+  onShare
+}: {
+  event: MobileEventDetail["event"];
+  ticket: MobileEventTicket;
+  onClose: () => void;
+  onDownload: () => Promise<void>;
+  onCalendar: () => void;
+  onShare: () => Promise<void>;
+}) {
+  return (
+    <div className="fixed inset-0 z-[70] bg-black/65 px-4 py-[calc(1rem+env(safe-area-inset-top))]" onClick={onClose}>
+      <div
+        className="mx-auto flex h-full w-full max-w-[480px] flex-col overflow-hidden rounded-[2rem] bg-[var(--bg-main)] shadow-2xl"
+        onClick={(eventMouse) => eventMouse.stopPropagation()}
+      >
+        <div className="relative min-h-[240px] overflow-hidden bg-[var(--text-main)]">
+          {event.coverImage ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={event.coverImage} alt={event.title} className="h-full w-full object-cover opacity-75" />
+          ) : null}
+          <div className="absolute inset-0 bg-gradient-to-b from-black/15 via-black/25 to-black/80" />
+          <button
+            type="button"
+            onClick={onClose}
+            className="absolute right-4 top-4 flex h-11 w-11 items-center justify-center rounded-full bg-black/30 text-white backdrop-blur"
+          >
+            <X className="h-5 w-5" />
+          </button>
+          <div className="absolute inset-x-0 bottom-0 px-5 pb-5 text-white">
+            <div className="text-xs uppercase tracking-[0.24em] text-white/70">{ticket.roleLabel}</div>
+            <div className="mt-2 text-3xl font-black tracking-[-0.04em]">{event.title}</div>
+            <div className="mt-2 text-sm text-white/80">{formatMobileDateTime(event.startsAt)} · {event.city}</div>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] pt-5">
+          <div className="rounded-[2rem] border border-[var(--line-soft)] bg-white p-5 shadow-sm">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-soft)]">Titular</div>
+                <div className="mt-2 text-lg font-bold">{ticket.holderLabel}</div>
+                <div className="mt-1 text-sm text-[var(--text-soft)]">{event.venue}</div>
+              </div>
+              <div className="rounded-full bg-[rgba(255,107,87,0.1)] px-3 py-2 text-xs font-semibold text-[var(--coral)]">
+                {ticket.ticketCode}
+              </div>
+            </div>
+
+            <div className="mt-5 rounded-[1.8rem] bg-[var(--bg-soft)] p-4">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={ticket.qrImageUrl} alt="QR de entrada" className="mx-auto h-56 w-56 rounded-[1.5rem] bg-white p-3" />
+              <div className="mt-3 text-center text-xs text-[var(--text-soft)]">
+                Valida hasta {formatMobileDateTime(ticket.validUntil)}
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-3 gap-3">
+            <button type="button" onClick={() => void onShare()} className="rounded-[1.4rem] border border-[var(--line-soft)] bg-white px-3 py-4 text-center">
+              <Share2 className="mx-auto h-5 w-5 text-[var(--coral)]" />
+              <div className="mt-2 text-xs font-semibold">Compartir</div>
+            </button>
+            <button type="button" onClick={() => void onDownload()} className="rounded-[1.4rem] border border-[var(--line-soft)] bg-white px-3 py-4 text-center">
+              <Download className="mx-auto h-5 w-5 text-[var(--coral)]" />
+              <div className="mt-2 text-xs font-semibold">Guardar</div>
+            </button>
+            <button type="button" onClick={onCalendar} className="rounded-[1.4rem] border border-[var(--line-soft)] bg-white px-3 py-4 text-center">
+              <CalendarPlus className="mx-auto h-5 w-5 text-[var(--coral)]" />
+              <div className="mt-2 text-xs font-semibold">Calendario</div>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function EventInfoSheet({
   conversation,
   eventDetail,
@@ -39,6 +165,9 @@ export function EventInfoSheet({
 }) {
   const [tab, setTab] = useState<"live" | "info" | "people" | "stories" | "faq">("live");
   const [qr, setQr] = useState<{ expiresAt: string; qrImageUrl: string; token: string; url: string } | null>(null);
+  const [ticket, setTicket] = useState<MobileEventTicket | null>(null);
+  const [ticketOpen, setTicketOpen] = useState(false);
+  const [loadingTicket, setLoadingTicket] = useState(false);
   const canManage = Boolean(
     eventDetail &&
       (eventDetail.event.hostId === conversation.viewerId ||
@@ -69,22 +198,119 @@ export function EventInfoSheet({
     return null;
   }
 
+  const event = eventDetail.event;
   const mapLink = getMapLink(
-    eventDetail.event.meetingPointAddress,
-    eventDetail.event.meetingPointLat,
-    eventDetail.event.meetingPointLng
+    event.meetingPointAddress,
+    event.meetingPointLat,
+    event.meetingPointLng
   );
+  const canUseTicket = myMembership?.status === "approved" || canManage;
+
+  async function ensureTicket() {
+    if (ticket) {
+      return ticket;
+    }
+
+    setLoadingTicket(true);
+    try {
+      const nextTicket = await fetchEventTicket(event.slug);
+      setTicket(nextTicket);
+      return nextTicket;
+    } finally {
+      setLoadingTicket(false);
+    }
+  }
+
+  async function handleOpenTicket() {
+    const nextTicket = await ensureTicket();
+    if (nextTicket) {
+      setTicketOpen(true);
+    }
+  }
+
+  async function handleShareTicket() {
+    const nextTicket = await ensureTicket();
+    if (!nextTicket) {
+      return;
+    }
+
+    const sharePayload = {
+      title: `Entrada para ${event.title}`,
+      text: `${ticket?.roleLabel ?? "Entrada"} - ${event.title}`,
+      url: nextTicket.shareUrl
+    };
+
+    if (navigator.share) {
+      await navigator.share(sharePayload);
+      return;
+    }
+
+    await navigator.clipboard.writeText(nextTicket.shareUrl);
+  }
+
+  function handleDownloadCalendar() {
+    const ics = [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "PRODID:-//Tindereo//Evento//ES",
+      "BEGIN:VEVENT",
+      `UID:${event.id}@tindereo`,
+      `DTSTAMP:${formatIcsDate(new Date().toISOString())}`,
+      `DTSTART:${formatIcsDate(event.startsAt)}`,
+      `DTEND:${formatIcsDate(event.endsAt)}`,
+      `SUMMARY:${escapeIcsText(event.title)}`,
+      `DESCRIPTION:${escapeIcsText(event.description || event.summary)}`,
+      `LOCATION:${escapeIcsText(event.meetingPointAddress || event.venue)}`,
+      "END:VEVENT",
+      "END:VCALENDAR"
+    ].join("\r\n");
+
+    triggerDownload(
+      new Blob([ics], { type: "text/calendar;charset=utf-8" }),
+      `${event.slug}.ics`
+    );
+  }
+
+  async function handleDownloadTicket() {
+    const nextTicket = await ensureTicket();
+    if (!nextTicket) {
+      return;
+    }
+
+    const qrDataUrl = await urlToDataUrl(nextTicket.qrImageUrl);
+    const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920" viewBox="0 0 1080 1920">
+  <rect width="1080" height="1920" fill="#F6EFE7"/>
+  <rect x="60" y="60" width="960" height="1800" rx="64" fill="#FFFFFF"/>
+  <rect x="60" y="60" width="960" height="460" rx="64" fill="#1F1714"/>
+  <text x="120" y="160" font-size="34" font-family="Arial, sans-serif" fill="#F2C8B6" letter-spacing="6">${escapeXml(nextTicket.roleLabel.toUpperCase())}</text>
+  <text x="120" y="240" font-size="76" font-weight="700" font-family="Arial, sans-serif" fill="#FFFFFF">${escapeXml(event.title)}</text>
+  <text x="120" y="320" font-size="34" font-family="Arial, sans-serif" fill="#E7DDD4">${escapeXml(formatMobileDateTime(event.startsAt))}</text>
+  <text x="120" y="372" font-size="34" font-family="Arial, sans-serif" fill="#E7DDD4">${escapeXml(event.meetingPointAddress || event.venue)}</text>
+  <rect x="120" y="590" width="840" height="980" rx="52" fill="#F6EFE7"/>
+  <image href="${qrDataUrl}" x="240" y="700" width="600" height="600" preserveAspectRatio="xMidYMid slice"/>
+  <text x="540" y="1360" text-anchor="middle" font-size="40" font-family="Arial, sans-serif" fill="#2A211D">${escapeXml(nextTicket.ticketCode)}</text>
+  <text x="540" y="1440" text-anchor="middle" font-size="30" font-family="Arial, sans-serif" fill="#7A665B">${escapeXml(nextTicket.holderLabel)}</text>
+  <text x="540" y="1510" text-anchor="middle" font-size="26" font-family="Arial, sans-serif" fill="#9A857A">Valida hasta ${escapeXml(formatMobileDateTime(nextTicket.validUntil))}</text>
+</svg>`;
+
+    triggerDownload(
+      new Blob([svg], { type: "image/svg+xml;charset=utf-8" }),
+      `${event.slug}-entrada.svg`
+    );
+  }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/30" onClick={onClose}>
-      <div
-        className="absolute bottom-0 left-1/2 flex h-[88dvh] w-full max-w-[480px] -translate-x-1/2 flex-col rounded-t-[2rem] bg-[var(--bg-main)]"
-        onClick={(event) => event.stopPropagation()}
-      >
+    <>
+      <div className="fixed inset-0 z-50 bg-black/30" onClick={onClose}>
+        <div
+          className="absolute bottom-0 left-1/2 flex h-[88dvh] w-full max-w-[480px] -translate-x-1/2 flex-col rounded-t-[2rem] bg-[var(--bg-main)]"
+          onClick={(event) => event.stopPropagation()}
+        >
         <div className="flex items-center justify-between px-4 pb-4 pt-4">
           <div>
-            <div className="text-lg font-black tracking-[-0.03em]">{eventDetail.event.title}</div>
-            <div className="text-sm text-[var(--text-soft)]">{eventDetail.event.city}</div>
+            <div className="text-lg font-black tracking-[-0.03em]">{event.title}</div>
+            <div className="text-sm text-[var(--text-soft)]">{event.city}</div>
           </div>
           <button type="button" onClick={onClose} className="flex h-11 w-11 items-center justify-center rounded-full bg-white">
             <X className="h-5 w-5" />
@@ -118,9 +344,9 @@ export function EventInfoSheet({
             <div className="space-y-4">
               <section className="grid grid-cols-3 gap-3">
                 {[
-                  ["Dentro", `${eventDetail.event.insideCount}`],
-                  ["Confirmados", `${eventDetail.event.approvedCount}`],
-                  ["Cola", `${eventDetail.event.waitlistCount}`]
+                  ["Dentro", `${event.insideCount}`],
+                  ["Confirmados", `${event.approvedCount}`],
+                  ["Cola", `${event.waitlistCount}`]
                 ].map(([label, value]) => (
                   <div key={label} className="rounded-[1.6rem] border border-[var(--line-soft)] bg-white px-4 py-4">
                     <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-soft)]">{label}</div>
@@ -141,7 +367,7 @@ export function EventInfoSheet({
                       key={value}
                       type="button"
                       onClick={async () => {
-                        await setArrivalStatus(eventDetail.event.slug, value);
+                        await setArrivalStatus(event.slug, value);
                         await onRefresh();
                       }}
                       className={cn(
@@ -160,8 +386,8 @@ export function EventInfoSheet({
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">Punto de encuentro</div>
-                    <div className="mt-2 text-base font-bold">{eventDetail.event.meetingPointLabel || eventDetail.event.venue}</div>
-                    <div className="mt-1 text-sm text-[var(--text-soft)]">{eventDetail.event.meetingPointAddress || eventDetail.event.venue}</div>
+                      <div className="mt-2 text-base font-bold">{event.meetingPointLabel || event.venue}</div>
+                      <div className="mt-1 text-sm text-[var(--text-soft)]">{event.meetingPointAddress || event.venue}</div>
                   </div>
                   <MapPin className="h-5 w-5 text-[var(--coral)]" />
                 </div>
@@ -176,6 +402,48 @@ export function EventInfoSheet({
                   </a>
                 ) : null}
               </section>
+              {canUseTicket ? (
+                <section className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">Entrada digital</div>
+                      <div className="mt-2 text-sm text-[var(--text-soft)]">
+                        Llévala dentro de la app, compártela o guárdala mientras no usemos Wallet.
+                      </div>
+                    </div>
+                    <Ticket className="h-5 w-5 text-[var(--coral)]" />
+                  </div>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleOpenTicket()}
+                      disabled={loadingTicket}
+                      className="rounded-full bg-[var(--text-main)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                    >
+                      {loadingTicket ? "Preparando..." : "Ver entrada"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleShareTicket()}
+                      disabled={loadingTicket}
+                      className="rounded-full border border-[var(--line-warm)] px-4 py-2 text-sm font-semibold disabled:opacity-60"
+                    >
+                      Compartir
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleDownloadCalendar}
+                      className="rounded-full border border-[var(--line-warm)] px-4 py-2 text-sm font-semibold"
+                    >
+                      Calendario
+                    </button>
+                  </div>
+                </section>
+              ) : myMembership?.status === "pending" ? (
+                <div className="rounded-[1.6rem] border border-dashed border-[var(--line-warm)] bg-white/80 px-4 py-4 text-sm text-[var(--text-soft)]">
+                  Cuando te aprueben en el evento, aquí te aparecerá tu entrada digital.
+                </div>
+              ) : null}
               {canManage ? (
                 <section className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
                   <div className="flex items-center justify-between">
@@ -189,7 +457,7 @@ export function EventInfoSheet({
                     <button
                       type="button"
                       onClick={async () => {
-                        setQr(await fetchCheckInToken(eventDetail.event.slug));
+                        setQr(await fetchCheckInToken(event.slug));
                       }}
                       className="rounded-full bg-[var(--text-main)] px-4 py-2 text-sm font-semibold text-white"
                     >
@@ -199,14 +467,14 @@ export function EventInfoSheet({
                       type="button"
                       onClick={async () => {
                         await setEventChatMode(
-                          eventDetail.event.slug,
-                          eventDetail.event.chatMode === "open" ? "announcements" : "open"
+                          event.slug,
+                          event.chatMode === "open" ? "announcements" : "open"
                         );
                         await onRefresh();
                       }}
                       className="rounded-full border border-[var(--line-warm)] px-4 py-2 text-sm font-semibold"
                     >
-                      Chat {eventDetail.event.chatMode === "open" ? "abierto" : "solo staff"}
+                      Chat {event.chatMode === "open" ? "abierto" : "solo staff"}
                     </button>
                   </div>
                   {qr ? (
@@ -214,7 +482,7 @@ export function EventInfoSheet({
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img src={qr.qrImageUrl} alt="QR check-in" className="mx-auto h-48 w-48 rounded-2xl bg-white p-2" />
                       <div className="mt-3 text-center text-xs text-[var(--text-soft)]">
-                        Caduca {formatMobileDateTime(qr.expiresAt)}
+                        Valido hasta {formatMobileDateTime(qr.expiresAt)}
                       </div>
                     </div>
                   ) : null}
@@ -224,7 +492,7 @@ export function EventInfoSheet({
                 <button
                   type="button"
                   onClick={async () => {
-                    await joinEvent(eventDetail.event.slug);
+                    await joinEvent(event.slug);
                     await onRefresh();
                   }}
                   className="tindereo-gradient w-full rounded-[1.6rem] px-4 py-4 text-base font-bold text-white"
@@ -244,19 +512,19 @@ export function EventInfoSheet({
             <div className="space-y-4">
               <section className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
                 <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">Cuando</div>
-                <div className="mt-2 text-base font-bold">{formatMobileDateTime(eventDetail.event.startsAt)}</div>
-                <p className="mt-4 text-sm leading-6 text-[var(--text-soft)]">{eventDetail.event.description}</p>
+                <div className="mt-2 text-base font-bold">{formatMobileDateTime(event.startsAt)}</div>
+                <p className="mt-4 text-sm leading-6 text-[var(--text-soft)]">{event.description}</p>
               </section>
               <section className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
                 <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">Normas</div>
                 <div className="mt-3 space-y-2">
-                  {eventDetail.event.rules.length ? eventDetail.event.rules.map((rule) => (
+                  {event.rules.length ? event.rules.map((rule) => (
                     <div key={rule} className="rounded-2xl bg-[var(--bg-soft)] px-4 py-3 text-sm leading-6">{rule}</div>
                   )) : <div className="text-sm text-[var(--text-soft)]">Aún sin normas cargadas.</div>}
                 </div>
               </section>
-              {eventDetail.event.playlistUrl ? (
-                <a href={eventDetail.event.playlistUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-full bg-[var(--text-main)] px-4 py-2 text-sm font-semibold text-white">
+              {event.playlistUrl ? (
+                <a href={event.playlistUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-full bg-[var(--text-main)] px-4 py-2 text-sm font-semibold text-white">
                   <Link2 className="h-4 w-4" />
                   Abrir playlist
                 </a>
@@ -281,12 +549,12 @@ export function EventInfoSheet({
                       <div className="truncate text-sm font-semibold">@{member.handle}</div>
                       <div className="truncate text-xs text-[var(--text-soft)]">{member.city}</div>
                     </div>
-                    {canManage && member.id !== conversation.viewerId && member.id !== eventDetail.event.hostId ? (
+                    {canManage && member.id !== conversation.viewerId && member.id !== event.hostId ? (
                       <div className="flex gap-2">
-                        <button type="button" onClick={async () => { await addEventCohost(eventDetail.event.slug, member.id); await onRefresh(); }} className="rounded-full border border-[var(--line-warm)] px-3 py-2 text-xs font-semibold">
+                        <button type="button" onClick={async () => { await addEventCohost(event.slug, member.id); await onRefresh(); }} className="rounded-full border border-[var(--line-warm)] px-3 py-2 text-xs font-semibold">
                           Cohost
                         </button>
-                        <button type="button" onClick={async () => { await moderateEventMember(eventDetail.event.slug, member.id, "mute"); await onRefresh(); }} className="rounded-full border border-[var(--line-warm)] px-3 py-2 text-xs font-semibold">
+                        <button type="button" onClick={async () => { await moderateEventMember(event.slug, member.id, "mute"); await onRefresh(); }} className="rounded-full border border-[var(--line-warm)] px-3 py-2 text-xs font-semibold">
                           <Shield className="h-3.5 w-3.5" />
                         </button>
                       </div>
@@ -313,7 +581,7 @@ export function EventInfoSheet({
 
           {tab === "faq" ? (
             <div className="space-y-3">
-              {eventDetail.event.faq.length ? eventDetail.event.faq.map((item) => (
+                {event.faq.length ? event.faq.map((item) => (
                 <div key={item.question} className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
                   <div className="text-sm font-bold">{item.question}</div>
                   <div className="mt-2 text-sm leading-6 text-[var(--text-soft)]">{item.answer}</div>
@@ -326,7 +594,19 @@ export function EventInfoSheet({
             </div>
           ) : null}
         </div>
+        </div>
       </div>
-    </div>
+
+      {ticketOpen && ticket ? (
+        <EventTicketPreview
+          event={event}
+          ticket={ticket}
+          onClose={() => setTicketOpen(false)}
+          onDownload={handleDownloadTicket}
+          onCalendar={handleDownloadCalendar}
+          onShare={handleShareTicket}
+        />
+      ) : null}
+    </>
   );
 }

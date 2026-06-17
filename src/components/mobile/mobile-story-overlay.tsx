@@ -63,13 +63,21 @@ export function MobileStoryOverlay({
   const [isSendingReply, setIsSendingReply] = useState(false);
   const [isReplyFocused, setIsReplyFocused] = useState(false);
   const [isHolding, setIsHolding] = useState(false);
-  const [storyProgress, setStoryProgress] = useState(0);
+  const [dismissOffsetY, setDismissOffsetY] = useState(0);
   const [isVideoMuted, setIsVideoMuted] = useState(true);
 
   const progressFrameRef = useRef<number | null>(null);
   const elapsedMsRef = useRef(0);
   const lastFrameAtRef = useRef<number | null>(null);
-  const gestureRef = useRef<{ pointerId: number; x: number; startedAt: number; width: number } | null>(null);
+  const gestureRef = useRef<{
+    pointerId: number;
+    x: number;
+    y: number;
+    startedAt: number;
+    width: number;
+    mode: "tap" | "dismiss";
+  } | null>(null);
+  const progressBarRefs = useRef<Record<string, HTMLSpanElement | null>>({});
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const activeCluster = normalizedClusters[activeClusterIndex] ?? null;
@@ -79,6 +87,7 @@ export function MobileStoryOverlay({
   const isActiveStoryVideo = Boolean(activeStory?.media?.mimeType?.startsWith("video/"));
 
   const isSeen = (story: MobileStory) => story.hasSeen || seenStoryIds.includes(story.id);
+  const dismissProgress = Math.min(1, dismissOffsetY / 220);
 
   const findNextClusterWithPending = (fromIndex: number) => {
     for (let index = fromIndex + 1; index < normalizedClusters.length; index += 1) {
@@ -141,10 +150,39 @@ export function MobileStoryOverlay({
     setReplyDraft("");
     setReplyError(null);
     setIsReplyFocused(false);
-    setStoryProgress(0);
+    setDismissOffsetY(0);
     elapsedMsRef.current = 0;
     lastFrameAtRef.current = null;
+    if (activeStory) {
+      const activeProgressBar = progressBarRefs.current[activeStory.id];
+      if (activeProgressBar) {
+        activeProgressBar.style.transform = "scaleX(0)";
+      }
+    }
   }, [activeStory?.id]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+    const previousBodyOverscroll = document.body.style.overscrollBehavior;
+    const previousHtmlOverscroll = document.documentElement.style.overscrollBehavior;
+
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.overscrollBehavior = "none";
+    document.documentElement.style.overscrollBehavior = "none";
+
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousHtmlOverflow;
+      document.body.style.overscrollBehavior = previousBodyOverscroll;
+      document.documentElement.style.overscrollBehavior = previousHtmlOverscroll;
+    };
+  }, []);
 
   useEffect(() => {
     if (!activeStory) {
@@ -163,6 +201,7 @@ export function MobileStoryOverlay({
     }
 
     const duration = Math.max(1200, activeStory.durationMs || 5000);
+    const activeProgressBar = progressBarRefs.current[activeStory.id];
 
     const step = (now: number) => {
       if (lastFrameAtRef.current === null) {
@@ -174,7 +213,9 @@ export function MobileStoryOverlay({
       elapsedMsRef.current += delta;
 
       const nextProgress = Math.min(1, elapsedMsRef.current / duration);
-      setStoryProgress(nextProgress);
+      if (activeProgressBar) {
+        activeProgressBar.style.transform = `scaleX(${nextProgress})`;
+      }
 
       if (nextProgress >= 1) {
         progressFrameRef.current = null;
@@ -252,20 +293,37 @@ export function MobileStoryOverlay({
   }
 
   return createPortal(
-    <div className="fixed inset-0 z-[120] bg-black">
-      <div className="relative flex h-[100dvh] w-full flex-col overflow-hidden bg-black">
+    <div
+      className="fixed inset-0 z-[120]"
+      style={{
+        backgroundColor: `rgba(0, 0, 0, ${Math.max(0.22, 1 - dismissProgress * 0.82)})`,
+        overscrollBehavior: "none",
+        touchAction: "none"
+      }}
+    >
+      <div
+        className="relative flex h-[100dvh] w-full flex-col overflow-hidden bg-black"
+        style={{
+          transform: dismissOffsetY
+            ? `translate3d(0, ${dismissOffsetY}px, 0) scale(${1 - dismissProgress * 0.06})`
+            : undefined,
+          transition: gestureRef.current?.mode === "dismiss" ? "none" : "transform 180ms ease",
+          borderRadius: dismissOffsetY > 0 ? "1.75rem" : "0px",
+          willChange: dismissOffsetY ? "transform" : undefined
+        }}
+      >
         <div className="absolute left-0 right-0 top-0 z-30 flex gap-1 px-4 pt-[calc(0.75rem+env(safe-area-inset-top))]">
           {activeCluster.stories.map((story, index) => (
             <span key={story.id} className="h-1 flex-1 overflow-hidden rounded-full bg-white/20">
               <span
-                className="block h-full rounded-full bg-white transition-all"
+                ref={(node) => {
+                  progressBarRefs.current[story.id] = node;
+                }}
+                className="block h-full rounded-full bg-white"
                 style={{
-                  width:
-                    index < storyIndex
-                      ? "100%"
-                      : index === storyIndex
-                        ? `${Math.max(0, Math.min(100, storyProgress * 100))}%`
-                        : "0%"
+                  transform: `scaleX(${index < storyIndex ? 1 : 0})`,
+                  transformOrigin: "left center",
+                  willChange: "transform"
                 }}
               />
             </span>
@@ -274,9 +332,11 @@ export function MobileStoryOverlay({
 
         <div
           className="absolute inset-0 z-10"
+          style={{ touchAction: "none" }}
           onPointerCancel={() => {
             gestureRef.current = null;
             setIsHolding(false);
+            setDismissOffsetY(0);
           }}
           onPointerDown={(event) => {
             const target = event.target as HTMLElement | null;
@@ -287,11 +347,34 @@ export function MobileStoryOverlay({
             gestureRef.current = {
               pointerId: event.pointerId,
               x: event.clientX,
+              y: event.clientY,
               startedAt: window.performance.now(),
-              width: event.currentTarget.clientWidth
+              width: event.currentTarget.clientWidth,
+              mode: "tap"
             };
             event.currentTarget.setPointerCapture?.(event.pointerId);
             setIsHolding(true);
+          }}
+          onPointerMove={(event) => {
+            const gesture = gestureRef.current;
+            if (!gesture || gesture.pointerId !== event.pointerId) {
+              return;
+            }
+
+            const deltaX = event.clientX - gesture.x;
+            const deltaY = Math.max(0, event.clientY - gesture.y);
+
+            if (
+              gesture.mode === "tap" &&
+              deltaY > 12 &&
+              deltaY > Math.abs(deltaX)
+            ) {
+              gesture.mode = "dismiss";
+            }
+
+            if (gesture.mode === "dismiss") {
+              setDismissOffsetY(deltaY);
+            }
           }}
           onPointerUp={(event) => {
             const gesture = gestureRef.current;
@@ -303,6 +386,17 @@ export function MobileStoryOverlay({
             gestureRef.current = null;
             setIsHolding(false);
 
+            if (dismissOffsetY > 120 || (gesture.mode === "dismiss" && event.clientY - gesture.y > 110)) {
+              onClose();
+              return;
+            }
+
+            if (gesture.mode === "dismiss") {
+              setDismissOffsetY(0);
+              return;
+            }
+
+            setDismissOffsetY(0);
             const duration = window.performance.now() - gesture.startedAt;
             if (duration > 220) {
               return;
@@ -371,7 +465,8 @@ export function MobileStoryOverlay({
           <img
             src={activeStory.media.previewUrl}
             alt={activeCluster.ownerLabel}
-            className="h-full w-full object-cover"
+            className="pointer-events-none h-full w-full select-none object-cover"
+            draggable={false}
           />
         ) : (
           <div className="flex h-full items-center justify-center text-white/70">
