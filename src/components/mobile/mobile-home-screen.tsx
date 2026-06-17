@@ -204,7 +204,7 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
           setIsGestureActive(!ignore);
         }}
         style={{
-          transform: `translateX(${dragOffsetX}px)`,
+          transform: dragOffsetX > 0 ? `translateX(${dragOffsetX}px)` : undefined,
           transition: isGestureActive ? "none" : "transform 180ms ease-out, border-radius 180ms ease-out, box-shadow 180ms ease-out",
           borderRadius: dragOffsetX > 0 ? "2rem" : "0rem",
           boxShadow:

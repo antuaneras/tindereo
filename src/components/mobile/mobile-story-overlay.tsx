@@ -1,6 +1,7 @@
 "use client";
 
-import { Heart, Play, Send, Volume2, VolumeX, X } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Heart, MoreHorizontal, Play, Send, Volume2, VolumeX, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createConversation, markStoryAsViewed, sendConversationMessage } from "@/lib/mobile-api";
 import { formatRelativeMobileTime } from "@/lib/mobile-shared";
@@ -246,12 +247,12 @@ export function MobileStoryOverlay({
     }
   }
 
-  if (!activeStory || !activeCluster) {
+  if (!activeStory || !activeCluster || typeof document === "undefined") {
     return null;
   }
 
-  return (
-    <div className="fixed inset-0 z-50 bg-[#140f0bcc]">
+  return createPortal(
+    <div className="fixed inset-0 z-[120] bg-black">
       <div className="relative flex h-[100dvh] w-full flex-col overflow-hidden bg-black">
         <div className="absolute left-0 right-0 top-0 z-30 flex gap-1 px-4 pt-[calc(0.75rem+env(safe-area-inset-top))]">
           {activeCluster.stories.map((story, index) => (
@@ -325,6 +326,13 @@ export function MobileStoryOverlay({
           </div>
 
           <div data-story-ui="true" className="flex items-center gap-2">
+            <button
+              type="button"
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-black/35 text-white"
+              aria-label="Mas opciones"
+            >
+              <MoreHorizontal className="h-5 w-5" />
+            </button>
             {isActiveStoryVideo ? (
               <button
                 type="button"
@@ -371,14 +379,14 @@ export function MobileStoryOverlay({
           </div>
         )}
 
-        <div className="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/88 via-black/24 to-transparent px-5 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-20 text-white">
+        <div className="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/88 via-black/24 to-transparent px-5 pb-[calc(5.4rem+env(safe-area-inset-bottom))] pt-20 text-white">
           {activeStory.caption ? <p className="text-sm leading-6">{activeStory.caption}</p> : null}
         </div>
 
         {canReply ? (
-          <div data-story-ui="true" className="absolute inset-x-0 bottom-0 z-20 px-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-14">
-            <div className="rounded-[1.7rem] border border-white/12 bg-black/32 p-3 backdrop-blur">
-              <div className="flex items-center gap-2">
+          <div data-story-ui="true" className="absolute inset-x-0 bottom-0 z-20 px-4 pb-[calc(0.9rem+env(safe-area-inset-bottom))] pt-14">
+            <div className="flex items-center gap-3">
+              <div className="flex min-w-0 flex-1 items-center rounded-full border border-white/25 bg-black/26 px-4 py-3 backdrop-blur">
                 <input
                   value={replyDraft}
                   onBlur={() => setIsReplyFocused(false)}
@@ -392,39 +400,40 @@ export function MobileStoryOverlay({
                   }}
                   placeholder={
                     activeStory.ownerType === "event"
-                      ? `Responder en ${activeCluster.ownerLabel}...`
-                      : `Responder a ${activeCluster.ownerLabel}...`
+                      ? "Enviar mensaje..."
+                      : "Enviar mensaje..."
                   }
-                  className="h-12 min-w-0 flex-1 rounded-full border border-white/12 bg-white/10 px-4 text-sm text-white outline-none placeholder:text-white/52"
+                  className="h-7 min-w-0 flex-1 bg-transparent text-base text-white outline-none placeholder:text-white/58"
                 />
-                <button
-                  type="button"
-                  onClick={() => {
-                    void handleSendReply("\u2764\uFE0F");
-                  }}
-                  disabled={isSendingReply}
-                  className="flex h-11 w-11 items-center justify-center rounded-full bg-white/10 text-white disabled:opacity-50"
-                  aria-label="Reaccionar con corazon"
-                >
-                  <Heart className="h-5 w-5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void handleSendReply();
-                  }}
-                  disabled={!replyDraft.trim() || isSendingReply}
-                  className="flex h-11 w-11 items-center justify-center rounded-full bg-white text-[#1d160f] disabled:opacity-55"
-                  aria-label="Enviar respuesta"
-                >
-                  <Send className="h-5 w-5" />
-                </button>
               </div>
-              {replyError ? <p className="mt-2 px-1 text-xs text-[#ffd1c4]">{replyError}</p> : null}
+              <button
+                type="button"
+                onClick={() => {
+                  void handleSendReply("\u2764\uFE0F");
+                }}
+                disabled={isSendingReply}
+                className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-black/26 text-white backdrop-blur disabled:opacity-50"
+                aria-label="Reaccionar con corazon"
+              >
+                <Heart className="h-7 w-7" />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void handleSendReply();
+                }}
+                disabled={!replyDraft.trim() || isSendingReply}
+                className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-black/26 text-white backdrop-blur disabled:opacity-55"
+                aria-label="Enviar respuesta"
+              >
+                <Send className="h-6 w-6" />
+              </button>
             </div>
+            {replyError ? <p className="mt-2 px-1 text-xs text-[#ffd1c4]">{replyError}</p> : null}
           </div>
         ) : null}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

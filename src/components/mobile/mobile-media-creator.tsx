@@ -451,7 +451,8 @@ function CameraComposer({
   onOpenPostComposer: (files: File[]) => void;
 }) {
   const router = useRouter();
-  const cameraInputRef = useRef<HTMLInputElement | null>(null);
+  const libraryInputRef = useRef<HTMLInputElement | null>(null);
+  const fallbackCaptureInputRef = useRef<HTMLInputElement | null>(null);
   const liveVideoRef = useRef<HTMLVideoElement | null>(null);
   const holdTimerRef = useRef<number | null>(null);
   const capturePressStartedAtRef = useRef<number | null>(null);
@@ -528,6 +529,14 @@ function CameraComposer({
     setRecordingProgress(0);
   };
 
+  const openLibraryPicker = () => {
+    libraryInputRef.current?.click();
+  };
+
+  const openFallbackCapturePicker = () => {
+    fallbackCaptureInputRef.current?.click();
+  };
+
   const detachLiveVideoElement = () => {
     if (liveVideoRef.current) {
       liveVideoRef.current.pause();
@@ -582,6 +591,7 @@ function CameraComposer({
             audio: false,
             video: {
               facingMode: preferredFacingMode,
+              aspectRatio: { ideal: 9 / 16 },
               height: { ideal: 1920 },
               width: { ideal: 1080 }
             }
@@ -601,6 +611,30 @@ function CameraComposer({
         streamRef.current = stream;
         sharedCameraSessionStream = stream;
         sharedCameraSessionFacingMode = cameraFacingMode;
+
+        const [videoTrack] = stream.getVideoTracks();
+        const capabilities = videoTrack?.getCapabilities?.() as
+          | (MediaTrackCapabilities & { zoom?: { min?: number; max?: number }; focusMode?: string[] })
+          | undefined;
+
+        if (videoTrack && capabilities) {
+          const advancedConstraints: Record<string, number | string> = {};
+
+          if (typeof capabilities.zoom?.min === "number") {
+            advancedConstraints.zoom = capabilities.zoom.min;
+          }
+
+          if (Array.isArray(capabilities.focusMode) && capabilities.focusMode.includes("continuous")) {
+            advancedConstraints.focusMode = "continuous";
+          }
+
+          if (Object.keys(advancedConstraints).length) {
+            void videoTrack.applyConstraints({
+              advanced: [advancedConstraints as MediaTrackConstraintSet]
+            }).catch(() => undefined);
+          }
+        }
+
         setCameraAccessError(null);
         setHasLiveCamera(true);
       } catch {
@@ -688,6 +722,12 @@ function CameraComposer({
     recordingFrameRef.current = window.requestAnimationFrame(updateRecordingProgressFrame);
   };
 
+  const remainingRecordingSeconds = Math.max(
+    0,
+    Math.ceil(((100 - recordingProgress) * STORY_MAX_VIDEO_MS) / 100 / 1000)
+  );
+  const remainingRecordingLabel = `00:${String(remainingRecordingSeconds).padStart(2, "0")}`;
+
   async function handlePickedStoryFile(file: File | null) {
     if (!file) {
       return;
@@ -709,10 +749,29 @@ function CameraComposer({
     setCameraAccessError(null);
   }
 
+  async function handlePickedLibraryFiles(fileList: FileList | null) {
+    if (!fileList?.length) {
+      return;
+    }
+
+    const files = Array.from(fileList);
+
+    if (captureMode === "post") {
+      onOpenPostComposer(files.slice(0, 20));
+      return;
+    }
+
+    await handlePickedStoryFile(files[0] ?? null);
+  }
+
   async function capturePhotoFromLiveCamera() {
     const video = liveVideoRef.current;
     if (!video || !hasLiveCamera || video.videoWidth === 0 || video.videoHeight === 0) {
-      cameraInputRef.current?.click();
+      if (captureMode === "post") {
+        openLibraryPicker();
+      } else {
+        openFallbackCapturePicker();
+      }
       return;
     }
 
@@ -828,7 +887,11 @@ function CameraComposer({
     capturePressStartedAtRef.current = null;
 
     if (!hasLiveCamera) {
-      cameraInputRef.current?.click();
+      if (captureMode === "post") {
+        openLibraryPicker();
+      } else {
+        openFallbackCapturePicker();
+      }
       return;
     }
 
@@ -892,7 +955,14 @@ function CameraComposer({
   }
 
   return (
-    <div className="relative min-h-[100dvh] overflow-hidden bg-black text-white">
+    <div
+      className="relative min-h-[100dvh] select-none overflow-hidden bg-black text-white"
+      style={{
+        userSelect: "none",
+        WebkitTouchCallout: "none",
+        WebkitUserSelect: "none"
+      }}
+    >
       <div className="pointer-events-none absolute inset-x-0 top-0 z-20 h-36 bg-gradient-to-b from-black/76 via-black/26 to-transparent" />
       <div className="absolute inset-x-0 top-0 z-30 flex items-center justify-between px-4 pb-6 pt-[calc(1rem+env(safe-area-inset-top))]">
         <button className="pointer-events-auto inline-flex h-11 w-11 items-center justify-center rounded-full bg-white/10 backdrop-blur" onClick={onBack} type="button">
@@ -958,9 +1028,15 @@ function CameraComposer({
           ) : hasLiveCamera ? (
             <div className="relative h-[100dvh] overflow-hidden bg-black">
               {isRecordingVideo ? (
-                <div className="absolute inset-x-4 top-[calc(4.5rem+env(safe-area-inset-top))] z-10 h-1.5 overflow-hidden rounded-full bg-white/18">
-                  <div className="h-full rounded-full bg-[#ff6b57] transition-[width] duration-100" style={{ width: `${recordingProgress}%` }} />
-                </div>
+                <>
+                  <div className="absolute inset-x-4 top-[calc(4.5rem+env(safe-area-inset-top))] z-10 h-1.5 overflow-hidden rounded-full bg-white/18">
+                    <div className="h-full rounded-full bg-[#ff6b57] transition-[width] duration-100" style={{ width: `${recordingProgress}%` }} />
+                  </div>
+                  <div className="absolute left-1/2 top-[calc(5.4rem+env(safe-area-inset-top))] z-10 -translate-x-1/2 rounded-full bg-black/45 px-3 py-1.5 text-xs font-semibold text-white backdrop-blur">
+                    <span className="mr-2 inline-block h-2.5 w-2.5 animate-pulse rounded-full bg-[#ff6b57]" />
+                    Grabando {remainingRecordingLabel}
+                  </div>
+                </>
               ) : null}
               {!isLivePreviewReady ? (
                 <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),transparent_32%),rgba(7,5,4,0.84)] px-6 text-center">
@@ -1024,13 +1100,16 @@ function CameraComposer({
                 <div className="mt-8 flex items-end justify-between gap-4 px-1">
                   <button
                     className="inline-flex h-14 w-14 items-center justify-center overflow-hidden rounded-2xl border border-white/15 bg-white/8 text-white"
-                    onClick={() => cameraInputRef.current?.click()}
+                    onClick={openLibraryPicker}
                     type="button"
                   >
                     <ImageIcon className="h-5 w-5" />
                   </button>
                   <button
-                    className="relative inline-flex h-24 w-24 touch-none select-none items-center justify-center rounded-full border-2 border-white bg-white/12 text-white shadow-[0_18px_40px_rgba(0,0,0,0.28)]"
+                    className={cn(
+                      "relative inline-flex h-24 w-24 touch-none select-none items-center justify-center rounded-full border-2 border-white bg-white/12 text-white shadow-[0_18px_40px_rgba(0,0,0,0.28)]",
+                      isRecordingVideo && "ring-4 ring-[#ff6b57]/35"
+                    )}
                     onContextMenu={(event) => event.preventDefault()}
                     onPointerCancel={(event) => {
                       event.preventDefault();
@@ -1042,12 +1121,26 @@ function CameraComposer({
                       event.currentTarget.setPointerCapture?.(event.pointerId);
                       handleCapturePressStart();
                     }}
+                    onPointerLeave={(event) => {
+                      if (!event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+                        return;
+                      }
+
+                      event.preventDefault();
+                      event.currentTarget.releasePointerCapture?.(event.pointerId);
+                      handleCapturePressCancel();
+                    }}
                     onPointerUp={(event) => {
                       event.preventDefault();
                       event.currentTarget.releasePointerCapture?.(event.pointerId);
                       handleCapturePressEnd();
                     }}
-                    style={{ touchAction: "none" }}
+                    style={{
+                      touchAction: "none",
+                      userSelect: "none",
+                      WebkitTouchCallout: "none",
+                      WebkitUserSelect: "none"
+                    }}
                     type="button"
                   >
                     <span className={cn("inline-flex h-[4.4rem] w-[4.4rem] items-center justify-center rounded-full transition", isRecordingVideo ? "scale-90 bg-[#ff6b57]" : "bg-white text-[#1d160f]")}>
@@ -1072,7 +1165,7 @@ function CameraComposer({
                     {captureMode === "story"
                       ? hasLiveCamera
                         ? isRecordingVideo
-                          ? "Grabando historia en video"
+                          ? `Grabando historia · ${remainingRecordingLabel}`
                           : cameraFacingMode === "user"
                             ? "Camara selfie activa"
                             : "Camara trasera activa"
@@ -1113,7 +1206,19 @@ function CameraComposer({
         </div>
 
         <input
-          ref={cameraInputRef}
+          ref={libraryInputRef}
+          type="file"
+          accept={captureMode === "post" ? "image/*" : "image/*,video/*"}
+          multiple={captureMode === "post"}
+          className="hidden"
+          onChange={(event) => {
+            void handlePickedLibraryFiles(event.target.files);
+            event.currentTarget.value = "";
+          }}
+        />
+
+        <input
+          ref={fallbackCaptureInputRef}
           type="file"
           accept="image/*,video/*"
           capture={cameraFacingMode}
