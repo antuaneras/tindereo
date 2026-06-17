@@ -26,7 +26,8 @@ import type {
   PrivateChatRequest,
   PrivateMessage,
   SocialPost,
-  StoryItem
+  StoryItem,
+  StoryView
 } from "@/lib/tindereo-types";
 
 function cloneState<T>(value: T): T {
@@ -280,6 +281,7 @@ function isPersistedState(value: unknown): value is PersistedState {
     Array.isArray(candidate.eventInvites) &&
     Array.isArray(candidate.socialPosts) &&
     Array.isArray(candidate.stories) &&
+    Array.isArray(candidate.storyViews) &&
     Array.isArray(candidate.conversationReadStates) &&
     Array.isArray(candidate.notifications) &&
     (!firstEvent ||
@@ -337,9 +339,11 @@ export function readPersistedState(raw: string | null) {
 }
 
 export function normalizeState(state: PersistedState) {
-  const currentUserId = state.users.some((user) => user.id === state.session.currentUserId)
-    ? state.session.currentUserId
-    : (state.users[0]?.id ?? DEFAULT_STATE.session.currentUserId);
+  const currentUserId = state.session.isAuthenticated
+    ? state.users.some((user) => user.id === state.session.currentUserId)
+      ? state.session.currentUserId
+      : (state.users[0]?.id ?? DEFAULT_STATE.session.currentUserId)
+    : "";
 
   const provisionalState: PersistedState = {
     ...DEFAULT_STATE,
@@ -354,6 +358,7 @@ export function normalizeState(state: PersistedState) {
     eventInvites: state.eventInvites ?? DEFAULT_STATE.eventInvites,
     socialPosts: state.socialPosts ?? DEFAULT_STATE.socialPosts,
     stories: state.stories ?? DEFAULT_STATE.stories,
+    storyViews: state.storyViews ?? DEFAULT_STATE.storyViews,
     conversationReadStates:
       state.conversationReadStates ?? DEFAULT_STATE.conversationReadStates,
     notifications: state.notifications ?? DEFAULT_STATE.notifications
@@ -1339,6 +1344,37 @@ export function createEventStory(
   return createStoryEntry(state, "event", eventId, imageUrl, caption);
 }
 
+export function markStoryViewed(state: PersistedState, actorId: string, storyId: string) {
+  const story = state.stories.find((item) => item.id === storyId);
+  if (!story || story.authorId === actorId) {
+    return state;
+  }
+
+  const canSeeStory =
+    story.authorType === "user"
+      ? story.authorId === actorId || areFriends(state, story.authorId, actorId)
+      : canSeeEventMedia(state, story.authorId, actorId);
+  if (!canSeeStory) {
+    return state;
+  }
+
+  if (state.storyViews.some((view) => view.storyId === storyId && view.userId === actorId)) {
+    return state;
+  }
+
+  const nextView: StoryView = {
+    id: buildId("story-view"),
+    storyId,
+    userId: actorId,
+    seenAt: new Date().toISOString()
+  };
+
+  return {
+    ...state,
+    storyViews: [...state.storyViews, nextView]
+  };
+}
+
 function updateMediaPostEntry(
   state: PersistedState,
   matcher: (post: SocialPost) => boolean,
@@ -1720,6 +1756,17 @@ export function getEventStories(state: PersistedState, eventId: string) {
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
+export function hasViewedStory(state: PersistedState, storyId: string, userId: string) {
+  return state.storyViews.some((view) => view.storyId === storyId && view.userId === userId);
+}
+
+export function getStoryViews(state: PersistedState, storyId: string) {
+  return state.storyViews
+    .filter((view) => view.storyId === storyId)
+    .slice()
+    .sort((left, right) => right.seenAt.localeCompare(left.seenAt));
+}
+
 export function getInitials(name: string) {
   return name
     .split(" ")
@@ -1990,6 +2037,57 @@ export function respondToPrivateChatRequest(
   );
 }
 
+export function startFriendChat(state: PersistedState, actorId: string, targetUserId: string) {
+  if (
+    actorId === targetUserId ||
+    !areFriends(state, actorId, targetUserId)
+  ) {
+    throw new Error("Solo puedes abrir chat directo con personas que ya son amigas tuyas.");
+  }
+
+  const existingChat = findPairChat(state, actorId, targetUserId);
+  if (existingChat) {
+    return state;
+  }
+
+  const createdAt = new Date().toISOString();
+  const nextChat: PrivateChat = {
+    id: buildId("chat"),
+    participantIds: [actorId, targetUserId],
+    originEventId: null,
+    requestId: null,
+    createdAt
+  };
+  const author = getUserById(state, actorId);
+  const welcomeMessage: PrivateMessage = {
+    id: buildId("private"),
+    chatId: nextChat.id,
+    authorId: actorId,
+    text: `He abierto este chat directo porque ya somos amigos en Tindereo. ${author.name} ha iniciado la conversacion.`,
+    createdAt
+  };
+
+  return prependNotifications(
+    {
+      ...state,
+      privateChats: [...state.privateChats, nextChat],
+      privateMessages: [...state.privateMessages, welcomeMessage]
+    },
+    [
+      createNotification(
+        targetUserId,
+        "private-message",
+        `${author.name} ha abierto un chat contigo`,
+        "Ya podeis hablar directamente sin solicitud previa.",
+        {
+          chatId: nextChat.id,
+          fromUserId: actorId
+        }
+      )
+    ]
+  );
+}
+
 export function sendPrivateMessage(
   state: PersistedState,
   chatId: string,
@@ -2026,7 +2124,7 @@ export function sendPrivateMessage(
   return prependNotifications(nextState, [
     createNotification(partnerId, "private-message", author.name, preview, {
       chatId,
-      eventId: chat.originEventId,
+      eventId: chat.originEventId ?? undefined,
       fromUserId: authorId
     })
   ]);
@@ -2047,18 +2145,21 @@ export function registerUser(state: PersistedState, input: RegisterUserInput) {
   }
 
   const requestedHandle = input.handle.trim().replace(/^@+/, "");
-  const baseHandle = slugify(requestedHandle || name) || buildId("user");
+  const baseHandle = slugify(requestedHandle) || slugify(name) || buildId("user");
   const normalizedHandles = state.users.map((user) => user.handle.replace(/^@+/, "").toLowerCase());
+  if (normalizedHandles.includes(baseHandle.toLowerCase())) {
+    throw new Error("Ese nombre de usuario ya esta en uso.");
+  }
+
   const normalizedIds = state.users.map((user) => user.id.toLowerCase());
-  const uniqueHandle = ensureUniqueValue(baseHandle, normalizedHandles);
   const uniqueId = ensureUniqueValue(baseHandle, normalizedIds);
-  const palette = createProfilePalette(`${name}-${city}-${uniqueHandle}`);
+  const palette = createProfilePalette(`${name}-${city}-${baseHandle}`);
   const firstName = name.split(" ")[0] || name;
 
   const nextUser: PlatformUser = {
     id: uniqueId,
     name,
-    handle: `@${uniqueHandle}`,
+    handle: `@${baseHandle}`,
     city,
     title: "Miembro de la comunidad",
     bio,
@@ -2081,7 +2182,19 @@ export function createEvent(state: PersistedState, userId: string, input: Create
   const summary = input.summary.trim();
   const description = input.description.trim();
   if (!title || !summary || !description) {
-    return state;
+    throw new Error("Completa titulo, resumen y descripcion para publicar el evento.");
+  }
+
+  if (!input.startsAt || !input.endsAt) {
+    throw new Error("Selecciona la fecha y hora de inicio y fin.");
+  }
+
+  if (new Date(input.endsAt).getTime() <= new Date(input.startsAt).getTime()) {
+    throw new Error("La hora de fin debe ser posterior al inicio.");
+  }
+
+  if (Number(input.capacity) < 4) {
+    throw new Error("La capacidad minima del evento debe ser 4 personas.");
   }
 
   const baseSlug = slugify(title) || buildId("event");

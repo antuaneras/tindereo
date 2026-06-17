@@ -26,6 +26,7 @@ import {
   leaveEvent,
   markAllNotificationsRead,
   markNotificationRead,
+  markStoryViewed,
   markThreadRead,
   postEventMessage,
   registerUser,
@@ -36,6 +37,7 @@ import {
   sendPrivateChatRequest,
   sendEventInvite,
   sendPrivateMessage,
+  startFriendChat,
   toggleFriendship,
   updateEventPost,
   updateEventStory,
@@ -208,9 +210,17 @@ export async function runPlatformAction(action: PlatformAction): Promise<Platfor
       return runStateMutation(action.actorId, (state) =>
         respondToPrivateChatRequest(state, action.requestId, action.actorId, action.accept)
       );
+    case "start-friend-chat":
+      return runStateMutation(action.actorId, (state) =>
+        startFriendChat(state, action.actorId, action.targetUserId)
+      );
     case "send-private-message":
       return runStateMutation(action.actorId, (state) =>
         sendPrivateMessage(state, action.chatId, action.actorId, action.text)
+      );
+    case "mark-story-viewed":
+      return runStateMutation(action.actorId, (state) =>
+        markStoryViewed(state, action.actorId, action.storyId)
       );
     case "mark-thread-read":
       return runStateMutation(action.actorId, (state) =>

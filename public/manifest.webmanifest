@@ -1,6 +1,7 @@
 {
   "name": "Tindereo",
   "short_name": "Tindereo",
+  "id": "./",
   "description": "Plataforma social para descubrir eventos, entrar en su chat general y abrir conexiones privadas entre asistentes.",
   "start_url": "./",
   "scope": "./",

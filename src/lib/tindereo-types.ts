@@ -106,8 +106,8 @@ export interface PrivateChatRequest {
 export interface PrivateChat {
   id: string;
   participantIds: [string, string];
-  originEventId: string;
-  requestId: string;
+  originEventId: string | null;
+  requestId: string | null;
   createdAt: string;
 }
 
@@ -154,6 +154,13 @@ export interface StoryItem {
   expiresAt: string;
 }
 
+export interface StoryView {
+  id: string;
+  storyId: string;
+  userId: string;
+  seenAt: string;
+}
+
 export interface ConversationReadState {
   id: string;
   userId: string;
@@ -198,6 +205,7 @@ export interface AppDataset {
   eventInvites: EventInvite[];
   socialPosts: SocialPost[];
   stories: StoryItem[];
+  storyViews: StoryView[];
   conversationReadStates: ConversationReadState[];
   notifications: AppNotification[];
 }
@@ -231,6 +239,15 @@ export interface RegisterUserInput {
   bio: string;
 }
 
+export interface LoginInput {
+  username: string;
+  password: string;
+}
+
+export interface RegisterAccountInput extends RegisterUserInput {
+  password: string;
+}
+
 export type PlatformAction =
   | { type: "register-user"; input: RegisterUserInput }
   | { type: "create-event"; actorId: string; input: CreateEventInput }
@@ -261,7 +278,9 @@ export type PlatformAction =
       message: string;
     }
   | { type: "respond-private-request"; actorId: string; requestId: string; accept: boolean }
+  | { type: "start-friend-chat"; actorId: string; targetUserId: string }
   | { type: "send-private-message"; actorId: string; chatId: string; text: string }
+  | { type: "mark-story-viewed"; actorId: string; storyId: string }
   | { type: "mark-thread-read"; actorId: string; scope: ConversationScope; targetId: string }
   | { type: "mark-notification-read"; actorId: string; notificationId: string }
   | { type: "mark-all-notifications-read"; actorId: string };

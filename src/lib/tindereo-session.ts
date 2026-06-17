@@ -55,10 +55,12 @@ export function hydratePersistedState(
   data: AppDataset,
   sessionPatch?: Partial<SessionState>
 ): PersistedState {
-  const fallbackUserId =
-    sessionPatch?.currentUserId?.trim() ||
-    data.users[0]?.id ||
-    DEFAULT_STATE.session.currentUserId;
+  const hasExplicitUserId = Boolean(sessionPatch && "currentUserId" in sessionPatch);
+  const fallbackUserId = hasExplicitUserId
+    ? (sessionPatch?.currentUserId ?? "").trim()
+    : sessionPatch?.currentUserId?.trim() ||
+      data.users[0]?.id ||
+      DEFAULT_STATE.session.currentUserId;
 
   return {
     ...DEFAULT_STATE,

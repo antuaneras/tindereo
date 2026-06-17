@@ -1,4 +1,10 @@
-import type { AppDataset, PlatformAction, PlatformDataEnvelope } from "@/lib/tindereo-types";
+import type {
+  AppDataset,
+  LoginInput,
+  PlatformAction,
+  PlatformDataEnvelope,
+  RegisterAccountInput
+} from "@/lib/tindereo-types";
 
 async function readJsonResponse(response: Response) {
   const payload = (await response.json().catch(() => null)) as
@@ -51,6 +57,47 @@ export async function executePlatformAction(action: PlatformAction) {
   });
 
   return readJsonResponse(response);
+}
+
+export async function loginAccount(input: LoginInput) {
+  const response = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(input)
+  });
+
+  return readJsonResponse(response);
+}
+
+export async function registerAccount(input: RegisterAccountInput) {
+  const response = await fetch("/api/auth/register", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(input)
+  });
+
+  return readJsonResponse(response);
+}
+
+export async function logoutAccount() {
+  const response = await fetch("/api/auth/logout", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    }
+  });
+
+  const payload = (await response.json().catch(() => null)) as { error?: string } | { ok?: boolean } | null;
+
+  if (!response.ok) {
+    throw new Error(payload && "error" in payload && payload.error ? payload.error : "No se pudo cerrar sesion.");
+  }
+
+  return payload;
 }
 
 export function extractPlatformData(payload: PlatformDataEnvelope): AppDataset {

@@ -97,8 +97,8 @@ const SCHEMA_SQL = `
     id TEXT PRIMARY KEY,
     participant_a_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     participant_b_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    origin_event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    request_id TEXT NOT NULL UNIQUE REFERENCES private_chat_requests(id) ON DELETE CASCADE,
+    origin_event_id TEXT REFERENCES events(id) ON DELETE CASCADE,
+    request_id TEXT UNIQUE REFERENCES private_chat_requests(id) ON DELETE CASCADE,
     created_at TEXT NOT NULL,
     CHECK (participant_a_id <> participant_b_id)
   );
@@ -303,8 +303,8 @@ export function readAppDataset(): AppDataset {
       (row): PrivateChat => ({
         id: String(row.id),
         participantIds: [String(row.participant_a_id), String(row.participant_b_id)],
-        originEventId: String(row.origin_event_id),
-        requestId: String(row.request_id),
+        originEventId: row.origin_event_id ? String(row.origin_event_id) : null,
+        requestId: row.request_id ? String(row.request_id) : null,
         createdAt: String(row.created_at)
       })
     );
@@ -334,6 +334,7 @@ export function readAppDataset(): AppDataset {
     eventInvites: [],
     socialPosts: [],
     stories: [],
+    storyViews: [],
     conversationReadStates: [],
     notifications: []
   };
@@ -531,8 +532,8 @@ export function replaceAppDataset(data: AppDataset) {
         chat.id,
         chat.participantIds[0],
         chat.participantIds[1],
-        chat.originEventId,
-        chat.requestId,
+        chat.originEventId ?? null,
+        chat.requestId ?? null,
         chat.createdAt
       );
     }

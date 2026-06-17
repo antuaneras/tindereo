@@ -30,6 +30,7 @@ body {
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  touch-action: manipulation;
 }
 
 body {
@@ -52,13 +53,14 @@ select {
 
 button {
   cursor: pointer;
+  touch-action: manipulation;
 }
 
 @media (max-width: 767px) {
   input,
   textarea,
   select {
-    font-size: 16px;
+    font-size: 16px !important;
   }
 }
 

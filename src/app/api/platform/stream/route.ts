@@ -1,3 +1,6 @@
+import { cookies } from "next/headers";
+import { getAuthenticatedUserId } from "../../../../lib/server/tindereo-auth";
+import { sanitizePlatformDataForViewer } from "../../../../lib/server/tindereo-privacy";
 import { getPlatformEnvelope } from "../../../../lib/server/tindereo-service";
 import { subscribeToPlatformUpdates } from "../../../../lib/server/tindereo-realtime";
 import type { PlatformDataEnvelope } from "../../../../lib/tindereo-types";
@@ -18,13 +21,26 @@ function serializeSseMessage(payload: PlatformDataEnvelope) {
   return `${lines.join("\n")}\n\n`;
 }
 
-export function GET(request: Request) {
+export async function GET(request: Request) {
+  const cookieStore = await cookies();
+  const currentUserId = getAuthenticatedUserId(cookieStore);
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       const send = (payload: PlatformDataEnvelope) => {
-        controller.enqueue(encoder.encode(serializeSseMessage(payload)));
+        controller.enqueue(
+          encoder.encode(
+            serializeSseMessage({
+              ...payload,
+              data: sanitizePlatformDataForViewer(payload.data, currentUserId),
+              meta: {
+                ...payload.meta,
+                currentUserId
+              }
+            })
+          )
+        );
       };
 
       const heartbeat = globalThis.setInterval(() => {
