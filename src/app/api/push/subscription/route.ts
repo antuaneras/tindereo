@@ -1,11 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { getAuthenticatedUserId } from "@/lib/server/tindereo-auth";
-import { readAppDataset, replaceAppDataset } from "@/lib/server/tindereo-store";
-import {
-  removePushSubscription,
-  upsertPushSubscription
-} from "@/lib/server/tindereo-web-push";
+import { removeMobilePushSubscription, saveMobilePushSubscription } from "@/lib/server/mobile-push";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -47,13 +43,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const nextData = upsertPushSubscription(
-      await readAppDataset(),
-      currentUserId,
-      body,
-      request.headers.get("user-agent")
-    );
-    await replaceAppDataset(nextData);
+    await saveMobilePushSubscription(currentUserId, body, request.headers.get("user-agent"));
 
     return NextResponse.json({ ok: true });
   } catch (error) {
@@ -75,8 +65,7 @@ export async function DELETE(request: Request) {
 
     const body = (await request.json().catch(() => null)) as { endpoint?: unknown } | null;
     const endpoint = typeof body?.endpoint === "string" ? body.endpoint : null;
-    const nextData = removePushSubscription(await readAppDataset(), currentUserId, endpoint);
-    await replaceAppDataset(nextData);
+    await removeMobilePushSubscription(currentUserId, endpoint);
 
     return NextResponse.json({ ok: true });
   } catch (error) {
