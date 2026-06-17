@@ -641,7 +641,29 @@ export function TindereoApp() {
     sessionPatch?: Partial<PersistedState["session"]>
   ) => {
     const revision = payload.meta?.revision ?? 0;
-    if (revision > 0 && revision <= latestRevisionRef.current) {
+    const hasMetaSessionPatch = Boolean(
+      payload.meta &&
+        ("currentUserId" in payload.meta || "selectedEventId" in payload.meta)
+    );
+    const hasExplicitSessionPatch = Boolean(
+      sessionPatch && Object.keys(sessionPatch).length > 0
+    );
+
+    if (
+      revision > 0 &&
+      revision < latestRevisionRef.current &&
+      !hasMetaSessionPatch &&
+      !hasExplicitSessionPatch
+    ) {
+      return;
+    }
+
+    if (
+      revision > 0 &&
+      revision === latestRevisionRef.current &&
+      !hasMetaSessionPatch &&
+      !hasExplicitSessionPatch
+    ) {
       return;
     }
 
@@ -751,7 +773,7 @@ export function TindereoApp() {
     return () => {
       unsubscribe();
     };
-  }, []);
+  }, [state?.session.currentUserId, state?.session.isAuthenticated]);
 
   useEffect(() => {
     if (!state || typeof window === "undefined") {
@@ -1470,8 +1492,8 @@ export function TindereoApp() {
     try {
       const payload = await resetPlatformData();
       applyPlatformPayload(payload, {
-        isAuthenticated: state.session.isAuthenticated,
-        currentUserId: state.session.currentUserId,
+        isAuthenticated: false,
+        currentUserId: "",
         activeTab: "discover",
         selectedEventId: null,
         selectedEventView: "overview",
@@ -1498,6 +1520,8 @@ export function TindereoApp() {
       setGroupReplyTargets({});
       setPrivateReplyTarget(null);
       setUiNotice("Datos vaciados.");
+      setLoginForm(INITIAL_LOGIN_FORM);
+      setRegisterForm(INITIAL_REGISTER_FORM);
     } catch (error) {
       setSyncError(
         error instanceof Error ? error.message : "No se pudieron vaciar los datos."

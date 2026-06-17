@@ -58,9 +58,7 @@ export function hydratePersistedState(
   const hasExplicitUserId = Boolean(sessionPatch && "currentUserId" in sessionPatch);
   const fallbackUserId = hasExplicitUserId
     ? (sessionPatch?.currentUserId ?? "").trim()
-    : sessionPatch?.currentUserId?.trim() ||
-      data.users[0]?.id ||
-      DEFAULT_STATE.session.currentUserId;
+    : sessionPatch?.currentUserId?.trim() || DEFAULT_STATE.session.currentUserId;
 
   return {
     ...DEFAULT_STATE,

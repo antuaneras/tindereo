@@ -13,7 +13,16 @@ export async function POST() {
   try {
     resetAuthState();
     clearAuthenticatedUserCookie(await cookies());
-    return NextResponse.json(await resetPlatformData());
+    const payload = await resetPlatformData();
+
+    return NextResponse.json({
+      ...payload,
+      meta: {
+        ...payload.meta,
+        currentUserId: null,
+        selectedEventId: null
+      }
+    });
   } catch (error) {
     return NextResponse.json(
       {

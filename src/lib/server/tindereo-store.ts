@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { DEFAULT_STATE } from "../tindereo-data";
 import { stripSession } from "../tindereo-session";
@@ -6,6 +6,11 @@ import type { AppDataset } from "../tindereo-types";
 
 const PLATFORM_STATE_ID = "main";
 const LOCAL_STATE_PATH = path.join(process.cwd(), "storage", "platform-state.json");
+const LEGACY_LOCAL_DATABASE_PATHS = [
+  path.join(process.cwd(), "storage", "tindereo.sqlite"),
+  path.join(process.cwd(), "storage", "tindereo.sqlite-shm"),
+  path.join(process.cwd(), "storage", "tindereo.sqlite-wal")
+];
 
 type PlatformStateRecord = {
   data: AppDataset;
@@ -114,6 +119,16 @@ function writeLocalStateRecord(nextRecord: PlatformStateRecord) {
   globalThis.__tindereoLocalPlatformState__ = nextRecord;
   writeFileSync(LOCAL_STATE_PATH, JSON.stringify(nextRecord, null, 2), "utf8");
   return nextRecord;
+}
+
+function removeLegacyLocalDatabaseFiles() {
+  for (const filePath of LEGACY_LOCAL_DATABASE_PATHS) {
+    try {
+      rmSync(filePath, { force: true });
+    } catch {
+      // Ignore legacy cleanup failures to avoid blocking app resets.
+    }
+  }
 }
 
 function buildSupabaseHeaders() {
@@ -258,10 +273,12 @@ export async function replaceAppDataset(data: AppDataset) {
 export async function resetAppDataset() {
   if (!isSupabaseConfigured()) {
     const current = readLocalStateRecord();
-    return writeLocalStateRecord({
+    const nextRecord = writeLocalStateRecord({
       data: createEmptyDataset(),
       revision: current.revision + 1
-    }).data;
+    });
+    removeLegacyLocalDatabaseFiles();
+    return nextRecord.data;
   }
 
   const row = await setSupabasePlatformState(createEmptyDataset());
