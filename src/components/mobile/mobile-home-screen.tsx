@@ -104,27 +104,37 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
 
   return (
     <div className="relative overflow-hidden">
-      <div className="pointer-events-none absolute inset-y-0 left-0 flex w-full items-center">
-        <div className="ml-1 flex h-[78%] w-[78%] max-w-[320px] flex-col justify-between rounded-[2.4rem] bg-[linear-gradient(160deg,#ff8d43_0%,#ff6b57_56%,#2a1712_100%)] px-5 py-6 text-white shadow-[0_24px_56px_rgba(240,107,87,0.32)]">
-          <div className="flex h-14 w-14 items-center justify-center rounded-[1.4rem] bg-white/14 backdrop-blur">
-            <Camera className="h-7 w-7" />
-          </div>
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-[0.22em] text-white/70">
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{ opacity: Math.min(1, dragOffsetX / 132) }}
+      >
+        <div className="absolute inset-0 bg-[#090706]" />
+        <div className="absolute inset-y-0 left-0 flex w-full items-center px-6">
+          <div
+            className="max-w-[220px] text-white"
+            style={{
+              transform: `translateX(${Math.max(-18, -26 + dragOffsetX * 0.12)}px)`,
+              opacity: Math.min(1, dragOffsetX / 112)
+            }}
+          >
+            <div className="flex h-14 w-14 items-center justify-center rounded-full border border-white/12 bg-white/10 backdrop-blur">
+              <Camera className="h-7 w-7" />
+            </div>
+            <div className="mt-5 text-xs font-semibold uppercase tracking-[0.22em] text-white/58">
               {dragOffsetX > 92 ? "Suelta para abrir" : "Arrastra a la derecha"}
             </div>
-            <div className="mt-3 text-2xl font-black tracking-[-0.05em]">
-              Camara lista para historia o publicacion
+            <div className="mt-3 text-[1.75rem] font-black leading-8 tracking-[-0.05em]">
+              Camara lista
             </div>
-            <p className="mt-3 text-sm leading-6 text-white/78">
-              Entras directo a la camara y abajo eliges el modo, como en una app nativa.
+            <p className="mt-3 text-sm leading-6 text-white/72">
+              Se abre directa para historia o publicacion, como una pantalla nueva.
             </p>
           </div>
         </div>
       </div>
 
       <div
-        className="relative space-y-5 will-change-transform"
+        className="relative space-y-5 overflow-hidden bg-[var(--bg-main)] will-change-transform"
         onTouchCancel={() => {
           setGestureStart(null);
           setIsGestureActive(false);
@@ -195,7 +205,10 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
         }}
         style={{
           transform: `translateX(${dragOffsetX}px)`,
-          transition: isGestureActive ? "none" : "transform 180ms ease-out"
+          transition: isGestureActive ? "none" : "transform 180ms ease-out, border-radius 180ms ease-out, box-shadow 180ms ease-out",
+          borderRadius: dragOffsetX > 0 ? "2rem" : "0rem",
+          boxShadow:
+            dragOffsetX > 0 ? "0 22px 60px rgba(0,0,0,0.28)" : "0 0 0 rgba(0,0,0,0)"
         }}
       >
         <div className="flex items-center justify-between">

@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Heart, Play, Plus, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { likePost, markStoryAsViewed } from "@/lib/mobile-api";
+import { Heart, Plus } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { likePost } from "@/lib/mobile-api";
 import { formatRelativeMobileTime } from "@/lib/mobile-shared";
 import { MobilePostCarousel } from "@/components/mobile/mobile-post-carousel";
+import { MobileStoryOverlay } from "@/components/mobile/mobile-story-overlay";
 import type { MobilePost, MobileProfile, MobileStoryCluster } from "@/lib/mobile-types";
 
 function cn(...values: Array<string | false | null | undefined>) {
@@ -38,36 +39,31 @@ export function StoryStrip({
   const router = useRouter();
   const [activeClusterIndex, setActiveClusterIndex] = useState<number | null>(null);
   const [storyIndex, setStoryIndex] = useState(0);
+  const [sessionSeenIds, setSessionSeenIds] = useState<string[]>([]);
 
-  const activeCluster = activeClusterIndex === null ? null : clusters[activeClusterIndex] ?? null;
-  const activeStory = activeCluster?.stories[storyIndex] ?? null;
+  const normalizedClusters = useMemo(
+    () =>
+      clusters.map((cluster) => ({
+        ...cluster,
+        stories: [...cluster.stories].sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      })),
+    [clusters]
+  );
 
-  useEffect(() => {
-    if (!activeStory) {
-      return;
-    }
+  const activeCluster = activeClusterIndex === null ? null : normalizedClusters[activeClusterIndex] ?? null;
+  const isStorySeen = (story: MobileStoryCluster["stories"][number]) => story.hasSeen || sessionSeenIds.includes(story.id);
 
-    void markStoryAsViewed(activeStory.id).catch(() => undefined);
-    const timer = window.setTimeout(() => {
-      const cluster = activeCluster;
-      if (!cluster) {
-        return;
-      }
-      if (storyIndex < cluster.stories.length - 1) {
-        setStoryIndex((current) => current + 1);
-        return;
-      }
-      if (activeClusterIndex !== null && activeClusterIndex < clusters.length - 1) {
-        setActiveClusterIndex((current) => (current === null ? null : current + 1));
-        setStoryIndex(0);
-        return;
-      }
-      setActiveClusterIndex(null);
-      setStoryIndex(0);
-    }, activeStory.durationMs || 5000);
+  const getStartIndexForCluster = (cluster: MobileStoryCluster) => {
+    const firstPendingIndex = cluster.stories.findIndex((story) => !isStorySeen(story));
+    return firstPendingIndex >= 0 ? firstPendingIndex : Math.max(0, cluster.stories.length - 1);
+  };
 
-    return () => window.clearTimeout(timer);
-  }, [activeCluster, activeClusterIndex, activeStory, clusters.length, storyIndex]);
+  const getPendingCount = (cluster: MobileStoryCluster) => cluster.stories.filter((story) => !isStorySeen(story)).length;
+
+  const closeViewer = () => {
+    setActiveClusterIndex(null);
+    setStoryIndex(0);
+  };
 
   return (
     <>
@@ -89,78 +85,58 @@ export function StoryStrip({
             Tu historia
           </span>
         </button>
-        {clusters.map((cluster, index) => (
-          <button
-            key={`${cluster.ownerType}:${cluster.ownerId}`}
-            type="button"
-            onClick={() => {
-              setActiveClusterIndex(index);
-              setStoryIndex(0);
-            }}
-            className="flex shrink-0 flex-col items-center gap-2"
-          >
-            <span className="rounded-full bg-gradient-to-br from-[var(--coral)] to-[var(--orange)] p-[2px]">
-              <span className="block rounded-full bg-[var(--bg-main)] p-[2px]">
-                <Avatar src={cluster.ownerAvatarUrl} label={cluster.ownerLabel} />
-              </span>
-            </span>
-            <span className="max-w-[74px] truncate text-[11px] font-medium text-[var(--text-soft)]">
-              {cluster.ownerLabel}
-            </span>
-            {cluster.unseenCount > 0 ? (
-              <span className="-mt-1 rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-[var(--coral)] shadow-sm">
-                {cluster.unseenCount}
-              </span>
-            ) : null}
-          </button>
-        ))}
-      </div>
-      {activeStory && activeCluster ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#140f0bcc] p-4">
-          <div className="relative flex h-[calc(100dvh-2rem)] w-full max-w-[420px] flex-col overflow-hidden rounded-[2rem] bg-black">
-            <div className="absolute left-0 right-0 top-0 z-20 flex gap-1 px-4 pt-[calc(0.75rem+env(safe-area-inset-top))]">
-              {activeCluster.stories.map((story, index) => (
-                <span key={story.id} className="h-1 flex-1 overflow-hidden rounded-full bg-white/20">
-                  <span
-                    className="block h-full rounded-full bg-white transition-all"
-                    style={{
-                      width: index < storyIndex ? "100%" : index === storyIndex ? "100%" : "0%"
-                    }}
-                  />
-                </span>
-              ))}
-            </div>
+
+        {clusters.map((cluster, index) => {
+          const pendingCount = getPendingCount(cluster);
+
+          return (
             <button
+              key={`${cluster.ownerType}:${cluster.ownerId}`}
               type="button"
-              onClick={() => setActiveClusterIndex(null)}
-              className="absolute right-4 top-[calc(1rem+env(safe-area-inset-top))] z-20 flex h-10 w-10 items-center justify-center rounded-full bg-black/35 text-white"
+              onClick={() => {
+                const nextCluster = normalizedClusters[index] ?? cluster;
+                setActiveClusterIndex(index);
+                setStoryIndex(getStartIndexForCluster(nextCluster));
+              }}
+              className="flex shrink-0 flex-col items-center gap-2"
             >
-              <X className="h-5 w-5" />
+              <span
+                className={cn(
+                  "rounded-full p-[2px]",
+                  pendingCount > 0
+                    ? "bg-gradient-to-br from-[var(--coral)] to-[var(--orange)]"
+                    : "bg-[var(--line-soft)]"
+                )}
+              >
+                <span className="block rounded-full bg-[var(--bg-main)] p-[2px]">
+                  <Avatar src={cluster.ownerAvatarUrl} label={cluster.ownerLabel} />
+                </span>
+              </span>
+              <span className="max-w-[74px] truncate text-[11px] font-medium text-[var(--text-soft)]">
+                {cluster.ownerLabel}
+              </span>
+              {pendingCount > 0 ? (
+                <span className="-mt-1 rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-[var(--coral)] shadow-sm">
+                  {pendingCount}
+                </span>
+              ) : null}
             </button>
-            {activeStory.media?.previewUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={activeStory.media.previewUrl}
-                alt={activeCluster.ownerLabel}
-                className="h-full w-full object-cover"
-              />
-            ) : (
-              <div className="flex h-full items-center justify-center text-white/70">
-                <Play className="h-10 w-10" />
-              </div>
-            )}
-            <div className="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/80 via-black/15 to-transparent px-5 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-16 text-white">
-              <div className="mb-3 flex items-center gap-3">
-                <Avatar src={activeCluster.ownerAvatarUrl} label={activeCluster.ownerLabel} />
-                <div>
-                  <div className="text-sm font-semibold">{activeCluster.ownerLabel}</div>
-                  <div className="text-xs text-white/70">{formatRelativeMobileTime(activeStory.createdAt)}</div>
-                </div>
-              </div>
-              {activeStory.caption ? <p className="text-sm leading-6">{activeStory.caption}</p> : null}
-            </div>
-          </div>
-        </div>
+          );
+        })}
+      </div>
+
+      {activeCluster && activeClusterIndex !== null ? (
+        <MobileStoryOverlay
+          clusters={normalizedClusters}
+          initialClusterIndex={activeClusterIndex}
+          initialStoryIndex={storyIndex}
+          onClose={closeViewer}
+          seenStoryIds={sessionSeenIds}
+          viewer={viewer}
+          onStorySeen={(storyId) => {
+            setSessionSeenIds((current) => (current.includes(storyId) ? current : [...current, storyId]));
+          }}
+        />
       ) : null}
     </>
   );

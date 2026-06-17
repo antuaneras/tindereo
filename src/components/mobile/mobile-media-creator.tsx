@@ -892,9 +892,10 @@ function CameraComposer({
   }
 
   return (
-    <div className="min-h-[calc(100dvh-env(safe-area-inset-top))] rounded-[2.2rem] bg-[#120d0a] px-4 pb-6 text-white shadow-[0_24px_70px_rgba(0,0,0,0.35)]">
-      <div className="flex items-center justify-between pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
-        <button className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-white/10" onClick={onBack} type="button">
+    <div className="relative min-h-[100dvh] overflow-hidden bg-black text-white">
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-20 h-36 bg-gradient-to-b from-black/76 via-black/26 to-transparent" />
+      <div className="absolute inset-x-0 top-0 z-30 flex items-center justify-between px-4 pb-6 pt-[calc(1rem+env(safe-area-inset-top))]">
+        <button className="pointer-events-auto inline-flex h-11 w-11 items-center justify-center rounded-full bg-white/10 backdrop-blur" onClick={onBack} type="button">
           <ArrowLeft className="h-5 w-5" />
         </button>
         <p className="text-sm font-semibold uppercase tracking-[0.2em] text-white/72">
@@ -902,7 +903,7 @@ function CameraComposer({
         </p>
         <button
           className={cn(
-            "rounded-full px-4 py-2 text-sm font-semibold disabled:opacity-60",
+            "pointer-events-auto rounded-full px-4 py-2 text-sm font-semibold backdrop-blur disabled:opacity-60",
             previewUrl && captureMode === "story" ? "bg-white text-[#1d160f]" : "bg-white/10 text-white"
           )}
           disabled={previewUrl && captureMode === "story" ? isSubmitting || !previewUrl : false}
@@ -927,20 +928,22 @@ function CameraComposer({
         </button>
       </div>
 
-      <div className="space-y-4">
-        <div className="overflow-hidden rounded-[2rem] border border-white/10 bg-white/5">
+      <div className="min-h-[100dvh]">
+        <div className="relative min-h-[100dvh] overflow-hidden bg-black">
           {previewUrl ? (
-            <div className="relative">
+            <div className="relative h-[100dvh]">
               {storyMediaType === "video" ? (
-                <video autoPlay controls muted playsInline src={previewUrl} className="h-[68vh] w-full object-cover" />
+                <video autoPlay controls muted playsInline src={previewUrl} className="h-full w-full object-cover" />
               ) : (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={previewUrl} alt="Vista previa de historia" className="h-[68vh] w-full object-cover" />
+                <img src={previewUrl} alt="Vista previa de historia" className="h-full w-full object-cover" />
               )}
-              <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-[linear-gradient(180deg,rgba(0,0,0,0.54),transparent)] px-4 pb-10 pt-4">
-                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-white/70">Vista previa</p>
+              <div className="absolute inset-x-0 top-[calc(4.5rem+env(safe-area-inset-top))] flex items-center justify-between px-4">
+                <p className="rounded-full bg-black/35 px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-white/70 backdrop-blur">
+                  Vista previa
+                </p>
                 <button
-                  className="inline-flex items-center gap-2 rounded-full bg-black/35 px-4 py-2 text-sm font-semibold text-white"
+                  className="inline-flex items-center gap-2 rounded-full bg-black/35 px-4 py-2 text-sm font-semibold text-white backdrop-blur"
                   onClick={() => {
                     resetStoryDraft();
                     setCameraRetryNonce((current) => current + 1);
@@ -953,9 +956,9 @@ function CameraComposer({
               </div>
             </div>
           ) : hasLiveCamera ? (
-            <div className="relative h-[68vh] overflow-hidden bg-black">
+            <div className="relative h-[100dvh] overflow-hidden bg-black">
               {isRecordingVideo ? (
-                <div className="absolute inset-x-4 top-4 z-10 h-1.5 overflow-hidden rounded-full bg-white/18">
+                <div className="absolute inset-x-4 top-[calc(4.5rem+env(safe-area-inset-top))] z-10 h-1.5 overflow-hidden rounded-full bg-white/18">
                   <div className="h-full rounded-full bg-[#ff6b57] transition-[width] duration-100" style={{ width: `${recordingProgress}%` }} />
                 </div>
               ) : null}
@@ -980,12 +983,12 @@ function CameraComposer({
                 playsInline
                 ref={liveVideoRef}
               />
-              <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-[linear-gradient(180deg,rgba(0,0,0,0.6),transparent)] px-4 pb-16 pt-4">
-                <div className="rounded-full bg-black/35 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-white/70">
+              <div className="absolute inset-x-0 top-[calc(4.5rem+env(safe-area-inset-top))] flex items-center justify-between px-4">
+                <div className="rounded-full bg-black/35 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-white/70 backdrop-blur">
                   {captureMode === "story" ? "Historia" : "Publicacion"}
                 </div>
                 <button
-                  className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-black/35 text-white disabled:opacity-40"
+                  className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-black/35 text-white backdrop-blur disabled:opacity-40"
                   disabled={isRecordingVideo}
                   onClick={() => {
                     stopSharedCameraSessionStream();
@@ -996,7 +999,7 @@ function CameraComposer({
                   <RefreshCw className="h-5 w-5" />
                 </button>
               </div>
-              <div className="absolute inset-x-0 bottom-0 z-20 bg-[linear-gradient(0deg,rgba(0,0,0,0.94),rgba(0,0,0,0.3),transparent)] px-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-16">
+              <div className="absolute inset-x-0 bottom-0 z-20 bg-[linear-gradient(0deg,rgba(0,0,0,0.98),rgba(0,0,0,0.54),transparent)] px-4 pb-[calc(0.45rem+env(safe-area-inset-bottom))] pt-24">
                 <div className="flex justify-center">
                   <div className="inline-flex rounded-full bg-black/40 p-1 backdrop-blur">
                     {([
@@ -1018,7 +1021,7 @@ function CameraComposer({
                   </div>
                 </div>
 
-                <div className="mt-5 flex items-center justify-between gap-4 px-1">
+                <div className="mt-8 flex items-end justify-between gap-4 px-1">
                   <button
                     className="inline-flex h-14 w-14 items-center justify-center overflow-hidden rounded-2xl border border-white/15 bg-white/8 text-white"
                     onClick={() => cameraInputRef.current?.click()}
@@ -1099,7 +1102,7 @@ function CameraComposer({
               </div>
             </div>
           ) : (
-            <div className="flex h-[68vh] flex-col items-center justify-center gap-4 px-6 text-center">
+            <div className="flex h-[100dvh] flex-col items-center justify-center gap-4 px-6 text-center">
               <Camera className="h-12 w-12 text-white/72" />
               <p className="max-w-xs text-sm text-white/72">
                 Intento abrir la camara al entrar. Si tu movil la bloquea, puedes reintentarlo o usar un archivo del
@@ -1122,8 +1125,8 @@ function CameraComposer({
         />
 
         {previewUrl && captureMode === "story" ? (
-          <div className="space-y-4">
-            <div className="rounded-[1.8rem] border border-white/10 bg-white/6 p-4">
+          <div className="absolute inset-x-4 bottom-[calc(0.75rem+env(safe-area-inset-bottom))] z-30">
+            <div className="rounded-[1.8rem] border border-white/10 bg-black/36 p-4 backdrop-blur">
               <div className="flex items-center gap-3 text-white/72">
                 <Sparkles className="h-5 w-5" />
                 <div className="text-sm font-semibold">
@@ -1143,7 +1146,7 @@ function CameraComposer({
         ) : null}
 
         {cameraAccessError ? (
-          <div className="rounded-[1.4rem] bg-white/8 px-4 py-3 text-sm text-[#ffd0c2]">{cameraAccessError}</div>
+          <div className="absolute inset-x-4 bottom-[calc(8rem+env(safe-area-inset-bottom))] z-30 rounded-[1.4rem] bg-black/60 px-4 py-3 text-sm text-[#ffd0c2] backdrop-blur">{cameraAccessError}</div>
         ) : null}
       </div>
     </div>

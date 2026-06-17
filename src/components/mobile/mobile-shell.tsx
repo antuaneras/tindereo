@@ -40,7 +40,8 @@ export function MobileShell({ children, initialSummary }: MobileShellProps) {
   const currentPath = usePathname();
   const router = useRouter();
   const [summary, setSummary] = useState(initialSummary);
-  const hideNavigation = currentPath.startsWith("/crear");
+  const isCreateRoute = currentPath.startsWith("/crear");
+  const hideNavigation = isCreateRoute;
 
   useEffect(() => {
     let cancelled = false;
@@ -119,8 +120,10 @@ export function MobileShell({ children, initialSummary }: MobileShellProps) {
     <div className="mx-auto flex min-h-[100dvh] w-full max-w-[480px] flex-col bg-[var(--bg-main)] text-[var(--text-main)]">
       <main
         className={cn(
-          "flex-1 px-4 pt-[calc(1rem+env(safe-area-inset-top))]",
-          hideNavigation ? "pb-4" : "pb-[calc(6rem+env(safe-area-inset-bottom))]"
+          "flex-1",
+          isCreateRoute
+            ? "p-0"
+            : "px-4 pt-[calc(1rem+env(safe-area-inset-top))] pb-[calc(6rem+env(safe-area-inset-bottom))]"
         )}
       >
         {children}
