@@ -786,6 +786,34 @@ export function TindereoApp() {
     );
   }, [state]);
 
+  const unreadNotificationCount = state?.session.isAuthenticated
+    ? getUnreadNotificationCount(state, state.session.currentUserId)
+    : 0;
+  const unreadChatThreadCount = state?.session.isAuthenticated
+    ? getUnreadChatThreadCount(state, state.session.currentUserId)
+    : 0;
+
+  useEffect(() => {
+    if (!state?.session.isAuthenticated || typeof navigator === "undefined") {
+      return;
+    }
+
+    const badgeCount = unreadChatThreadCount + unreadNotificationCount;
+    const badgeNavigator = navigator as Navigator & {
+      clearAppBadge?: () => Promise<void>;
+      setAppBadge?: (count?: number) => Promise<void>;
+    };
+
+    if (badgeCount > 0 && badgeNavigator.setAppBadge) {
+      void badgeNavigator.setAppBadge(badgeCount).catch(() => undefined);
+      return;
+    }
+
+    if (badgeCount === 0 && badgeNavigator.clearAppBadge) {
+      void badgeNavigator.clearAppBadge().catch(() => undefined);
+    }
+  }, [state?.session.isAuthenticated, unreadChatThreadCount, unreadNotificationCount]);
+
   if (!state) {
     return <LoadingScreen error={syncError} onRetry={() => void loadPlatform()} />;
   }
@@ -841,34 +869,6 @@ export function TindereoApp() {
       setIsSyncing(false);
     }
   };
-
-  const unreadNotificationCount = state.session.isAuthenticated
-    ? getUnreadNotificationCount(state, state.session.currentUserId)
-    : 0;
-  const unreadChatThreadCount = state.session.isAuthenticated
-    ? getUnreadChatThreadCount(state, state.session.currentUserId)
-    : 0;
-
-  useEffect(() => {
-    if (!state.session.isAuthenticated || typeof navigator === "undefined") {
-      return;
-    }
-
-    const badgeCount = unreadChatThreadCount + unreadNotificationCount;
-    const badgeNavigator = navigator as Navigator & {
-      clearAppBadge?: () => Promise<void>;
-      setAppBadge?: (count?: number) => Promise<void>;
-    };
-
-    if (badgeCount > 0 && badgeNavigator.setAppBadge) {
-      void badgeNavigator.setAppBadge(badgeCount).catch(() => undefined);
-      return;
-    }
-
-    if (badgeCount === 0 && badgeNavigator.clearAppBadge) {
-      void badgeNavigator.clearAppBadge().catch(() => undefined);
-    }
-  }, [state.session.isAuthenticated, unreadChatThreadCount, unreadNotificationCount]);
 
   if (!state.session.isAuthenticated) {
     return (
