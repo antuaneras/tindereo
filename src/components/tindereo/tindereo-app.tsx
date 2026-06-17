@@ -6694,6 +6694,34 @@ function MobileCameraComposerScreen({
     setRecordingProgress(0);
   };
 
+  const attachLiveStreamToVideoElement = async () => {
+    const video = liveVideoRef.current;
+    const stream = streamRef.current;
+
+    if (!video || !stream) {
+      return false;
+    }
+
+    if (video.srcObject !== stream) {
+      video.srcObject = stream;
+    }
+
+    video.muted = true;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.setAttribute("muted", "");
+    video.setAttribute("autoplay", "");
+    video.setAttribute("playsinline", "");
+
+    try {
+      await video.play();
+    } catch {
+      return false;
+    }
+
+    return true;
+  };
+
   const stopLiveStream = () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
@@ -6778,10 +6806,6 @@ function MobileCameraComposerScreen({
         }
 
         streamRef.current = stream;
-        if (liveVideoRef.current) {
-          liveVideoRef.current.srcObject = stream;
-          void liveVideoRef.current.play().catch(() => undefined);
-        }
         setCameraAccessError(null);
         setHasLiveCamera(true);
       } catch {
@@ -6807,6 +6831,55 @@ function MobileCameraComposerScreen({
       stopLiveStream();
     };
   }, [cameraFacingMode, cameraRetryNonce, composer.imageUrl]);
+
+  useEffect(() => {
+    if (!hasLiveCamera || composer.imageUrl) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const bindPreview = async () => {
+      const attached = await attachLiveStreamToVideoElement();
+
+      if (!attached || cancelled) {
+        if (!cancelled && streamRef.current) {
+          window.setTimeout(() => {
+            if (!cancelled) {
+              void attachLiveStreamToVideoElement();
+            }
+          }, 180);
+        }
+        return;
+      }
+
+      setCameraAccessError(null);
+    };
+
+    void bindPreview();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [composer.imageUrl, hasLiveCamera]);
+
+  useEffect(() => {
+    if (!hasLiveCamera || isLivePreviewReady || composer.imageUrl || typeof window === "undefined") {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      if (!isLivePreviewReady) {
+        setCameraAccessError(
+          "He pedido acceso a la camara pero el movil no ha mostrado la preview. Reintenta o usa la camara del sistema."
+        );
+        setHasLiveCamera(false);
+        stopLiveStream();
+      }
+    }, 3200);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [composer.imageUrl, hasLiveCamera, isLivePreviewReady]);
 
   const capturePhotoFromLiveCamera = async () => {
     const video = liveVideoRef.current;
