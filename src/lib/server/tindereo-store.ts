@@ -182,6 +182,15 @@ async function readSupabasePlatformState() {
   return setSupabasePlatformState(createEmptyDataset());
 }
 
+export async function readPrimaryAppDataset() {
+  if (!isSupabaseConfigured()) {
+    return cloneData(readLocalStateRecord().data);
+  }
+
+  const row = await readSupabasePlatformState();
+  return row.data;
+}
+
 export async function getDatasetRevision() {
   if (!isSupabaseConfigured()) {
     return readLocalStateRecord().revision;
@@ -192,19 +201,19 @@ export async function getDatasetRevision() {
 }
 
 export async function readAppDataset() {
+  const rowData = await readPrimaryAppDataset();
   if (!isSupabaseConfigured()) {
-    return cloneData(readLocalStateRecord().data);
+    return rowData;
   }
 
-  const row = await readSupabasePlatformState();
-  const normalizedMessages = await persistLegacyMessagesIfNeeded(row.data);
+  const normalizedMessages = await persistLegacyMessagesIfNeeded(rowData);
 
   if (!normalizedMessages) {
-    return row.data;
+    return rowData;
   }
 
   return {
-    ...row.data,
+    ...rowData,
     groupMessages: normalizedMessages.groupMessages,
     privateMessages: normalizedMessages.privateMessages
   };

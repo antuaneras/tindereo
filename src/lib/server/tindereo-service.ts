@@ -2,6 +2,7 @@ import { hydratePersistedState, stripSession } from "../tindereo-session";
 import {
   getDatasetRevision,
   readAppDataset,
+  readPrimaryAppDataset,
   replaceAppDataset,
   resetAppDataset
 } from "./tindereo-store";
@@ -69,15 +70,20 @@ function buildPlatformEnvelope(
 async function runStateMutation(
   actorId: string,
   mutation: (state: PersistedState) => PersistedState,
-  metaBuilder?: (state: PersistedState) => PlatformDataEnvelope["meta"]
+  metaBuilder?: (state: PersistedState) => PlatformDataEnvelope["meta"],
+  options?: {
+    requiresHydratedMessages?: boolean;
+  }
 ): Promise<PlatformDataEnvelope> {
-  const currentData = await readAppDataset();
+  const currentData = options?.requiresHydratedMessages
+    ? await readAppDataset()
+    : await readPrimaryAppDataset();
   const previousNotificationIds = new Set(currentData.notifications.map((notification) => notification.id));
   const nextState = mutation(hydratePersistedState(currentData, { currentUserId: actorId }));
   const nextData = stripSession(nextState);
   await persistMessageCollectionsDelta(currentData, nextData);
   await replaceAppDataset(nextData);
-  const payload = await buildPlatformEnvelope(nextData, metaBuilder?.(nextState));
+  const payload = await buildPlatformEnvelope(await readAppDataset(), metaBuilder?.(nextState));
   publishPlatformUpdate(payload);
   void sendPushNotificationsForNotifications(
     nextData,
@@ -117,7 +123,7 @@ export async function createEventRecord(
 export async function runPlatformAction(action: PlatformAction): Promise<PlatformDataEnvelope> {
   switch (action.type) {
     case "register-user": {
-      const currentData = await readAppDataset();
+      const currentData = await readPrimaryAppDataset();
       const nextState = registerUser(hydratePersistedState(currentData), action.input);
       const createdUser = nextState.users[0];
       if (!createdUser) {
@@ -125,7 +131,7 @@ export async function runPlatformAction(action: PlatformAction): Promise<Platfor
       }
       const nextData = stripSession(nextState);
       await replaceAppDataset(nextData);
-      const payload = await buildPlatformEnvelope(nextData, {
+      const payload = await buildPlatformEnvelope(await readAppDataset(), {
         currentUserId: createdUser.id
       });
       publishPlatformUpdate(payload);
@@ -271,8 +277,11 @@ export async function runPlatformAction(action: PlatformAction): Promise<Platfor
         markStoryViewed(state, action.actorId, action.storyId)
       );
     case "mark-chat-media-viewed":
-      return runStateMutation(action.actorId, (state) =>
-        markChatMediaViewed(state, action.actorId, action.messageId)
+      return runStateMutation(
+        action.actorId,
+        (state) => markChatMediaViewed(state, action.actorId, action.messageId),
+        undefined,
+        { requiresHydratedMessages: true }
       );
     case "mark-thread-read":
       return runStateMutation(action.actorId, (state) =>

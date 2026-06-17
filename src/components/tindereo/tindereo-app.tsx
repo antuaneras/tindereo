@@ -1942,19 +1942,31 @@ export function TindereoApp() {
   };
 
   const handleCreateEvent = async (input: CreateEventInput) => {
-    const payload = await runPlatformMutation({
-      type: "create-event",
-      actorId: state.session.currentUserId,
-      input
-    });
+    setSyncError(null);
+    setIsSyncing(true);
 
-    if (payload) {
+    try {
+      const payload = await executePlatformAction({
+        type: "create-event",
+        actorId: state.session.currentUserId,
+        input
+      });
+
       applyPlatformPayload(payload, {
-        activeTab: "host",
+        activeTab: "agenda",
         selectedEventId: payload.meta?.selectedEventId ?? null,
         selectedEventView: "chat"
       });
       setMobileEventScreen({ originTab: "agenda" });
+      setUiNotice("Evento creado. Ya puedes entrar en su chat.");
+      return true;
+    } catch (error) {
+      setSyncError(
+        error instanceof Error ? error.message : "No se pudo crear el evento."
+      );
+      return false;
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -2352,7 +2364,7 @@ export function TindereoApp() {
           }
           onChangePrivateDraft={setPrivateDraft}
           onCreateGroupChat={() => setGroupChatComposer(GROUP_CHAT_COMPOSER_INITIAL_STATE)}
-          onCreateEvent={(input) => void handleCreateEvent(input)}
+          onCreateEvent={handleCreateEvent}
           onGoToCreate={() => navigateToTab("host")}
           onMarkAllNotificationsRead={() => void handleMarkAllNotificationsRead()}
           onMarkStoryViewed={(storyId) => void handleMarkStoryViewed(storyId)}
@@ -2423,6 +2435,7 @@ export function TindereoApp() {
           onOpenMediaEditor={setMediaEditor}
           onSaveMediaEdit={() => void handleSaveMediaEdit()}
           setMediaEditor={setMediaEditor}
+          syncError={syncError}
         />
       </div>
 
@@ -2788,6 +2801,8 @@ export function TindereoApp() {
         {state.session.activeTab === "host" ? (
           <OrganizerDashboard
             currentUser={currentUser}
+            error={syncError}
+            isSubmitting={isSyncing}
             onCreateEvent={handleCreateEvent}
             onRespondToAccess={handleRespondEventAccess}
             onSelectEvent={(eventId) => openEvent(eventId, "discover")}
@@ -3048,7 +3063,8 @@ function MobileAppShell({
   uiNotice,
   webPushStatus,
   mediaEditor,
-  setMediaEditor
+  setMediaEditor,
+  syncError
 }: {
   activeStory: StoryItem | null;
   cameraComposer: CameraComposerState | null;
@@ -3077,7 +3093,7 @@ function MobileAppShell({
   onChangeGroupDraft: (eventId: string, value: string) => void;
   onChangePrivateDraft: (value: string) => void;
   onCreateGroupChat: () => void;
-  onCreateEvent: (input: CreateEventInput) => void;
+  onCreateEvent: (input: CreateEventInput) => Promise<boolean>;
   onGoToCreate: () => void;
   onMarkAllNotificationsRead: () => void;
   onMarkStoryViewed: (storyId: string) => void;
@@ -3148,6 +3164,7 @@ function MobileAppShell({
   webPushStatus: WebPushStatus;
   mediaEditor: MediaEditorState | null;
   setMediaEditor: Dispatch<SetStateAction<MediaEditorState | null>>;
+  syncError: string | null;
 }) {
   const activeStories = getActiveStories(state, currentUser.id);
   const feedPosts = getFeedPosts(state, currentUser.id);
@@ -3331,6 +3348,12 @@ function MobileAppShell({
         title={mobileTabLabel}
       />
 
+      {syncError ? (
+        <div className="mb-3 rounded-[22px] border border-[#ffcfbb] bg-[#fff4ed] px-4 py-3 text-sm text-[#b14a20] shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+          {syncError}
+        </div>
+      ) : null}
+
       {uiNotice ? (
         <div className="mb-3 rounded-[22px] border border-[#eadfd3] bg-white/90 px-4 py-3 text-sm text-[#5f4b3f] shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
           {uiNotice}
@@ -3426,7 +3449,10 @@ function MobileAppShell({
       {state.session.activeTab === "host" ? (
         <div className="space-y-4">
           <OrganizerDashboard
+            compact
             currentUser={currentUser}
+            error={syncError}
+            isSubmitting={isSyncing}
             onCreateEvent={onCreateEvent}
             onRespondToAccess={onRespondEventAccess}
             onSelectEvent={(eventId) => onOpenEvent(eventId, "discover")}
@@ -6148,6 +6174,7 @@ function MobileCameraComposerScreen({
   const [cameraAccessError, setCameraAccessError] = useState<string | null>(null);
   const [cameraFacingMode, setCameraFacingMode] = useState<"environment" | "user">("environment");
   const [hasLiveCamera, setHasLiveCamera] = useState(false);
+  const [isLivePreviewReady, setIsLivePreviewReady] = useState(false);
   const [isRecordingVideo, setIsRecordingVideo] = useState(false);
   const [recordingProgress, setRecordingProgress] = useState(0);
   const [cameraRetryNonce, setCameraRetryNonce] = useState(0);
@@ -6196,6 +6223,7 @@ function MobileCameraComposerScreen({
       liveVideoRef.current.srcObject = null;
     }
     setHasLiveCamera(false);
+    setIsLivePreviewReady(false);
   };
 
   const openNativePhotoCapture = () => {
@@ -6240,6 +6268,7 @@ function MobileCameraComposerScreen({
         return;
       }
 
+      setIsLivePreviewReady(false);
       stopLiveStream();
 
       const preferredFacingMode =
@@ -6279,6 +6308,7 @@ function MobileCameraComposerScreen({
       } catch {
         if (!cancelled) {
           setHasLiveCamera(false);
+          setIsLivePreviewReady(false);
           setCameraAccessError(
             "No he podido abrir la camara en directo. Puedes reintentarlo o usar la camara del sistema."
           );
@@ -6515,6 +6545,7 @@ function MobileCameraComposerScreen({
       return;
     }
 
+    setIsLivePreviewReady(false);
     setCameraFacingMode((current) => (current === "environment" ? "user" : "environment"));
   };
 
@@ -6535,8 +6566,23 @@ function MobileCameraComposerScreen({
     setCameraRetryNonce((current) => current + 1);
   };
 
+  const handleLiveVideoReady = () => {
+    const video = liveVideoRef.current;
+    if (video) {
+      void video.play().catch(() => undefined);
+    }
+    setIsLivePreviewReady(true);
+  };
+
+  const cameraFrameClass = "h-[min(68vh,36rem)] min-h-[28rem]";
+  const interactionLockStyle = {
+    WebkitTouchCallout: "none",
+    WebkitUserSelect: "none",
+    userSelect: "none"
+  } as const;
+
   return (
-    <div className="fixed inset-0 z-[65] overflow-y-auto bg-[#120d0a] px-4 pb-8 text-white">
+    <div className="fixed inset-0 z-[65] overflow-y-auto overscroll-contain bg-[#120d0a] px-4 pb-8 text-white">
       <div className="flex items-center justify-between pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
         <button className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-white/10" onClick={onClose} type="button">
           <X className="h-5 w-5" />
@@ -6561,7 +6607,7 @@ function MobileCameraComposerScreen({
               <MediaSurface
                 alt="Preview"
                 autoPlay={composer.mediaType === "video"}
-                className="h-[420px] w-full object-cover"
+                className={`${cameraFrameClass} w-full object-cover`}
                 controls={composer.mediaType === "video"}
                 muted={composer.mediaType === "video"}
                 src={composer.imageUrl}
@@ -6579,9 +6625,19 @@ function MobileCameraComposerScreen({
                   Repetir
                 </button>
               </div>
+              <div className="absolute inset-x-0 bottom-0 bg-[linear-gradient(180deg,transparent,rgba(0,0,0,0.76))] px-5 pb-5 pt-16">
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-white/60">
+                  {videoOnlyStory
+                    ? `Video listo para historia · ${Math.max(
+                        1,
+                        Math.ceil((composer.durationMs ?? STORY_MAX_VIDEO_MS) / 1000)
+                      )} s`
+                    : "Ajusta el texto, las etiquetas y el destino antes de subir"}
+                </p>
+              </div>
             </div>
           ) : hasLiveCamera ? (
-            <div className="relative h-[420px] w-full bg-black">
+            <div className={`relative w-full overflow-hidden bg-black ${cameraFrameClass}`} style={interactionLockStyle}>
               {isRecordingVideo ? (
                 <div className="absolute inset-x-4 top-4 z-10 h-1.5 overflow-hidden rounded-full bg-white/18">
                   <div
@@ -6590,14 +6646,32 @@ function MobileCameraComposerScreen({
                   />
                 </div>
               ) : null}
+              {!isLivePreviewReady ? (
+                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),transparent_32%),rgba(7,5,4,0.84)] px-6 text-center">
+                  <div className="h-10 w-10 animate-pulse rounded-full border border-white/18 bg-white/12" />
+                  <p className="text-sm font-semibold text-white">Abriendo la camara...</p>
+                  <p className="max-w-xs text-xs uppercase tracking-[0.18em] text-white/55">
+                    En cuanto llegue la primera imagen veras la preview completa
+                  </p>
+                </div>
+              ) : null}
               <video
                 autoPlay
-                className={`h-full w-full object-cover ${cameraFacingMode === "user" ? "-scale-x-100" : ""}`}
+                className={`h-full w-full object-cover transition-opacity duration-200 ${
+                  cameraFacingMode === "user" ? "-scale-x-100" : ""
+                } ${isLivePreviewReady ? "opacity-100" : "opacity-0"}`}
+                disablePictureInPicture
                 muted
+                onLoadedData={handleLiveVideoReady}
+                onLoadedMetadata={handleLiveVideoReady}
+                onPlaying={handleLiveVideoReady}
                 playsInline
                 ref={liveVideoRef}
               />
-              <div className="absolute inset-x-0 top-0 flex items-center justify-end bg-[linear-gradient(180deg,rgba(0,0,0,0.52),transparent)] px-4 pb-16 pt-4">
+              <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-[linear-gradient(180deg,rgba(0,0,0,0.6),transparent)] px-4 pb-16 pt-4">
+                <div className="rounded-full bg-black/35 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-white/70">
+                  En directo
+                </div>
                 <button
                   className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-black/35 text-white disabled:cursor-not-allowed disabled:opacity-40"
                   disabled={isRecordingVideo}
@@ -6607,8 +6681,8 @@ function MobileCameraComposerScreen({
                   <RefreshCw className="h-5 w-5" />
                 </button>
               </div>
-              <div className="absolute inset-x-0 bottom-0 bg-[linear-gradient(180deg,transparent,rgba(0,0,0,0.72))] px-5 pb-5 pt-14">
-                <p className="text-sm text-white/78">
+              <div className="absolute inset-x-0 bottom-0 bg-[linear-gradient(180deg,transparent,rgba(0,0,0,0.76))] px-5 pb-6 pt-20">
+                <p className="text-sm font-medium text-white/82">
                   {isRecordingVideo
                     ? "Grabando historia en video. Suelta para terminar."
                     : "Toca para foto. Manten pulsado para grabar una historia de hasta 20 segundos."}
@@ -6616,7 +6690,7 @@ function MobileCameraComposerScreen({
               </div>
             </div>
           ) : (
-            <div className="flex h-[420px] flex-col items-center justify-center gap-4 px-6 text-center">
+            <div className={`flex flex-col items-center justify-center gap-4 px-6 text-center ${cameraFrameClass}`}>
               <Camera className="h-12 w-12 text-white/72" />
               <p className="max-w-xs text-sm text-white/72">
                 Intento abrir la camara al entrar. Si tu movil la bloquea, puedes reintentarlo o usar la del sistema.
@@ -6673,225 +6747,248 @@ function MobileCameraComposerScreen({
           type="file"
         />
 
-        <div className="flex items-center justify-between gap-4 px-1">
-          <button
-            className="inline-flex h-14 w-14 items-center justify-center overflow-hidden rounded-2xl border border-white/15 bg-white/8 text-white"
-            onClick={() => libraryInputRef.current?.click()}
-            type="button"
-          >
-            <Image className="h-5 w-5" />
-          </button>
-          <button
-            className="relative inline-flex h-24 w-24 items-center justify-center rounded-full border-2 border-white bg-white/12 text-white shadow-[0_18px_40px_rgba(0,0,0,0.28)]"
-            onContextMenu={(event) => event.preventDefault()}
-            onPointerCancel={handleCapturePressCancel}
-            onPointerDown={handleCapturePressStart}
-            onPointerLeave={handleCapturePressCancel}
-            onPointerUp={handleCapturePressEnd}
-            type="button"
-          >
-            <span
-              className={`inline-flex h-[4.4rem] w-[4.4rem] items-center justify-center rounded-full transition ${
-                isRecordingVideo ? "scale-90 bg-[#ff6b57]" : "bg-white text-[#1d160f]"
-              }`}
-            >
-              {isRecordingVideo ? (
-                <span className="h-7 w-7 rounded-2xl bg-white" />
-              ) : (
-                <Camera className="h-7 w-7" />
-              )}
-            </span>
-          </button>
-          <button
-            className="inline-flex h-14 w-14 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white disabled:cursor-not-allowed disabled:opacity-40"
-            disabled={isRecordingVideo || Boolean(composer.imageUrl)}
-            onClick={handleSwitchCamera}
-            type="button"
-          >
-            <RefreshCw className="h-5 w-5" />
-          </button>
-        </div>
-
-        <div className="space-y-2 text-center">
-          <p className="text-sm font-semibold text-white">
-            {hasLiveCamera
-              ? isRecordingVideo
-                ? "Grabando historia en video"
-                : cameraFacingMode === "user"
-                  ? "Camara selfie activa"
-                  : "Camara trasera activa"
-              : "Usa la camara en directo o la del sistema"}
-          </p>
-          <p className="text-xs uppercase tracking-[0.18em] text-white/60">
-            Toca foto · Manten video
-          </p>
-        </div>
-
-        <div className="flex items-center justify-center gap-3">
-          <button
-            className="rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white"
-            onClick={openNativePhotoCapture}
-            type="button"
-          >
-            Foto
-          </button>
-          <button
-            className="rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white"
-            onClick={openNativeVideoCapture}
-            type="button"
-          >
-            Video
-          </button>
-          <button
-            className="rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white"
-            onClick={handleRetryCamera}
-            type="button"
-          >
-            Reintentar
-          </button>
-        </div>
-
-        <p className="text-center text-xs uppercase tracking-[0.18em] text-white/58">
-          {videoOnlyStory
-            ? `Video listo para historia · ${Math.max(
-                1,
-                Math.ceil((composer.durationMs ?? STORY_MAX_VIDEO_MS) / 1000)
-              )} s`
-            : "Las publicaciones siguen siendo foto. El video se sube como historia."}
-        </p>
-
-        <div className="flex gap-2">
-          {[
-            { id: "story" as const, label: "Historia" },
-            { id: "post" as const, label: "Publicacion" }
-          ].map((item) => {
-            const disabled = videoOnlyStory && item.id === "post";
-
-            return (
+        {!composer.imageUrl ? (
+          <div className="space-y-4" style={interactionLockStyle}>
+            <div className="flex items-center justify-between gap-4 px-1">
               <button
-                key={item.id}
-                className={`flex-1 rounded-full px-4 py-3 text-sm font-semibold ${
-                  disabled
-                    ? "cursor-not-allowed bg-white/5 text-white/35"
-                    : composer.mode === item.id
-                      ? "bg-white text-[#1d160f]"
-                      : "bg-white/10 text-white"
-                }`}
-                onClick={() => {
-                  if (disabled) {
-                    return;
-                  }
-
-                  onUpdateComposer((current) =>
-                    current
-                      ? {
-                          ...current,
-                          mode: item.id
-                        }
-                      : current
-                  );
-                }}
+                className="inline-flex h-14 w-14 items-center justify-center overflow-hidden rounded-2xl border border-white/15 bg-white/8 text-white"
+                onClick={() => libraryInputRef.current?.click()}
                 type="button"
               >
-                {item.label}
+                <Image className="h-5 w-5" />
               </button>
-            );
-          })}
-        </div>
-
-        {currentEvent ? (
-          <div className="flex gap-2">
-            {[
-              { id: "user" as const, label: "Tu perfil" },
-              { id: "event" as const, label: currentEvent.title }
-            ].map((item) => (
               <button
-                key={item.id}
-                className={`rounded-full px-4 py-3 text-sm font-semibold ${
-                  composer.target === item.id ? "bg-white text-[#1d160f]" : "bg-white/10 text-white"
-                }`}
-                onClick={() =>
+                className="relative inline-flex h-24 w-24 touch-none select-none items-center justify-center rounded-full border-2 border-white bg-white/12 text-white shadow-[0_18px_40px_rgba(0,0,0,0.28)]"
+                onContextMenu={(event) => event.preventDefault()}
+                onDragStart={(event) => event.preventDefault()}
+                onPointerCancel={(event) => {
+                  event.preventDefault();
+                  event.currentTarget.releasePointerCapture?.(event.pointerId);
+                  handleCapturePressCancel();
+                }}
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  event.currentTarget.setPointerCapture?.(event.pointerId);
+                  handleCapturePressStart();
+                }}
+                onPointerUp={(event) => {
+                  event.preventDefault();
+                  event.currentTarget.releasePointerCapture?.(event.pointerId);
+                  handleCapturePressEnd();
+                }}
+                style={{ ...interactionLockStyle, touchAction: "none" }}
+                type="button"
+              >
+                <span
+                  className={`inline-flex h-[4.4rem] w-[4.4rem] items-center justify-center rounded-full transition ${
+                    isRecordingVideo ? "scale-90 bg-[#ff6b57]" : "bg-white text-[#1d160f]"
+                  }`}
+                >
+                  {isRecordingVideo ? (
+                    <span className="h-7 w-7 rounded-2xl bg-white" />
+                  ) : (
+                    <Camera className="h-7 w-7" />
+                  )}
+                </span>
+              </button>
+              <button
+                className="inline-flex h-14 w-14 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white disabled:cursor-not-allowed disabled:opacity-40"
+                disabled={isRecordingVideo || Boolean(composer.imageUrl)}
+                onClick={handleSwitchCamera}
+                type="button"
+              >
+                <RefreshCw className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="space-y-2 text-center">
+              <p className="text-sm font-semibold text-white">
+                {hasLiveCamera
+                  ? isRecordingVideo
+                    ? "Grabando historia en video"
+                    : cameraFacingMode === "user"
+                      ? "Camara selfie activa"
+                      : "Camara trasera activa"
+                  : "Usa la camara en directo o la del sistema"}
+              </p>
+              <p className="text-xs uppercase tracking-[0.18em] text-white/60">
+                Toca para foto · Mantener para video
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <button
+                className="rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white"
+                onClick={openNativePhotoCapture}
+                type="button"
+              >
+                Foto del sistema
+              </button>
+              <button
+                className="rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white"
+                onClick={openNativeVideoCapture}
+                type="button"
+              >
+                Video del sistema
+              </button>
+              <button
+                className="rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white"
+                onClick={handleRetryCamera}
+                type="button"
+              >
+                Reintentar
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="rounded-[30px] border border-white/10 bg-white/6 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-white/72">
+                  Compartir como
+                </p>
+                <p className="text-[11px] uppercase tracking-[0.18em] text-white/52">
+                  {videoOnlyStory ? "Video solo en historia" : "Historia o publicacion"}
+                </p>
+              </div>
+
+              <div className="mt-3 flex gap-2">
+                {[
+                  { id: "story" as const, label: "Historia" },
+                  { id: "post" as const, label: "Publicacion" }
+                ].map((item) => {
+                  const disabled = videoOnlyStory && item.id === "post";
+
+                  return (
+                    <button
+                      key={item.id}
+                      className={`flex-1 rounded-full px-4 py-3 text-sm font-semibold ${
+                        disabled
+                          ? "cursor-not-allowed bg-white/5 text-white/35"
+                          : composer.mode === item.id
+                            ? "bg-white text-[#1d160f]"
+                            : "bg-white/10 text-white"
+                      }`}
+                      onClick={() => {
+                        if (disabled) {
+                          return;
+                        }
+
+                        onUpdateComposer((current) =>
+                          current
+                            ? {
+                                ...current,
+                                mode: item.id
+                              }
+                            : current
+                        );
+                      }}
+                      type="button"
+                    >
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {currentEvent ? (
+                <div className="mt-3 flex gap-2">
+                  {[
+                    { id: "user" as const, label: "Tu perfil" },
+                    { id: "event" as const, label: currentEvent.title }
+                  ].map((item) => (
+                    <button
+                      key={item.id}
+                      className={`rounded-full px-4 py-3 text-sm font-semibold ${
+                        composer.target === item.id ? "bg-white text-[#1d160f]" : "bg-white/10 text-white"
+                      }`}
+                      onClick={() =>
+                        onUpdateComposer((current) =>
+                          current
+                            ? {
+                                ...current,
+                                target: item.id,
+                                eventId: item.id === "event" ? currentEvent.id : null
+                              }
+                            : current
+                        )
+                      }
+                      type="button"
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+
+              <textarea
+                className="mt-3 min-h-[120px] w-full resize-none rounded-[24px] border border-white/15 bg-white/10 px-4 py-4 text-sm text-white outline-none"
+                onChange={(event) =>
                   onUpdateComposer((current) =>
                     current
                       ? {
                           ...current,
-                          target: item.id,
-                          eventId: item.id === "event" ? currentEvent.id : null
+                          caption: event.target.value
                         }
                       : current
                   )
                 }
-                type="button"
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-        ) : null}
-
-        <textarea
-          className="min-h-[120px] w-full resize-none rounded-[24px] border border-white/15 bg-white/10 px-4 py-4 text-sm text-white outline-none"
-          onChange={(event) =>
-            onUpdateComposer((current) =>
-              current
-                ? {
-                    ...current,
-                    caption: event.target.value
-                  }
-                : current
-            )
-          }
-          placeholder="Escribe algo y etiqueta gente..."
-          value={composer.caption}
-        />
-
-        {selectableUsers.length > 0 ? (
-          <div>
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-white/72">Etiquetar personas</p>
-              <p className="text-[11px] uppercase tracking-[0.18em] text-white/52">
-                {composer.taggedUserIds.length} seleccionadas
-              </p>
+                placeholder="Escribe algo y etiqueta gente..."
+                value={composer.caption}
+              />
             </div>
-            <input
-              className="mt-3 w-full rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm text-white outline-none placeholder:text-white/42"
-              onChange={(event) => setTagSearchTerm(event.target.value)}
-              placeholder="Buscar por nombre o usuario"
-              value={tagSearchTerm}
-            />
-            <div className="mt-3 flex flex-wrap gap-2">
-              {filteredSelectableUsers.map((user) => {
-                const active = composer.taggedUserIds.includes(user.id);
-                return (
-                  <button
-                    key={user.id}
-                    className={`rounded-full px-4 py-3 text-sm font-semibold ${
-                      active ? "bg-white text-[#1d160f]" : "bg-white/10 text-white"
-                    }`}
-                    onClick={() =>
-                      onUpdateComposer((current) =>
-                        current
-                          ? {
-                              ...current,
-                              taggedUserIds: active
-                                ? current.taggedUserIds.filter((id) => id !== user.id)
-                                : [...current.taggedUserIds, user.id]
-                            }
-                          : current
-                      )
-                    }
-                    type="button"
-                  >
-                    {getUserIdentityLabel(user)} - {getUserIdentityMeta(user)}
-                  </button>
-                );
-              })}
-            </div>
-            {filteredSelectableUsers.length === 0 ? (
-              <p className="mt-3 text-sm text-white/52">No he encontrado a nadie con esa bÃºsqueda.</p>
+
+            {selectableUsers.length > 0 ? (
+              <div className="rounded-[30px] border border-white/10 bg-white/6 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-white/72">
+                    Etiquetar personas
+                  </p>
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-white/52">
+                    {composer.taggedUserIds.length} seleccionadas
+                  </p>
+                </div>
+                <input
+                  className="mt-3 w-full rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm text-white outline-none placeholder:text-white/42"
+                  onChange={(event) => setTagSearchTerm(event.target.value)}
+                  placeholder="Buscar por nombre o usuario"
+                  value={tagSearchTerm}
+                />
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {filteredSelectableUsers.map((user) => {
+                    const active = composer.taggedUserIds.includes(user.id);
+                    return (
+                      <button
+                        key={user.id}
+                        className={`rounded-full px-4 py-3 text-sm font-semibold ${
+                          active ? "bg-white text-[#1d160f]" : "bg-white/10 text-white"
+                        }`}
+                        onClick={() =>
+                          onUpdateComposer((current) =>
+                            current
+                              ? {
+                                  ...current,
+                                  taggedUserIds: active
+                                    ? current.taggedUserIds.filter((id) => id !== user.id)
+                                    : [...current.taggedUserIds, user.id]
+                                }
+                              : current
+                          )
+                        }
+                        type="button"
+                      >
+                        {getUserIdentityLabel(user)} - {getUserIdentityMeta(user)}
+                      </button>
+                    );
+                  })}
+                </div>
+                {filteredSelectableUsers.length === 0 ? (
+                  <p className="mt-3 text-sm text-white/52">No he encontrado a nadie con esa busqueda.</p>
+                ) : null}
+              </div>
             ) : null}
           </div>
-        ) : null}
+        )}
       </div>
 
       {isSubmitting ? (

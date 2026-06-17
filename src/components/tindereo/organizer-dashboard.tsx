@@ -33,7 +33,10 @@ import {
 interface OrganizerDashboardProps {
   state: PersistedState;
   currentUser: PlatformUser;
-  onCreateEvent: (input: CreateEventInput) => void;
+  error?: string | null;
+  compact?: boolean;
+  isSubmitting?: boolean;
+  onCreateEvent: (input: CreateEventInput) => Promise<boolean>;
   onRespondToAccess: (membershipId: string, accept: boolean) => void;
   onSelectEvent: (eventId: string) => void;
 }
@@ -56,8 +59,11 @@ const EMPTY_DRAFT: CreateEventInput = {
 };
 
 export function OrganizerDashboard({
+  compact = false,
   state,
   currentUser,
+  error,
+  isSubmitting = false,
   onCreateEvent,
   onRespondToAccess,
   onSelectEvent
@@ -67,14 +73,43 @@ export function OrganizerDashboard({
   const [highlightsInput, setHighlightsInput] = useState(
     "Aprobacion manual, chat general para confirmados, objetivo minimo de 4 asistentes"
   );
+  const [showAdvancedFields, setShowAdvancedFields] = useState(!compact);
+  const [localError, setLocalError] = useState<string | null>(null);
 
   const hostedEvents = getHostedEvents(state, currentUser.id);
   const metrics = getHostMetrics(state, currentUser.id);
   const pendingRequests = getHostPendingRequests(state, currentUser.id);
 
-  const handleSubmit = () => {
-    onCreateEvent({
+  const handleSubmit = async () => {
+    const trimmedTitle = draft.title.trim();
+    const trimmedSummary = draft.summary.trim();
+    const normalizedCapacity = Number(draft.capacity) > 0 ? Number(draft.capacity) : 40;
+
+    if (!trimmedTitle) {
+      setLocalError("Ponle al menos un titulo al evento.");
+      return;
+    }
+
+    if (!trimmedSummary) {
+      setLocalError("Escribe un resumen corto para que la gente entienda el plan.");
+      return;
+    }
+
+    if (!draft.startsAt || !draft.endsAt) {
+      setLocalError("Selecciona inicio y fin del evento.");
+      return;
+    }
+
+    if (new Date(draft.endsAt).getTime() <= new Date(draft.startsAt).getTime()) {
+      setLocalError("La hora de fin debe ser posterior al inicio.");
+      return;
+    }
+
+    setLocalError(null);
+    const created = await onCreateEvent({
       ...draft,
+      capacity: normalizedCapacity,
+      description: draft.description.trim() || trimmedSummary,
       tags: tagsInput
         .split(",")
         .map((tag) => tag.trim())
@@ -85,146 +120,198 @@ export function OrganizerDashboard({
         .filter(Boolean)
     });
 
+    if (!created) {
+      return;
+    }
+
     setDraft(EMPTY_DRAFT);
     setTagsInput("Networking, comunidad, Madrid");
     setHighlightsInput("Aprobacion manual, chat general para confirmados, objetivo minimo de 4 asistentes");
+    setShowAdvancedFields(!compact);
   };
+
+  const dashboardError = localError ?? error ?? null;
 
   return (
     <div className="space-y-5">
-      <section className="overflow-hidden rounded-[32px] border border-white/65 bg-[#141110] px-5 py-5 text-white shadow-[0_32px_80px_rgba(20,17,16,0.22)]">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="max-w-3xl">
-            <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs uppercase tracking-[0.24em] text-white/72">
-              <Shield className="h-3.5 w-3.5" />
-              Crear y moderar eventos
+      {!compact ? (
+        <section className="overflow-hidden rounded-[32px] border border-white/65 bg-[#141110] px-5 py-5 text-white shadow-[0_32px_80px_rgba(20,17,16,0.22)]">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="max-w-3xl">
+              <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs uppercase tracking-[0.24em] text-white/72">
+                <Shield className="h-3.5 w-3.5" />
+                Crear y moderar eventos
+              </div>
+              <h2 className="text-3xl font-black tracking-tight">Cualquier usuario puede montar un plan</h2>
+              <p className="mt-2 max-w-2xl text-sm text-white/72">
+                Lo importante ahora es la calidad del acceso: el creador decide si el evento es publico
+                o privado, aprueba a quien entra y puede vigilar si alcanza el minimo de 4 asistentes
+                durante la primera semana.
+              </p>
             </div>
-            <h2 className="text-3xl font-black tracking-tight">Cualquier usuario puede montar un plan</h2>
-            <p className="mt-2 max-w-2xl text-sm text-white/72">
-              Lo importante ahora es la calidad del acceso: el creador decide si el evento es publico
-              o privado, aprueba a quien entra y puede vigilar si alcanza el minimo de 4 asistentes
-              durante la primera semana.
-            </p>
+            <div className="rounded-[24px] border border-white/10 bg-white/6 px-4 py-3 text-sm text-white/72">
+              <p className="font-semibold text-white">{currentUser.name}</p>
+              <p>{currentUser.title}</p>
+              <p className="mt-2 text-xs text-white/54">{hostedEvents.length} eventos creados</p>
+            </div>
           </div>
-          <div className="rounded-[24px] border border-white/10 bg-white/6 px-4 py-3 text-sm text-white/72">
-            <p className="font-semibold text-white">{currentUser.name}</p>
-            <p>{currentUser.title}</p>
-            <p className="mt-2 text-xs text-white/54">{hostedEvents.length} eventos creados</p>
-          </div>
-        </div>
-      </section>
-
-      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard label="Eventos creados" value={String(metrics.publishedEvents)} />
-        <MetricCard label="Confirmados" value={String(metrics.confirmedGuests)} />
-        <MetricCard label="Pendientes" value={String(metrics.pendingApprovals)} />
-        <MetricCard label="En riesgo" value={String(metrics.atRiskEvents)} />
-      </section>
-
-      <section className="grid gap-5 xl:grid-cols-[1.08fr_0.92fr]">
-        <div className="space-y-4 rounded-[30px] border border-[#eadfd3] bg-white/88 p-4 shadow-[0_24px_60px_rgba(52,34,22,0.08)] md:p-5">
-          <div className="flex items-center justify-between gap-3">
+        </section>
+      ) : (
+        <section className="rounded-[30px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
+          <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">
-                Tus eventos
+                Crear evento
               </p>
-              <h3 className="mt-1 text-xl font-black text-[#1d160f]">Cartelera y salud de cada plan</h3>
+              <h1 className="mt-2 text-2xl font-black tracking-tight text-[#1d160f]">
+                Lanza un plan en pocos pasos
+              </h1>
+              <p className="mt-2 text-sm leading-6 text-[#6d5749]">
+                Empieza con lo esencial y completa el resto despues desde el evento.
+              </p>
             </div>
-            <div className="rounded-full border border-[#eadfd3] px-3 py-1 text-xs text-[#7a6455]">
-              {hostedEvents.length} activos
+            <div className="rounded-[20px] border border-[#eadfd3] bg-[#fffaf6] px-3 py-2 text-right text-xs text-[#8f6f59]">
+              <p className="font-semibold text-[#1d160f]">{hostedEvents.length}</p>
+              <p>creados</p>
             </div>
           </div>
+        </section>
+      )}
 
-          {hostedEvents.length === 0 ? (
-            <div className="rounded-[24px] border border-dashed border-[#e1d4c7] bg-[#fbf7f2] px-4 py-6 text-sm text-[#7a6455]">
-              Todavia no has creado eventos. Usa el formulario y publica el primero.
+      {!compact ? (
+        <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <MetricCard label="Eventos creados" value={String(metrics.publishedEvents)} />
+          <MetricCard label="Confirmados" value={String(metrics.confirmedGuests)} />
+          <MetricCard label="Pendientes" value={String(metrics.pendingApprovals)} />
+          <MetricCard label="En riesgo" value={String(metrics.atRiskEvents)} />
+        </section>
+      ) : null}
+
+      <section className={`grid gap-5 ${compact ? "" : "xl:grid-cols-[1.08fr_0.92fr]"}`}>
+        {!compact ? (
+          <div className="space-y-4 rounded-[30px] border border-[#eadfd3] bg-white/88 p-4 shadow-[0_24px_60px_rgba(52,34,22,0.08)] md:p-5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">
+                  Tus eventos
+                </p>
+                <h3 className="mt-1 text-xl font-black text-[#1d160f]">Cartelera y salud de cada plan</h3>
+              </div>
+              <div className="rounded-full border border-[#eadfd3] px-3 py-1 text-xs text-[#7a6455]">
+                {hostedEvents.length} activos
+              </div>
             </div>
-          ) : (
-            <div className="space-y-3">
-              {hostedEvents.map((event) => {
-                const category = getCategoryMeta(event.category);
-                const health = getEventHealth(state, event.id);
-                const requirements = getEventRequirementSummary(state, event.id);
-                const fill = Math.round(getEventAttendanceRatio(state, event.id) * 100);
-                const pendingCount = getEventPendingCount(state, event.id);
 
-                return (
-                  <button
-                    key={event.id}
-                    className="w-full rounded-[26px] border border-[#eadfd3] bg-[#fffaf6] p-4 text-left transition hover:-translate-y-0.5 hover:shadow-[0_18px_40px_rgba(52,34,22,0.08)]"
-                    onClick={() => onSelectEvent(event.id)}
-                    type="button"
-                  >
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="max-w-xl">
-                        <div className="flex flex-wrap gap-2">
-                          <span
-                            className="rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em]"
-                            style={{
-                              backgroundColor: category.softAccent,
-                              color: category.accent
-                            }}
-                          >
-                            {category.label}
-                          </span>
-                          <StatusBadge health={health} />
-                          <VisibilityBadge visibility={event.visibility} />
+            {hostedEvents.length === 0 ? (
+              <div className="rounded-[24px] border border-dashed border-[#e1d4c7] bg-[#fbf7f2] px-4 py-6 text-sm text-[#7a6455]">
+                Todavia no has creado eventos. Usa el formulario y publica el primero.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {hostedEvents.map((event) => {
+                  const category = getCategoryMeta(event.category);
+                  const health = getEventHealth(state, event.id);
+                  const requirements = getEventRequirementSummary(state, event.id);
+                  const fill = Math.round(getEventAttendanceRatio(state, event.id) * 100);
+                  const pendingCount = getEventPendingCount(state, event.id);
+
+                  return (
+                    <button
+                      key={event.id}
+                      className="w-full rounded-[26px] border border-[#eadfd3] bg-[#fffaf6] p-4 text-left transition hover:-translate-y-0.5 hover:shadow-[0_18px_40px_rgba(52,34,22,0.08)]"
+                      onClick={() => onSelectEvent(event.id)}
+                      type="button"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="max-w-xl">
+                          <div className="flex flex-wrap gap-2">
+                            <span
+                              className="rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em]"
+                              style={{
+                                backgroundColor: category.softAccent,
+                                color: category.accent
+                              }}
+                            >
+                              {category.label}
+                            </span>
+                            <StatusBadge health={health} />
+                            <VisibilityBadge visibility={event.visibility} />
+                          </div>
+                          <h4 className="mt-3 text-lg font-black text-[#1d160f]">{event.title}</h4>
+                          <p className="mt-2 text-sm text-[#6d5749]">{event.summary}</p>
+                          <p className="mt-2 text-sm text-[#8f6f59]">{formatEventDateRange(event)}</p>
                         </div>
-                        <h4 className="mt-3 text-lg font-black text-[#1d160f]">{event.title}</h4>
-                        <p className="mt-2 text-sm text-[#6d5749]">{event.summary}</p>
-                        <p className="mt-2 text-sm text-[#8f6f59]">{formatEventDateRange(event)}</p>
+                        <ChevronRight className="mt-1 h-5 w-5 text-[#8f6f59]" />
                       </div>
-                      <ChevronRight className="mt-1 h-5 w-5 text-[#8f6f59]" />
-                    </div>
 
-                    <div className="mt-4 grid gap-3 md:grid-cols-3">
-                      <MiniStat
-                        label="Confirmados"
-                        value={`${getEventGuestCount(state, event.id)}/${event.capacity}`}
-                      />
-                      <MiniStat label="Pendientes" value={String(pendingCount)} />
-                      <MiniStat
-                        label="Objetivo"
-                        value={`${requirements.confirmedCount}/${event.minimumGuestsRequired}`}
-                      />
-                    </div>
-
-                    <div className="mt-4">
-                      <div className="mb-2 flex items-center justify-between text-xs text-[#7a6455]">
-                        <span>Ocupacion actual</span>
-                        <span>{fill}%</span>
-                      </div>
-                      <div className="h-2 rounded-full bg-[#efe5db]">
-                        <div
-                          className="h-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24]"
-                          style={{ width: `${fill}%` }}
+                      <div className="mt-4 grid gap-3 md:grid-cols-3">
+                        <MiniStat
+                          label="Confirmados"
+                          value={`${getEventGuestCount(state, event.id)}/${event.capacity}`}
+                        />
+                        <MiniStat label="Pendientes" value={String(pendingCount)} />
+                        <MiniStat
+                          label="Objetivo"
+                          value={`${requirements.confirmedCount}/${event.minimumGuestsRequired}`}
                         />
                       </div>
-                    </div>
 
-                    <div className="mt-4 rounded-[20px] border border-[#eadfd3] bg-white px-3 py-3 text-sm text-[#6d5749]">
-                      <span className="font-semibold text-[#1d160f]">
-                        Objetivo minimo en 7 dias:
-                      </span>{" "}
-                      {health === "confirmed"
-                        ? "cumplido"
-                        : requirements.remainingCount > 0
-                          ? `faltan ${requirements.remainingCount} antes del ${getEventDeadlineLabel(event)}`
-                          : `revision hasta el ${getEventDeadlineLabel(event)}`}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
+                      <div className="mt-4">
+                        <div className="mb-2 flex items-center justify-between text-xs text-[#7a6455]">
+                          <span>Ocupacion actual</span>
+                          <span>{fill}%</span>
+                        </div>
+                        <div className="h-2 rounded-full bg-[#efe5db]">
+                          <div
+                            className="h-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24]"
+                            style={{ width: `${fill}%` }}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="mt-4 rounded-[20px] border border-[#eadfd3] bg-white px-3 py-3 text-sm text-[#6d5749]">
+                        <span className="font-semibold text-[#1d160f]">
+                          Objetivo minimo en 7 dias:
+                        </span>{" "}
+                        {health === "confirmed"
+                          ? "cumplido"
+                          : requirements.remainingCount > 0
+                            ? `faltan ${requirements.remainingCount} antes del ${getEventDeadlineLabel(event)}`
+                            : `revision hasta el ${getEventDeadlineLabel(event)}`}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ) : null}
 
         <div className="space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            {compact ? (
+              <div className="grid flex-1 grid-cols-3 gap-2">
+                <MiniStat label="Creados" value={String(metrics.publishedEvents)} />
+                <MiniStat label="Pendientes" value={String(metrics.pendingApprovals)} />
+                <MiniStat label="Riesgo" value={String(metrics.atRiskEvents)} />
+              </div>
+            ) : null}
+          </div>
           <section className="rounded-[30px] border border-[#eadfd3] bg-white/88 p-4 shadow-[0_24px_60px_rgba(52,34,22,0.08)] md:p-5">
             <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">
               <Plus className="h-4 w-4" />
               Crear nuevo evento
             </div>
+            {dashboardError ? (
+              <div className="mt-4 rounded-[20px] border border-[#ffd4c5] bg-[#fff1ea] px-4 py-3 text-sm text-[#b14a20]">
+                {dashboardError}
+              </div>
+            ) : null}
+            {compact ? (
+              <p className="mt-3 text-sm leading-6 text-[#6d5749]">
+                Titulo, fecha y resumen bastan para lanzarlo ahora. El resto lo puedes afinar despues.
+              </p>
+            ) : null}
             <div className="mt-4 grid gap-3">
               <Input
                 label="Titulo"
@@ -290,53 +377,65 @@ export function OrganizerDashboard({
                   onChange={(value) => setDraft((current) => ({ ...current, endsAt: value }))}
                 />
               </div>
-              <div className="grid gap-3 md:grid-cols-2">
-                <Input
-                  label="Precio"
-                  value={draft.priceLabel}
-                  onChange={(value) => setDraft((current) => ({ ...current, priceLabel: value }))}
-                />
-                <Input
-                  label="Capacidad"
-                  type="number"
-                  value={String(draft.capacity)}
-                  onChange={(value) =>
-                    setDraft((current) => ({
-                      ...current,
-                      capacity: Number(value) || 0
-                    }))
-                  }
-                />
-              </div>
               <TextArea
                 label="Resumen corto"
                 rows={3}
                 value={draft.summary}
                 onChange={(value) => setDraft((current) => ({ ...current, summary: value }))}
               />
-              <TextArea
-                label="Descripcion"
-                rows={4}
-                value={draft.description}
-                onChange={(value) => setDraft((current) => ({ ...current, description: value }))}
-              />
-              <Input
-                label="Dress code"
-                value={draft.dressCode}
-                onChange={(value) => setDraft((current) => ({ ...current, dressCode: value }))}
-              />
-              <Input label="Tags separadas por coma" value={tagsInput} onChange={setTagsInput} />
-              <Input
-                label="Highlights separados por coma"
-                value={highlightsInput}
-                onChange={setHighlightsInput}
-              />
+              {showAdvancedFields ? (
+                <>
+                  <TextArea
+                    label="Descripcion"
+                    rows={4}
+                    value={draft.description}
+                    onChange={(value) => setDraft((current) => ({ ...current, description: value }))}
+                  />
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Input
+                      label="Precio"
+                      value={draft.priceLabel}
+                      onChange={(value) => setDraft((current) => ({ ...current, priceLabel: value }))}
+                    />
+                    <Input
+                      label="Capacidad"
+                      type="number"
+                      value={String(draft.capacity)}
+                      onChange={(value) =>
+                        setDraft((current) => ({
+                          ...current,
+                          capacity: Number(value) || 0
+                        }))
+                      }
+                    />
+                  </div>
+                  <Input
+                    label="Dress code"
+                    value={draft.dressCode}
+                    onChange={(value) => setDraft((current) => ({ ...current, dressCode: value }))}
+                  />
+                  <Input label="Tags separadas por coma" value={tagsInput} onChange={setTagsInput} />
+                  <Input
+                    label="Highlights separados por coma"
+                    value={highlightsInput}
+                    onChange={setHighlightsInput}
+                  />
+                </>
+              ) : null}
               <button
-                className="mt-2 inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] px-5 py-3 text-sm font-semibold text-white shadow-[0_16px_30px_rgba(240,138,36,0.25)]"
-                onClick={handleSubmit}
+                className="inline-flex items-center justify-center gap-2 rounded-full border border-[#eadfd3] bg-[#fffaf6] px-5 py-3 text-sm font-semibold text-[#6d5749]"
+                onClick={() => setShowAdvancedFields((current) => !current)}
                 type="button"
               >
-                Publicar evento
+                {showAdvancedFields ? "Ocultar opciones avanzadas" : "Mostrar opciones avanzadas"}
+              </button>
+              <button
+                className="mt-2 inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] px-5 py-3 text-sm font-semibold text-white shadow-[0_16px_30px_rgba(240,138,36,0.25)] disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={isSubmitting}
+                onClick={() => void handleSubmit()}
+                type="button"
+              >
+                {isSubmitting ? "Publicando..." : "Publicar evento"}
               </button>
             </div>
           </section>
@@ -394,6 +493,44 @@ export function OrganizerDashboard({
               )}
             </div>
           </section>
+
+          {compact ? (
+            <section className="rounded-[30px] border border-[#eadfd3] bg-white/88 p-4 shadow-[0_24px_60px_rgba(52,34,22,0.08)]">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#8f6f59]">
+                    Tus eventos
+                  </p>
+                  <h3 className="mt-1 text-lg font-black text-[#1d160f]">Acceso rapido</h3>
+                </div>
+                <div className="rounded-full border border-[#eadfd3] px-3 py-1 text-xs text-[#7a6455]">
+                  {hostedEvents.length}
+                </div>
+              </div>
+              <div className="mt-4 space-y-3">
+                {hostedEvents.length === 0 ? (
+                  <div className="rounded-[22px] border border-dashed border-[#e1d4c7] bg-[#fbf7f2] px-4 py-5 text-sm text-[#7a6455]">
+                    Aun no has publicado eventos.
+                  </div>
+                ) : (
+                  hostedEvents.slice(0, 3).map((event) => (
+                    <button
+                      key={event.id}
+                      className="flex w-full items-center justify-between gap-3 rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] px-4 py-4 text-left"
+                      onClick={() => onSelectEvent(event.id)}
+                      type="button"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate font-semibold text-[#1d160f]">{event.title}</p>
+                        <p className="mt-1 text-sm text-[#6d5749]">{formatEventDateRange(event)}</p>
+                      </div>
+                      <ChevronRight className="h-5 w-5 shrink-0 text-[#8f6f59]" />
+                    </button>
+                  ))
+                )}
+              </div>
+            </section>
+          ) : null}
         </div>
       </section>
     </div>

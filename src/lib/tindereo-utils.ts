@@ -2598,9 +2598,9 @@ export function createEvent(state: PersistedState, userId: string, input: Create
   const creator = getUserById(state, userId);
   const title = input.title.trim();
   const summary = input.summary.trim();
-  const description = input.description.trim();
-  if (!title || !summary || !description) {
-    throw new Error("Completa titulo, resumen y descripcion para publicar el evento.");
+  const description = input.description.trim() || summary;
+  if (!title || !summary) {
+    throw new Error("Completa al menos el titulo y el resumen para publicar el evento.");
   }
 
   if (!input.startsAt || !input.endsAt) {
@@ -2611,7 +2611,9 @@ export function createEvent(state: PersistedState, userId: string, input: Create
     throw new Error("La hora de fin debe ser posterior al inicio.");
   }
 
-  if (Number(input.capacity) < 4) {
+  const normalizedCapacity = Number(input.capacity) > 0 ? Number(input.capacity) : 40;
+
+  if (normalizedCapacity < 4) {
     throw new Error("La capacidad minima del evento debe ser 4 personas.");
   }
 
@@ -2632,7 +2634,7 @@ export function createEvent(state: PersistedState, userId: string, input: Create
     endsAt: input.endsAt,
     createdAt: new Date().toISOString(),
     priceLabel: input.priceLabel.trim() || "Precio por confirmar",
-    capacity: Number(input.capacity) || 40,
+    capacity: normalizedCapacity,
     baseGuestCount: 0,
     hostId: userId,
     summary,
