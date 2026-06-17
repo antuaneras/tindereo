@@ -62,6 +62,7 @@ const TABLES = {
   notifications: "notifications",
   postLikes: "post_likes",
   postComments: "post_comments",
+  postMediaItems: "post_media_items",
   posts: "posts",
   profiles: "profiles",
   pushSubscriptions: "push_subscriptions",
@@ -238,6 +239,14 @@ type PostCommentRow = {
   created_at: string;
   id: string;
   post_id: string;
+};
+
+type PostMediaItemRow = {
+  created_at: string;
+  id: string;
+  media_asset_id: string;
+  post_id: string;
+  sort_order: number;
 };
 
 type NotificationRow = {
@@ -574,10 +583,13 @@ export async function listMobileConversationSummaries(viewerId: string) {
 }
 
 async function loadPostsForViewer(viewerId: string) {
-  const [postRows, likeRows, commentRows, assetRows, profileRows, eventRows] = await Promise.all([
+  const [postRows, likeRows, commentRows, postMediaRows, assetRows, profileRows, eventRows] = await Promise.all([
     selectRows<PostRow>(TABLES.posts, { order: [{ column: "created_at", ascending: false }], limit: 40 }),
     selectRows<PostLikeRow>(TABLES.postLikes),
     selectRows<PostCommentRow>(TABLES.postComments, { order: [{ column: "created_at", ascending: true }] }),
+    selectRows<PostMediaItemRow>(TABLES.postMediaItems, { order: [{ column: "sort_order", ascending: true }] }).catch(
+      async () => [] as PostMediaItemRow[]
+    ),
     selectRows<MediaAssetRow>(TABLES.mediaAssets),
     selectRows<ProfileRow>(TABLES.profiles),
     selectRows<EventRow>(TABLES.events)
@@ -589,6 +601,17 @@ async function loadPostsForViewer(viewerId: string) {
   return postRows.map((row): MobilePost => {
     const author = profilesById.get(row.author_id);
     const eventOwner = row.owner_type === "event" ? eventsById.get(row.owner_id) : null;
+    const mappedMediaItems = postMediaRows
+      .filter((item) => item.post_id === row.id)
+      .sort((left, right) => left.sort_order - right.sort_order)
+      .map((item) => assetsById.get(item.media_asset_id) ?? null)
+      .filter((item): item is MobileMediaAsset => Boolean(item));
+    const mediaItems =
+      mappedMediaItems.length > 0
+        ? mappedMediaItems
+        : row.media_asset_id
+          ? [assetsById.get(row.media_asset_id) ?? null].filter((item): item is MobileMediaAsset => Boolean(item))
+          : [];
     const comments = commentRows
       .filter((comment) => comment.post_id === row.id)
       .map((comment) => mapPostComment(comment, profilesById.get(comment.author_id)));
@@ -612,7 +635,8 @@ async function loadPostsForViewer(viewerId: string) {
           ? resolveMediaUrl(eventOwner?.cover_image ?? null)
           : author?.avatarUrl ?? null,
       eventSlug: eventOwner?.slug ?? null,
-      media: row.media_asset_id ? assetsById.get(row.media_asset_id) ?? null : null,
+      media: mediaItems[0] ?? null,
+      mediaItems,
       caption: row.caption,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -1866,22 +1890,63 @@ export async function publishMobileStory(viewerId: string, input: PublishMobileS
 
 export async function publishMobilePost(viewerId: string, input: PublishMobilePostInput) {
   const ownerId = input.ownerType === "user" ? viewerId : input.ownerId;
-  const assetRow = await createMediaAsset(viewerId, {
-    assetRef: input.assetRef,
-    previewUrl: input.previewUrl,
-    mimeType: input.mimeType,
-    purpose: "post"
-  });
+  const assetInputs =
+    input.assets?.filter((asset) => asset.assetRef.trim().length > 0) ??
+    (input.assetRef
+      ? [
+          {
+            assetRef: input.assetRef,
+            previewUrl: input.previewUrl ?? null,
+            mimeType: input.mimeType ?? "image/jpeg"
+          }
+        ]
+      : []);
+
+  if (assetInputs.length === 0) {
+    throw new Error("Selecciona al menos una foto para publicar.");
+  }
+
+  const normalizedAssets = assetInputs.slice(0, 20);
+  const assetRows = await Promise.all(
+    normalizedAssets.map((asset) =>
+      createMediaAsset(viewerId, {
+        assetRef: asset.assetRef,
+        previewUrl: asset.previewUrl,
+        mimeType: asset.mimeType,
+        purpose: "post"
+      })
+    )
+  );
+
+  const postId = buildMobileId("post");
+  const now = new Date().toISOString();
   await insertRow(TABLES.posts, {
-    id: buildMobileId("post"),
+    id: postId,
     owner_type: input.ownerType,
     owner_id: ownerId,
     author_id: viewerId,
-    media_asset_id: assetRow?.id ?? null,
+    media_asset_id: assetRows[0]?.id ?? null,
     caption: input.caption.trim(),
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString()
+    created_at: now,
+    updated_at: now
   });
+  await insertRows(
+    TABLES.postMediaItems,
+    assetRows
+      .map((assetRow, index) =>
+        assetRow
+          ? {
+              id: buildMobileId("post-media"),
+              post_id: postId,
+              media_asset_id: assetRow.id,
+              sort_order: index,
+              created_at: now
+            }
+          : null
+      )
+      .filter(Boolean),
+    { returning: "minimal" }
+  );
   publishMobileRealtimeEvent({ type: "feed", profileId: viewerId, viewerId });
 }
 

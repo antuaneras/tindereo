@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { CalendarDays, Search } from "lucide-react";
 import { fetchMobileBootstrap, subscribeToMobileStream } from "@/lib/mobile-api";
@@ -9,11 +10,18 @@ import { PostCard, StoryStrip } from "@/components/mobile/mobile-feed";
 import type { MobileBootstrapPayload } from "@/lib/mobile-types";
 
 export function MobileHomeScreen({ initialData }: { initialData: MobileBootstrapPayload }) {
+  const router = useRouter();
   const [data, setData] = useState(initialData);
+  const [gestureStart, setGestureStart] = useState<{ x: number; y: number; ignore: boolean } | null>(null);
 
   useEffect(() => {
     const unsubscribe = subscribeToMobileStream((event) => {
-      if (event.type === "feed" || event.type === "stories" || event.type === "bootstrap" || event.type === "notifications") {
+      if (
+        event.type === "feed" ||
+        event.type === "stories" ||
+        event.type === "bootstrap" ||
+        event.type === "notifications"
+      ) {
         void fetchMobileBootstrap().then(setData).catch(() => undefined);
       }
     });
@@ -21,7 +29,39 @@ export function MobileHomeScreen({ initialData }: { initialData: MobileBootstrap
   }, []);
 
   return (
-    <div className="space-y-5">
+    <div
+      className="space-y-5"
+      onTouchEnd={(event) => {
+        if (!gestureStart || gestureStart.ignore) {
+          setGestureStart(null);
+          return;
+        }
+
+        const touch = event.changedTouches[0];
+        if (!touch) {
+          setGestureStart(null);
+          return;
+        }
+
+        const deltaX = touch.clientX - gestureStart.x;
+        const deltaY = touch.clientY - gestureStart.y;
+
+        if (deltaX < -90 && Math.abs(deltaY) < 72) {
+          router.push("/crear");
+        }
+
+        setGestureStart(null);
+      }}
+      onTouchStart={(event) => {
+        const touch = event.touches[0];
+        const target = event.target as HTMLElement | null;
+        setGestureStart({
+          x: touch?.clientX ?? 0,
+          y: touch?.clientY ?? 0,
+          ignore: Boolean(target?.closest("[data-story-strip='true'],a,button,input,textarea,select"))
+        });
+      }}
+    >
       <div className="flex items-center justify-between">
         <div className="rounded-full bg-white/90 px-4 py-3 text-sm font-semibold shadow-sm">
           Inicio
@@ -32,13 +72,14 @@ export function MobileHomeScreen({ initialData }: { initialData: MobileBootstrap
       </div>
 
       <section className="space-y-3">
-        {data.storyClusters.length ? (
-          <StoryStrip clusters={data.storyClusters} />
-        ) : (
-          <div className="rounded-[2rem] border border-dashed border-[var(--line-warm)] bg-white/80 px-5 py-8 text-center text-sm text-[var(--text-soft)]">
-            Aún no hay historias. Cuando tú o tus eventos empecéis a subir contenido, aparecerá aquí arriba.
+        <div data-story-strip="true">
+          <StoryStrip clusters={data.storyClusters} viewer={data.viewer.profile} />
+        </div>
+        {!data.storyClusters.length ? (
+          <div className="rounded-[2rem] border border-dashed border-[var(--line-warm)] bg-white/80 px-5 py-6 text-center text-sm text-[var(--text-soft)]">
+            Tu burbuja ya esta lista. Tocala o desliza a la izquierda para subir una historia o una publicacion.
           </div>
-        )}
+        ) : null}
       </section>
 
       <section className="rounded-[2rem] border border-[var(--line-soft)] bg-white/88 px-5 py-5 shadow-[0_18px_40px_rgba(29,22,15,0.06)]">
@@ -64,7 +105,7 @@ export function MobileHomeScreen({ initialData }: { initialData: MobileBootstrap
           ))}
           {!data.joinedEvents.length ? (
             <div className="rounded-[1.6rem] border border-dashed border-[var(--line-warm)] px-4 py-6 text-sm text-[var(--text-soft)]">
-              Todavía no te has unido a ningún evento.
+              Todavia no te has unido a ningun evento.
             </div>
           ) : null}
         </div>
@@ -75,7 +116,7 @@ export function MobileHomeScreen({ initialData }: { initialData: MobileBootstrap
           data.feedPosts.map((post) => <PostCard key={post.id} post={post} />)
         ) : (
           <div className="rounded-[2rem] border border-dashed border-[var(--line-warm)] bg-white/80 px-5 py-10 text-center text-sm text-[var(--text-soft)]">
-            Todavía no hay publicaciones. Usa Crear para subir historias, fotos o lanzar un evento.
+            Todavia no hay publicaciones. Usa Crear para subir historias, fotos o lanzar un evento.
           </div>
         )}
       </section>

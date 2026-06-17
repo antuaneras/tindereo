@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { Camera, Compass, MessageCircleMore, Search, User2 } from "lucide-react";
 import { enableWebPushNotifications } from "@/lib/tindereo-push-client";
@@ -36,12 +37,9 @@ function renderProfileAvatar(summary: MobileViewerSummary) {
 }
 
 export function MobileShell({ children, initialSummary }: MobileShellProps) {
+  const currentPath = usePathname();
   const [summary, setSummary] = useState(initialSummary);
-  const [currentPath, setCurrentPath] = useState<string>("/");
-
-  useEffect(() => {
-    setCurrentPath(window.location.pathname);
-  }, []);
+  const hideNavigation = currentPath.startsWith("/crear");
 
   useEffect(() => {
     let cancelled = false;
@@ -103,38 +101,45 @@ export function MobileShell({ children, initialSummary }: MobileShellProps) {
 
   return (
     <div className="mx-auto flex min-h-[100dvh] w-full max-w-[480px] flex-col bg-[var(--bg-main)] text-[var(--text-main)]">
-      <main className="flex-1 px-4 pb-[calc(6rem+env(safe-area-inset-bottom))] pt-[calc(1rem+env(safe-area-inset-top))]">
+      <main
+        className={cn(
+          "flex-1 px-4 pt-[calc(1rem+env(safe-area-inset-top))]",
+          hideNavigation ? "pb-4" : "pb-[calc(6rem+env(safe-area-inset-bottom))]"
+        )}
+      >
         {children}
       </main>
-      <nav className="fixed bottom-0 left-1/2 z-40 flex w-full max-w-[480px] -translate-x-1/2 items-end justify-between border-t border-[var(--line-soft)] bg-[rgba(246,239,231,0.96)] px-5 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-3 backdrop-blur-xl">
-        {items.map((item) => (
-          <Link
-            key={item.href}
-            href={item.href}
-            className={cn(
-              "relative flex min-w-[56px] flex-col items-center gap-1 text-[11px] font-medium text-[var(--text-soft)] transition",
-              item.active && "text-[var(--coral)]",
-              item.center && "-mt-8"
-            )}
-          >
-            <span
+      {hideNavigation ? null : (
+        <nav className="fixed bottom-0 left-1/2 z-40 flex w-full max-w-[480px] -translate-x-1/2 items-end justify-between border-t border-[var(--line-soft)] bg-[rgba(246,239,231,0.96)] px-5 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-3 backdrop-blur-xl">
+          {items.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
               className={cn(
-                "relative flex h-11 w-11 items-center justify-center rounded-full border border-[var(--line-soft)] bg-white/80 shadow-[0_12px_28px_rgba(29,22,15,0.08)]",
-                item.center && "h-16 w-16 border-transparent bg-gradient-to-br from-[var(--coral)] to-[var(--orange)] text-white shadow-[0_16px_36px_rgba(240,138,36,0.32)]",
-                item.active && !item.center && "border-[rgba(255,107,87,0.24)] text-[var(--coral)]"
+                "relative flex min-w-[56px] flex-col items-center gap-1 text-[11px] font-medium text-[var(--text-soft)] transition",
+                item.active && "text-[var(--coral)]",
+                item.center && "-mt-8"
               )}
             >
-              {item.icon}
-              {item.badge ? (
-                <span className="absolute -right-1 -top-1 inline-flex min-h-5 min-w-5 items-center justify-center rounded-full bg-[var(--coral)] px-1 text-[10px] font-semibold text-white">
-                  {item.badge}
-                </span>
-              ) : null}
-            </span>
-            <span>{item.label}</span>
-          </Link>
-        ))}
-      </nav>
+              <span
+                className={cn(
+                  "relative flex h-11 w-11 items-center justify-center rounded-full border border-[var(--line-soft)] bg-white/80 shadow-[0_12px_28px_rgba(29,22,15,0.08)]",
+                  item.center && "h-16 w-16 border-transparent bg-gradient-to-br from-[var(--coral)] to-[var(--orange)] text-white shadow-[0_16px_36px_rgba(240,138,36,0.32)]",
+                  item.active && !item.center && "border-[rgba(255,107,87,0.24)] text-[var(--coral)]"
+                )}
+              >
+                {item.icon}
+                {item.badge ? (
+                  <span className="absolute -right-1 -top-1 inline-flex min-h-5 min-w-5 items-center justify-center rounded-full bg-[var(--coral)] px-1 text-[10px] font-semibold text-white">
+                    {item.badge}
+                  </span>
+                ) : null}
+              </span>
+              <span>{item.label}</span>
+            </Link>
+          ))}
+        </nav>
+      )}
     </div>
   );
 }

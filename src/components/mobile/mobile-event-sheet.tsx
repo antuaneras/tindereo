@@ -62,6 +62,8 @@ export function EventInfoSheet({
         : [],
     [eventDetail]
   );
+  const viewerProfile =
+    conversation.participants.find((participant) => participant.id === conversation.viewerId) ?? eventDetail?.host ?? null;
 
   if (!eventDetail) {
     return null;
@@ -297,7 +299,7 @@ export function EventInfoSheet({
 
           {tab === "stories" ? (
             <div className="space-y-4">
-              {storyClusters.length ? <StoryStrip clusters={storyClusters} /> : null}
+              {viewerProfile ? <StoryStrip clusters={storyClusters} viewer={viewerProfile} /> : null}
               {eventDetail.posts.map((post) => (
                 <PostCard key={post.id} post={post} />
               ))}

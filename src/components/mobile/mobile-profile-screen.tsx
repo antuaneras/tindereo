@@ -21,6 +21,7 @@ import {
   subscribeToMobileStream,
   updateViewerProfile
 } from "@/lib/mobile-api";
+import { MobilePostCarousel } from "@/components/mobile/mobile-post-carousel";
 import { formatRelativeMobileTime } from "@/lib/mobile-shared";
 import { uploadManagedMediaFromClient } from "@/lib/tindereo-api";
 import type { MobilePost, MobilePostComment, MobileProfile, MobileProfileDetail, MobileStory } from "@/lib/mobile-types";
@@ -447,9 +448,13 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                   }}
                   className="bg-[var(--bg-soft)]"
                 >
-                  {post.media?.previewUrl ? (
+                  {post.mediaItems.length ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={post.media.previewUrl} alt={post.caption || `Post de @${post.authorHandle}`} className="aspect-square w-full object-cover" />
+                    <img
+                      src={post.mediaItems[0]?.previewUrl ?? ""}
+                      alt={post.caption || `Post de @${post.authorHandle}`}
+                      className="aspect-square w-full object-cover"
+                    />
                   ) : (
                     <EmptyPostTile />
                   )}
@@ -559,12 +564,11 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                       <div className="text-xs text-[var(--text-soft)]">{formatRelativeMobileTime(post.createdAt)}</div>
                     </div>
 
-                    {post.media?.previewUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={post.media.previewUrl} alt={post.caption || `Post de @${post.authorHandle}`} className="w-full object-cover" />
-                    ) : (
-                      <EmptyPostTile />
-                    )}
+                    <MobilePostCarousel
+                      items={post.mediaItems}
+                      label={post.caption || `Post de @${post.authorHandle}`}
+                      aspectClassName="aspect-[4/5]"
+                    />
 
                     <div className="space-y-3 px-4 py-4">
                       <div className="flex items-center gap-4">

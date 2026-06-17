@@ -234,6 +234,33 @@ create table if not exists public.posts (
 
 create index if not exists posts_owner_idx on public.posts (owner_type, owner_id, created_at);
 
+create table if not exists public.post_media_items (
+  id text primary key,
+  post_id text not null references public.posts(id) on delete cascade,
+  media_asset_id text not null references public.media_assets(id) on delete cascade,
+  sort_order integer not null default 0,
+  created_at timestamptz not null default timezone('utc', now())
+);
+
+create unique index if not exists post_media_items_post_sort_idx on public.post_media_items (post_id, sort_order);
+create unique index if not exists post_media_items_post_asset_idx on public.post_media_items (post_id, media_asset_id);
+
+insert into public.post_media_items (id, post_id, media_asset_id, sort_order, created_at)
+select
+  'post-media-' || post.id,
+  post.id,
+  post.media_asset_id,
+  0,
+  post.created_at
+from public.posts as post
+where post.media_asset_id is not null
+  and not exists (
+    select 1
+    from public.post_media_items as item
+    where item.post_id = post.id
+  )
+on conflict do nothing;
+
 create table if not exists public.post_likes (
   id text primary key,
   post_id text not null references public.posts(id) on delete cascade,
@@ -342,6 +369,7 @@ begin
     'stories',
     'story_views',
     'posts',
+    'post_media_items',
     'post_likes',
     'post_comments',
     'notifications',

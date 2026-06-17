@@ -115,6 +115,7 @@ export interface MobilePost {
   ownerAvatarUrl: string | null;
   eventSlug: string | null;
   media: MobileMediaAsset | null;
+  mediaItems: MobileMediaAsset[];
   caption: string;
   createdAt: string;
   updatedAt: string;
@@ -303,9 +304,14 @@ export interface PublishMobileStoryInput {
 export interface PublishMobilePostInput {
   ownerType: MobileStoryOwnerType;
   ownerId: string;
-  assetRef: string;
-  previewUrl: string | null;
-  mimeType: string;
+  assetRef?: string;
+  previewUrl?: string | null;
+  mimeType?: string;
+  assets?: Array<{
+    assetRef: string;
+    previewUrl: string | null;
+    mimeType: string;
+  }>;
   caption: string;
 }
 

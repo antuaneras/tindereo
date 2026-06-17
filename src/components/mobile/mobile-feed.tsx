@@ -1,11 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { Heart, Play, X } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Heart, Play, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { likePost, markStoryAsViewed } from "@/lib/mobile-api";
 import { formatRelativeMobileTime } from "@/lib/mobile-shared";
-import type { MobilePost, MobileStoryCluster } from "@/lib/mobile-types";
+import { MobilePostCarousel } from "@/components/mobile/mobile-post-carousel";
+import type { MobilePost, MobileProfile, MobileStoryCluster } from "@/lib/mobile-types";
 
 function Avatar({ src, label }: { src: string | null; label: string }) {
   if (src) {
@@ -22,7 +24,14 @@ function Avatar({ src, label }: { src: string | null; label: string }) {
   );
 }
 
-export function StoryStrip({ clusters }: { clusters: MobileStoryCluster[] }) {
+export function StoryStrip({
+  clusters,
+  viewer
+}: {
+  clusters: MobileStoryCluster[];
+  viewer: MobileProfile;
+}) {
+  const router = useRouter();
   const [activeClusterIndex, setActiveClusterIndex] = useState<number | null>(null);
   const [storyIndex, setStoryIndex] = useState(0);
 
@@ -59,6 +68,23 @@ export function StoryStrip({ clusters }: { clusters: MobileStoryCluster[] }) {
   return (
     <>
       <div className="scrollbar-hide -mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
+        <button
+          type="button"
+          onClick={() => router.push("/crear")}
+          className="flex shrink-0 flex-col items-center gap-2"
+        >
+          <span className="relative block">
+            <span className="block rounded-full bg-white/85 p-[2px] shadow-sm">
+              <Avatar src={viewer.avatarUrl} label={`@${viewer.handle}`} />
+            </span>
+            <span className="absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full bg-[var(--coral)] text-white ring-4 ring-[var(--bg-main)]">
+              <Plus className="h-3.5 w-3.5" />
+            </span>
+          </span>
+          <span className="max-w-[74px] truncate text-[11px] font-medium text-[var(--text-soft)]">
+            Tu historia
+          </span>
+        </button>
         {clusters.map((cluster, index) => (
           <button
             key={`${cluster.ownerType}:${cluster.ownerId}`}
@@ -158,14 +184,11 @@ export function PostCard({ post }: { post: MobilePost }) {
         </div>
         <span className="shrink-0 text-xs text-[var(--text-soft)]">{formatRelativeMobileTime(post.createdAt)}</span>
       </div>
-      {post.media?.previewUrl ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={post.media.previewUrl}
-          alt={post.caption || post.ownerLabel}
-          className="aspect-[4/5] w-full object-cover"
-        />
-      ) : null}
+      <MobilePostCarousel
+        items={post.mediaItems}
+        label={post.caption || post.ownerLabel}
+        aspectClassName="aspect-[4/5]"
+      />
       <div className="space-y-3 px-4 py-4">
         <button
           type="button"
