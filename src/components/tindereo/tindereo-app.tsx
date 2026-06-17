@@ -137,6 +137,8 @@ import {
   hasEventAccess,
   isChatMediaExpired,
   isGroupChat,
+  markStoryViewed as applyStoryViewedState,
+  markThreadRead as applyThreadReadState,
   normalizeState,
   parseEphemeralMediaMessageText
 } from "@/lib/tindereo-utils";
@@ -266,7 +268,9 @@ type MobileEventScreenState = {
 };
 
 type StoryViewerState = {
+  activeGroupIndex: number;
   activeStoryId: string;
+  feedGroups: string[][];
   storyIds: string[];
 };
 
@@ -564,27 +568,92 @@ function appendTaggedHandles(caption: string, taggedUsers: PlatformUser[]) {
   return `${trimmedCaption}${trimmedCaption ? "\n\n" : ""}${mentions}`;
 }
 
-function buildStorySequence(stories: StoryItem[], activeStoryId: string) {
-  const activeStory = stories.find((story) => story.id === activeStoryId) ?? null;
-  const relevantStories = activeStory
-    ? stories.filter(
-        (story) =>
-          story.authorId === activeStory.authorId && story.authorType === activeStory.authorType
-      )
-    : stories;
-  const orderedStories = relevantStories
-    .slice()
-    .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
-  const activeIndex = orderedStories.findIndex((story) => story.id === activeStoryId);
+function getStoryAuthorKey(story: Pick<StoryItem, "authorId" | "authorType">) {
+  return `${story.authorType}:${story.authorId}`;
+}
 
-  if (activeIndex <= 0) {
-    return orderedStories.map((story) => story.id);
+function buildStoryFeedGroups(stories: StoryItem[]) {
+  const groupsByAuthor = new Map<string, StoryItem[]>();
+  const authorOrder: string[] = [];
+
+  stories
+    .slice()
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .forEach((story) => {
+      const authorKey = getStoryAuthorKey(story);
+      if (!groupsByAuthor.has(authorKey)) {
+        groupsByAuthor.set(authorKey, []);
+        authorOrder.push(authorKey);
+      }
+
+      groupsByAuthor.get(authorKey)?.push(story);
+    });
+
+  return authorOrder.map((authorKey) =>
+    (groupsByAuthor.get(authorKey) ?? [])
+      .slice()
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .map((story) => story.id)
+  );
+}
+
+function getFirstPendingStoryId(
+  storyIds: string[],
+  state: PersistedState,
+  currentUserId: string
+) {
+  return (
+    storyIds.find((storyId) => {
+      const story = state.stories.find((entry) => entry.id === storyId);
+      return story && story.authorId !== currentUserId && !hasViewedStory(state, storyId, currentUserId);
+    }) ?? null
+  );
+}
+
+function buildStoryViewerState(
+  stories: StoryItem[],
+  activeStoryId: string,
+  state: PersistedState,
+  currentUserId: string
+) {
+  const feedGroups = buildStoryFeedGroups(stories);
+  const activeGroupIndex = Math.max(
+    0,
+    feedGroups.findIndex((storyIds) => storyIds.includes(activeStoryId))
+  );
+  const storyIds = feedGroups[activeGroupIndex] ?? [];
+  const uniqueAuthors = new Set(stories.map((story) => getStoryAuthorKey(story))).size;
+  const activeId =
+    uniqueAuthors > 1
+      ? getFirstPendingStoryId(storyIds, state, currentUserId) ?? activeStoryId
+      : activeStoryId;
+
+  if (storyIds.length === 0) {
+    return null;
   }
 
-  return [
-    ...orderedStories.slice(activeIndex).map((story) => story.id),
-    ...orderedStories.slice(0, activeIndex).map((story) => story.id)
-  ];
+  return {
+    activeGroupIndex,
+    activeStoryId: activeId,
+    feedGroups,
+    storyIds
+  } satisfies StoryViewerState;
+}
+
+function getNextPendingStoryGroupIndex(
+  feedGroups: string[][],
+  activeGroupIndex: number,
+  state: PersistedState,
+  currentUserId: string
+) {
+  for (let offset = 1; offset < feedGroups.length; offset += 1) {
+    const nextIndex = (activeGroupIndex + offset) % feedGroups.length;
+    if (getFirstPendingStoryId(feedGroups[nextIndex] ?? [], state, currentUserId)) {
+      return nextIndex;
+    }
+  }
+
+  return null;
 }
 
 async function readFileAsDataUrl(file: File) {
@@ -1853,6 +1922,11 @@ export function TindereoApp() {
   };
 
   const handleMarkThreadRead = async (scope: "event" | "private", targetId: string) => {
+    setState((current) =>
+      current
+        ? normalizeState(applyThreadReadState(current, current.session.currentUserId, scope, targetId))
+        : current
+    );
     await runPlatformMutation({
       type: "mark-thread-read",
       actorId: state.session.currentUserId,
@@ -1862,6 +1936,11 @@ export function TindereoApp() {
   };
 
   const handleMarkStoryViewed = async (storyId: string) => {
+    setState((current) =>
+      current
+        ? normalizeState(applyStoryViewedState(current, current.session.currentUserId, storyId))
+        : current
+    );
     await runPlatformMutation({
       type: "mark-story-viewed",
       actorId: state.session.currentUserId,
@@ -2166,10 +2245,13 @@ export function TindereoApp() {
   };
 
   const openStoryViewer = (storyId: string, sourceStories: StoryItem[]) => {
-    setStoryViewer({
-      activeStoryId: storyId,
-      storyIds: buildStorySequence(sourceStories, storyId)
-    });
+    const nextStoryViewer = buildStoryViewerState(
+      sourceStories,
+      storyId,
+      state,
+      currentUser.id
+    );
+    setStoryViewer(nextStoryViewer);
     setStoryReplyDraft("");
   };
 
@@ -2191,24 +2273,63 @@ export function TindereoApp() {
 
       if (direction === "next") {
         const nextStoryId = current.storyIds[currentIndex + 1];
-        if (!nextStoryId) {
+        if (nextStoryId) {
+          return {
+            ...current,
+            activeStoryId: nextStoryId
+          };
+        }
+
+        const nextGroupIndex = getNextPendingStoryGroupIndex(
+          current.feedGroups,
+          current.activeGroupIndex,
+          state,
+          currentUser.id
+        );
+        if (nextGroupIndex === null) {
+          return null;
+        }
+
+        const nextStoryIds = current.feedGroups[nextGroupIndex] ?? [];
+        const nextPendingStoryId =
+          getFirstPendingStoryId(nextStoryIds, state, currentUser.id) ?? nextStoryIds[0];
+
+        if (!nextPendingStoryId) {
           return null;
         }
 
         return {
           ...current,
-          activeStoryId: nextStoryId
+          activeGroupIndex: nextGroupIndex,
+          activeStoryId: nextPendingStoryId,
+          storyIds: nextStoryIds
         };
       }
 
       const previousStoryId = current.storyIds[currentIndex - 1];
-      if (!previousStoryId) {
+      if (previousStoryId) {
+        return {
+          ...current,
+          activeStoryId: previousStoryId
+        };
+      }
+
+      const previousGroupIndex = current.activeGroupIndex - 1;
+      if (previousGroupIndex < 0) {
+        return current;
+      }
+
+      const previousStoryIds = current.feedGroups[previousGroupIndex] ?? [];
+      const lastPreviousStoryId = previousStoryIds[previousStoryIds.length - 1];
+      if (!lastPreviousStoryId) {
         return current;
       }
 
       return {
         ...current,
-        activeStoryId: previousStoryId
+        activeGroupIndex: previousGroupIndex,
+        activeStoryId: lastPreviousStoryId,
+        storyIds: previousStoryIds
       };
     });
   };
@@ -5049,9 +5170,16 @@ function MobileStoriesBar({
   state: PersistedState;
   stories: StoryItem[];
 }) {
-  const storyCountByAuthor = stories.reduce((collection, story) => {
+  const currentUserId = state.session.currentUserId;
+  const pendingStoryCountByAuthor = stories.reduce((collection, story) => {
     const key = `${story.authorType}:${story.authorId}`;
-    collection.set(key, (collection.get(key) ?? 0) + 1);
+    const shouldCountAsPending =
+      story.authorId !== currentUserId && !hasViewedStory(state, story.id, currentUserId);
+
+    if (shouldCountAsPending) {
+      collection.set(key, (collection.get(key) ?? 0) + 1);
+    }
+
     return collection;
   }, new Map<string, number>());
   const latestStories = Array.from(
@@ -5077,7 +5205,8 @@ function MobileStoriesBar({
           const user = story.authorType === "user" ? getUserById(state, story.authorId) : null;
           const event = story.authorType === "event" ? getEventById(state, story.authorId) : null;
           const label = user ? getUserIdentityLabel(user) : event?.title ?? "Story";
-          const storyCount = storyCountByAuthor.get(`${story.authorType}:${story.authorId}`) ?? 1;
+          const pendingStoryCount =
+            pendingStoryCountByAuthor.get(`${story.authorType}:${story.authorId}`) ?? 0;
           return (
             <button key={story.id} className="w-[78px] flex-none text-center" onClick={() => onOpenStory(story.id, stories)} type="button">
               <div className="relative mx-auto w-fit rounded-full bg-[linear-gradient(135deg,#ff6b57,#f08a24)] p-[2px]">
@@ -5089,9 +5218,9 @@ function MobileStoriesBar({
                     src={getStoryPreviewImage(story, state)}
                   />
                 </div>
-                {storyCount > 1 ? (
+                {pendingStoryCount > 0 ? (
                   <span className="absolute -bottom-1 -right-1 inline-flex min-w-5 items-center justify-center rounded-full bg-[#1d160f] px-1.5 py-0.5 text-[10px] font-bold text-white">
-                    {storyCount}
+                    {pendingStoryCount}
                   </span>
                 ) : null}
               </div>
@@ -5314,19 +5443,15 @@ function StoryViewerOverlay({
   const [isMuted, setIsMuted] = useState(true);
   const storyStartedAtRef = useRef<number | null>(null);
   const storyElapsedAtPauseRef = useRef(0);
-  const onCloseRef = useRef(onClose);
   const onMoveRef = useRef(onMove);
-  const shouldAutoAdvanceRef = useRef(storyIds.length > 1);
   const replyInputRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const viewers = getStoryViews(state, activeStory.id).map((view) => getUserById(state, view.userId));
   const shouldPausePlayback = isPaused || isReplyFocused || showViews || isSendingReply;
 
   useEffect(() => {
-    onCloseRef.current = onClose;
     onMoveRef.current = onMove;
-    shouldAutoAdvanceRef.current = storyIds.length > 1;
-  }, [onClose, onMove, storyIds.length]);
+  }, [onMove]);
 
   useEffect(() => {
     setShowViews(false);
@@ -5402,11 +5527,7 @@ function StoryViewerOverlay({
 
       if (elapsed >= storyDurationMs) {
         window.clearInterval(intervalId);
-        if (shouldAutoAdvanceRef.current) {
-          onMoveRef.current("next");
-        } else {
-          onCloseRef.current();
-        }
+        onMoveRef.current("next");
       }
     }, 90);
 
