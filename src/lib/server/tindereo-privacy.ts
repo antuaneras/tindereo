@@ -1,4 +1,5 @@
 import type { AppDataset, EventItem, StoryItem } from "@/lib/tindereo-types";
+import { stripPrivatePlatformFields } from "@/lib/server/tindereo-web-push";
 
 function getEventMap(events: EventItem[]) {
   return new Map(events.map((event) => [event.id, event]));
@@ -69,11 +70,13 @@ function canSeeEventMedia(data: AppDataset, eventId: string, viewerId: string) {
 }
 
 export function sanitizePlatformDataForViewer(data: AppDataset, viewerId: string | null): AppDataset {
+  const publicData = stripPrivatePlatformFields(data);
+
   if (!viewerId) {
     return {
-      ...data,
+      ...publicData,
       users: [],
-      events: data.events.filter((event) => event.visibility === "public"),
+      events: publicData.events.filter((event) => event.visibility === "public"),
       memberships: [],
       groupMessages: [],
       privateChatRequests: [],
@@ -89,37 +92,37 @@ export function sanitizePlatformDataForViewer(data: AppDataset, viewerId: string
     };
   }
 
-  const visibleEvents = getVisibleEvents(data, viewerId);
+  const visibleEvents = getVisibleEvents(publicData, viewerId);
   const visibleEventIds = new Set(visibleEvents.map((event) => event.id));
-  const friendIds = getFriendIds(data, viewerId);
+  const friendIds = getFriendIds(publicData, viewerId);
   const visibleChatIds = new Set(
-    data.privateChats
+    publicData.privateChats
       .filter((chat) => chat.participantIds.includes(viewerId))
       .map((chat) => chat.id)
   );
-  const visibleStories = data.stories.filter((story) => {
+  const visibleStories = publicData.stories.filter((story) => {
     if (story.authorType === "user") {
       return story.authorId === viewerId || friendIds.has(story.authorId);
     }
 
-    return canSeeEventMedia(data, story.authorId, viewerId);
+    return canSeeEventMedia(publicData, story.authorId, viewerId);
   });
   const visibleStoryIds = new Set(visibleStories.map((story) => story.id));
-  const visiblePosts = data.socialPosts.filter((post) => {
+  const visiblePosts = publicData.socialPosts.filter((post) => {
     if (post.authorType === "user") {
       return post.authorId === viewerId || friendIds.has(post.authorId);
     }
 
-    return canSeeEventMedia(data, post.authorId, viewerId);
+    return canSeeEventMedia(publicData, post.authorId, viewerId);
   });
-  const eventMap = getEventMap(data.events);
-  const storyMap = getStoryMap(data.stories);
+  const eventMap = getEventMap(publicData.events);
+  const storyMap = getStoryMap(publicData.stories);
 
   return {
-    ...data,
-    users: data.users,
+    ...publicData,
+    users: publicData.users,
     events: visibleEvents,
-    memberships: data.memberships.filter((membership) => {
+    memberships: publicData.memberships.filter((membership) => {
       if (membership.userId === viewerId) {
         return true;
       }
@@ -133,23 +136,23 @@ export function sanitizePlatformDataForViewer(data: AppDataset, viewerId: string
         return true;
       }
 
-      return canSeeEventChat(data, event.id, viewerId) && membership.status === "approved";
+      return canSeeEventChat(publicData, event.id, viewerId) && membership.status === "approved";
     }),
-    groupMessages: data.groupMessages.filter((message) =>
-      canSeeEventChat(data, message.eventId, viewerId)
+    groupMessages: publicData.groupMessages.filter((message) =>
+      canSeeEventChat(publicData, message.eventId, viewerId)
     ),
-    privateChatRequests: data.privateChatRequests.filter(
+    privateChatRequests: publicData.privateChatRequests.filter(
       (request) => request.fromUserId === viewerId || request.toUserId === viewerId
     ),
-    privateChats: data.privateChats.filter((chat) => visibleChatIds.has(chat.id)),
-    privateMessages: data.privateMessages.filter((message) => visibleChatIds.has(message.chatId)),
-    friendships: data.friendships.filter((friendship) => friendship.userIds.includes(viewerId)),
-    eventInvites: data.eventInvites.filter(
+    privateChats: publicData.privateChats.filter((chat) => visibleChatIds.has(chat.id)),
+    privateMessages: publicData.privateMessages.filter((message) => visibleChatIds.has(message.chatId)),
+    friendships: publicData.friendships.filter((friendship) => friendship.userIds.includes(viewerId)),
+    eventInvites: publicData.eventInvites.filter(
       (invite) => invite.fromUserId === viewerId || invite.toUserId === viewerId
     ),
     socialPosts: visiblePosts,
     stories: visibleStories,
-    storyViews: data.storyViews.filter((view) => {
+    storyViews: publicData.storyViews.filter((view) => {
       if (view.userId === viewerId) {
         return true;
       }
@@ -168,9 +171,9 @@ export function sanitizePlatformDataForViewer(data: AppDataset, viewerId: string
         event && event.hostId === viewerId && visibleStoryIds.has(story.id)
       );
     }),
-    conversationReadStates: data.conversationReadStates.filter(
+    conversationReadStates: publicData.conversationReadStates.filter(
       (entry) => entry.userId === viewerId
     ),
-    notifications: data.notifications.filter((notification) => notification.userId === viewerId)
+    notifications: publicData.notifications.filter((notification) => notification.userId === viewerId)
   };
 }

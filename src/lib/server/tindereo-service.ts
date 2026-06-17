@@ -6,6 +6,7 @@ import {
   resetAppDataset
 } from "./tindereo-store";
 import { publishPlatformUpdate } from "./tindereo-realtime";
+import { sendPushNotificationsForNotifications } from "./tindereo-web-push";
 import type {
   AppDataset,
   CreateEventInput,
@@ -64,11 +65,16 @@ async function runStateMutation(
   metaBuilder?: (state: PersistedState) => PlatformDataEnvelope["meta"]
 ): Promise<PlatformDataEnvelope> {
   const currentData = await readAppDataset();
+  const previousNotificationIds = new Set(currentData.notifications.map((notification) => notification.id));
   const nextState = mutation(hydratePersistedState(currentData, { currentUserId: actorId }));
   const nextData = stripSession(nextState);
   await replaceAppDataset(nextData);
   const payload = await buildPlatformEnvelope(nextData, metaBuilder?.(nextState));
   publishPlatformUpdate(payload);
+  void sendPushNotificationsForNotifications(
+    nextData,
+    nextData.notifications.filter((notification) => !previousNotificationIds.has(notification.id))
+  ).catch(() => undefined);
   return payload;
 }
 

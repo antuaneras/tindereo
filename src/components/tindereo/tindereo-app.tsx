@@ -45,6 +45,13 @@ import {
 } from "@/lib/tindereo-api";
 import { APP_NAME, APP_TAGLINE, EVENT_CATEGORY_OPTIONS } from "@/lib/tindereo-data";
 import {
+  disableWebPushNotifications,
+  enableWebPushNotifications,
+  getWebPushStatus,
+  syncExistingWebPushSubscription,
+  type WebPushStatus,
+} from "@/lib/tindereo-push-client";
+import {
   hydratePersistedState,
   readSessionState,
   SESSION_STORAGE_KEY
@@ -63,6 +70,7 @@ import type {
   PrivateChat,
   PlatformUser,
   RegisterAccountInput,
+  SessionState,
   SocialPost,
   StoryItem
 } from "@/lib/tindereo-types";
@@ -193,6 +201,14 @@ const INITIAL_REGISTER_FORM: RegisterFormState = {
   bio: "",
   password: "",
   confirmPassword: ""
+};
+
+const INITIAL_WEB_PUSH_STATUS: WebPushStatus = {
+  isStandalone: false,
+  needsStandaloneInstall: false,
+  permission: "unsupported",
+  subscribed: false,
+  supported: false
 };
 
 type MediaDraft = {
@@ -618,7 +634,9 @@ export function TindereoApp() {
   const [registerForm, setRegisterForm] = useState<RegisterFormState>(INITIAL_REGISTER_FORM);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isRealtimeConnected, setIsRealtimeConnected] = useState(false);
+  const [isPushSyncing, setIsPushSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [webPushStatus, setWebPushStatus] = useState<WebPushStatus>(INITIAL_WEB_PUSH_STATUS);
   const latestRevisionRef = useRef(0);
   const applyPlatformPayloadRef = useRef<
     | ((
@@ -786,6 +804,67 @@ export function TindereoApp() {
     );
   }, [state]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const refreshWebPushStatus = async () => {
+      try {
+        const nextStatus = await getWebPushStatus();
+        if (!cancelled) {
+          setWebPushStatus(nextStatus);
+        }
+      } catch {
+        if (!cancelled) {
+          setWebPushStatus(INITIAL_WEB_PUSH_STATUS);
+        }
+      }
+    };
+
+    void refreshWebPushStatus();
+
+    if (typeof window === "undefined") {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const handleFocus = () => {
+      void refreshWebPushStatus();
+    };
+
+    window.addEventListener("focus", handleFocus);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", handleFocus);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!state?.session.isAuthenticated || !webPushStatus.supported || webPushStatus.permission !== "granted") {
+      return;
+    }
+
+    let cancelled = false;
+
+    const syncWebPushSubscription = async () => {
+      try {
+        const nextStatus = await syncExistingWebPushSubscription();
+        if (!cancelled) {
+          setWebPushStatus(nextStatus);
+        }
+      } catch {
+        // Keep the app usable even if push sync fails temporarily.
+      }
+    };
+
+    void syncWebPushSubscription();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [state?.session.currentUserId, state?.session.isAuthenticated, webPushStatus.permission, webPushStatus.supported]);
+
   const unreadNotificationCount = state?.session.isAuthenticated
     ? getUnreadNotificationCount(state, state.session.currentUserId)
     : 0;
@@ -867,6 +946,43 @@ export function TindereoApp() {
       setSyncError(error instanceof Error ? error.message : "No se pudo crear la cuenta.");
     } finally {
       setIsSyncing(false);
+    }
+  };
+
+  const handleEnablePushNotifications = async () => {
+    setSyncError(null);
+    setIsPushSyncing(true);
+
+    try {
+      const nextStatus = await enableWebPushNotifications();
+      setWebPushStatus(nextStatus);
+      setUiNotice("Notificaciones activadas.");
+    } catch (error) {
+      setSyncError(
+        error instanceof Error ? error.message : "No se pudieron activar las notificaciones."
+      );
+    } finally {
+      setIsPushSyncing(false);
+    }
+  };
+
+  const handleDisablePushNotifications = async () => {
+    setSyncError(null);
+    setIsPushSyncing(true);
+
+    try {
+      await disableWebPushNotifications();
+      setWebPushStatus((current) => ({
+        ...current,
+        subscribed: false
+      }));
+      setUiNotice("Notificaciones desactivadas.");
+    } catch (error) {
+      setSyncError(
+        error instanceof Error ? error.message : "No se pudieron desactivar las notificaciones."
+      );
+    } finally {
+      setIsPushSyncing(false);
     }
   };
 
@@ -1447,6 +1563,7 @@ export function TindereoApp() {
     setIsSyncing(true);
 
     try {
+      await disableWebPushNotifications().catch(() => undefined);
       await logoutAccount();
       await loadPlatform({
         isAuthenticated: false,
@@ -1458,6 +1575,10 @@ export function TindereoApp() {
       });
       setLoginForm(INITIAL_LOGIN_FORM);
       setRegisterForm(INITIAL_REGISTER_FORM);
+      setWebPushStatus((current) => ({
+        ...current,
+        subscribed: false
+      }));
     } catch (error) {
       setSyncError(error instanceof Error ? error.message : "No se pudo cerrar sesion.");
     } finally {
@@ -1861,6 +1982,8 @@ export function TindereoApp() {
           onOpenNotification={(notificationId) => void handleOpenNotification(notificationId)}
           onOpenNotifications={() => navigateToTab("search")}
           onOpenProfileTab={() => navigateToTab("profile")}
+          onEnablePushNotifications={() => void handleEnablePushNotifications()}
+          onDisablePushNotifications={() => void handleDisablePushNotifications()}
           onOpenCamera={openCameraComposer}
           onOpenEvent={(eventId, tab) => openEvent(eventId, tab)}
           onOpenPrivateChat={openPrivateChat}
@@ -1890,6 +2013,7 @@ export function TindereoApp() {
           onUploadCameraFile={handleCameraFileChange}
           pendingApprovalsCount={pendingApprovalsCount}
           pendingEventInvites={pendingEventInvites}
+          isPushSyncing={isPushSyncing}
           notifications={notifications}
           notificationCenterOpen={notificationCenterOpen}
           privateChats={privateChats}
@@ -1907,6 +2031,7 @@ export function TindereoApp() {
           unreadChatThreadCount={unreadChatThreadCount}
           unreadNotificationCount={unreadNotificationCount}
           uiNotice={uiNotice}
+          webPushStatus={webPushStatus}
           mediaEditor={mediaEditor}
           onCloseMediaEditor={() => setMediaEditor(null)}
           onCloseNotifications={() => setNotificationCenterOpen(false)}
@@ -2360,6 +2485,7 @@ function MobileAppShell({
   groupDrafts,
   groupReplyTargets,
   hostedCount,
+  isPushSyncing,
   isSyncing,
   joinedCount,
   likedPostKeys,
@@ -2373,6 +2499,8 @@ function MobileAppShell({
   onGoToCreate,
   onMarkAllNotificationsRead,
   onMarkStoryViewed,
+  onDisablePushNotifications,
+  onEnablePushNotifications,
   onOpenNotification,
   onOpenNotifications,
   onOpenProfileTab,
@@ -2425,6 +2553,7 @@ function MobileAppShell({
   unreadChatThreadCount,
   unreadNotificationCount,
   uiNotice,
+  webPushStatus,
   mediaEditor,
   setMediaEditor
 }: {
@@ -2444,6 +2573,7 @@ function MobileAppShell({
   groupDrafts: Record<string, string>;
   groupReplyTargets: Record<string, ReplyTarget | null>;
   hostedCount: number;
+  isPushSyncing: boolean;
   isSyncing: boolean;
   joinedCount: number;
   likedPostKeys: string[];
@@ -2457,6 +2587,8 @@ function MobileAppShell({
   onGoToCreate: () => void;
   onMarkAllNotificationsRead: () => void;
   onMarkStoryViewed: (storyId: string) => void;
+  onDisablePushNotifications: () => void;
+  onEnablePushNotifications: () => void;
   onOpenNotification: (notificationId: string) => void;
   onOpenNotifications: () => void;
   onOpenProfileTab: () => void;
@@ -2509,6 +2641,7 @@ function MobileAppShell({
   unreadChatThreadCount: number;
   unreadNotificationCount: number;
   uiNotice: string | null;
+  webPushStatus: WebPushStatus;
   mediaEditor: MediaEditorState | null;
   setMediaEditor: Dispatch<SetStateAction<MediaEditorState | null>>;
 }) {
@@ -2757,7 +2890,10 @@ function MobileAppShell({
           friendSuggestions={friendSuggestions}
           friends={friends}
           hostedCount={hostedCount}
+          isPushSyncing={isPushSyncing}
           joinedCount={joinedCount}
+          onDisablePushNotifications={onDisablePushNotifications}
+          onEnablePushNotifications={onEnablePushNotifications}
           onOpenCreateEvent={onGoToCreate}
           onOpenDetail={onOpenProfileDrilldown}
           onOpenMediaEditor={onOpenMediaEditor}
@@ -2771,6 +2907,7 @@ function MobileAppShell({
           profilePosts={profilePosts}
           profileStories={profileStories}
           state={state}
+          webPushStatus={webPushStatus}
         />
       ) : null}
 
@@ -3648,7 +3785,10 @@ function MobileProfileScreen({
   friendSuggestions,
   friends,
   hostedCount,
+  isPushSyncing,
   joinedCount,
+  onDisablePushNotifications,
+  onEnablePushNotifications,
   onLogout,
   onOpenCreateEvent,
   onOpenDetail,
@@ -3661,13 +3801,17 @@ function MobileProfileScreen({
   pendingEventInvites,
   profilePosts,
   profileStories,
-  state
+  state,
+  webPushStatus
 }: {
   currentUser: PlatformUser;
   friendSuggestions: PlatformUser[];
   friends: PlatformUser[];
   hostedCount: number;
+  isPushSyncing: boolean;
   joinedCount: number;
+  onDisablePushNotifications: () => void;
+  onEnablePushNotifications: () => void;
   onLogout: () => void;
   onOpenCreateEvent: () => void;
   onOpenDetail: (detail: ProfileDrilldown) => void;
@@ -3681,6 +3825,7 @@ function MobileProfileScreen({
   profilePosts: SocialPost[];
   profileStories: StoryItem[];
   state: PersistedState;
+  webPushStatus: WebPushStatus;
 }) {
   const privateChats = getPrivateChatsForUser(state, currentUser.id);
 
@@ -3727,6 +3872,48 @@ function MobileProfileScreen({
               Logout
             </button>
           </div>
+          <section className="mt-4 rounded-[24px] border border-[#eadfd3] bg-[#fffaf6] p-4">
+            <div className="flex items-start gap-3">
+              <div className="mt-1 rounded-full bg-white p-2 text-[#f08a24] shadow-[0_10px_20px_rgba(52,34,22,0.08)]">
+                <Shield className="h-4 w-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f6f59]">
+                  Notificaciones
+                </p>
+                <p className="mt-2 text-sm leading-6 text-[#5f4b3f]">
+                  {webPushStatus.subscribed
+                    ? "Ya tienes activados los avisos reales para mensajes, historias y solicitudes."
+                    : webPushStatus.needsStandaloneInstall
+                      ? "En iPhone, anade la app a pantalla de inicio y abre ese acceso directo para poder recibir push."
+                      : webPushStatus.permission === "denied"
+                        ? "Las notificaciones estan bloqueadas. Reactivalas desde los ajustes del navegador o de la app instalada."
+                        : webPushStatus.supported
+                          ? "Activalas para recibir mensajes privados y del grupo incluso con la app cerrada."
+                          : "Este navegador no soporta notificaciones push para Tindereo."}
+                </p>
+                {webPushStatus.subscribed ? (
+                  <button
+                    className="mt-3 rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#6d5749]"
+                    disabled={isPushSyncing}
+                    onClick={onDisablePushNotifications}
+                    type="button"
+                  >
+                    {isPushSyncing ? "Actualizando..." : "Desactivar"}
+                  </button>
+                ) : webPushStatus.supported || webPushStatus.needsStandaloneInstall ? (
+                  <button
+                    className="mt-3 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
+                    disabled={isPushSyncing}
+                    onClick={onEnablePushNotifications}
+                    type="button"
+                  >
+                    {isPushSyncing ? "Activando..." : "Activar notificaciones"}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </section>
           <div className="mt-2">
             <button className="w-full rounded-full border border-[#eadfd3] bg-white px-4 py-3 text-sm font-semibold text-[#6d5749]" onClick={onResetDemo} type="button">
               Vaciar datos
