@@ -2282,7 +2282,7 @@ export function startFriendChat(state: PersistedState, actorId: string, targetUs
     id: buildId("private"),
     chatId: nextChat.id,
     authorId: actorId,
-    text: `He abierto este chat directo porque ya somos amigos en Tindereo. ${author.name} ha iniciado la conversacion.`,
+    text: `He abierto este chat directo porque ya somos amigos. ${author.name} ha iniciado la conversacion.`,
     createdAt
   };
 

@@ -26,7 +26,6 @@ import {
   Send,
   Share2,
   Shield,
-  Sparkles,
   Ticket,
   Trash2,
   User,
@@ -48,7 +47,7 @@ import {
   subscribeToPlatformStream,
   uploadManagedMediaFromClient
 } from "@/lib/tindereo-api";
-import { APP_NAME, APP_TAGLINE, EVENT_CATEGORY_OPTIONS } from "@/lib/tindereo-data";
+import { EVENT_CATEGORY_OPTIONS } from "@/lib/tindereo-data";
 import {
   disableWebPushNotifications,
   enableWebPushNotifications,
@@ -179,7 +178,7 @@ function buildEventShareUrl(eventSlug: string) {
 }
 
 function buildEventShareCopy(event: EventItem, shareUrl: string) {
-  return `Te paso ${event.title} en Tindereo. ${event.summary} Ãšnete aquÃ­: ${shareUrl}`;
+  return `Te paso ${event.title}. ${event.summary} Unete aqui: ${shareUrl}`;
 }
 
 function getUserIdentityLabel(user: Pick<PlatformUser, "handle" | "name">) {
@@ -3507,7 +3506,7 @@ function PushNotificationsPrompt({
         </h2>
         <p className="mt-3 text-sm leading-6 text-[#5f4b3f]">
           {needsStandaloneInstall
-            ? "En iPhone solo funcionan si abres Tindereo desde el acceso directo de pantalla de inicio, no desde Safari normal."
+            ? "En iPhone solo funcionan si abres la app desde el acceso directo de pantalla de inicio, no desde Safari normal."
             : "Asi te llegarÃ¡n mensajes privados, respuestas de historias y movimiento de tus eventos aunque la app este en segundo plano."}
         </p>
         <div className="mt-5 flex flex-col gap-3 sm:flex-row">
@@ -11069,14 +11068,20 @@ function LoadingScreen({
   error?: string | null;
   onRetry?: () => void;
 }) {
+  if (!error) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#f6efe7] px-4">
+        <BrandMark />
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-[#f6efe7] px-4">
       <div className="rounded-[34px] border border-[#eadfd3] bg-white/88 px-6 py-8 text-center shadow-[0_24px_60px_rgba(52,34,22,0.08)]">
-        <BrandMark />
-        <p className="mt-4 text-sm text-[#6d5749]">
-          {error ?? "Cargando la plataforma social..."}
-        </p>
-        {error && onRetry ? (
+        <BrandMark compact />
+        <p className="mt-4 text-sm text-[#6d5749]">{error}</p>
+        {onRetry ? (
           <button
             className="mt-4 inline-flex items-center gap-2 rounded-full bg-[#1d160f] px-4 py-3 text-sm font-semibold text-white"
             onClick={onRetry}
@@ -11091,16 +11096,19 @@ function LoadingScreen({
   );
 }
 
-function BrandMark() {
+function BrandMark({ compact }: { compact?: boolean }) {
   return (
-    <div className="inline-flex items-center gap-3 rounded-full border border-[#eadfd3] bg-white/88 px-4 py-3 shadow-[0_14px_28px_rgba(52,34,22,0.06)]">
-      <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-r from-[#ff6b57] to-[#f08a24] text-white shadow-[0_14px_24px_rgba(240,138,36,0.25)]">
-        <Sparkles className="h-5 w-5" />
-      </div>
-      <div>
-        <p className="text-xl font-black tracking-tight text-[#1d160f]">{APP_NAME}</p>
-        <p className="text-[11px] uppercase tracking-[0.26em] text-[#8f6f59]">{APP_TAGLINE}</p>
-      </div>
+    <div
+      className={`inline-flex overflow-hidden rounded-[28px] bg-white shadow-[0_18px_40px_rgba(240,138,36,0.18)] ${
+        compact ? "h-[72px] w-[72px]" : "h-[92px] w-[92px]"
+      }`}
+    >
+      <img
+        alt=""
+        aria-hidden="true"
+        className="h-full w-full object-cover"
+        src={`${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/apple-touch-icon.png`}
+      />
     </div>
   );
 }

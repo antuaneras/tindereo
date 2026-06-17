@@ -1,8 +1,5 @@
 import type { EventCategory, PersistedState } from "@/lib/tindereo-types";
 
-export const APP_NAME = "Tindereo";
-export const APP_TAGLINE = "Eventos que conectan antes de empezar";
-
 export const EVENT_CATEGORY_META: Record<
   EventCategory,
   { label: string; accent: string; softAccent: string }

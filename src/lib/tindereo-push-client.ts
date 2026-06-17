@@ -136,7 +136,7 @@ export async function enableWebPushNotifications() {
   if (!supportsPushNotifications() || needsStandaloneInstall) {
     throw new Error(
       needsStandaloneInstall
-        ? "En iPhone primero tienes que anadir Tindereo a la pantalla de inicio y abrirla desde ese acceso directo."
+        ? "En iPhone primero tienes que anadir la app a la pantalla de inicio y abrirla desde ese acceso directo."
         : "Este navegador no permite notificaciones push."
     );
   }

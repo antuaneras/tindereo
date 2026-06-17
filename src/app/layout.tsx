@@ -7,10 +7,9 @@ const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Tindereo",
+  title: " ",
   description:
     "Plataforma social para descubrir eventos, unirse a su chat general y abrir conexiones privadas entre asistentes.",
-  applicationName: "Tindereo",
   manifest: `${basePath}/manifest.webmanifest`,
   icons: {
     icon: [
@@ -30,7 +29,7 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "Tindereo"
+    title: " "
   }
 };
 

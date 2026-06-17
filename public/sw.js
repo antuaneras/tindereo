@@ -8,7 +8,8 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("push", (event) => {
   const payload = event.data ? event.data.json() : {};
-  const title = typeof payload.title === "string" && payload.title ? payload.title : "Tindereo";
+  const title =
+    typeof payload.title === "string" && payload.title ? payload.title : "Nueva notificacion";
 
   event.waitUntil(
     self.registration.showNotification(title, {
