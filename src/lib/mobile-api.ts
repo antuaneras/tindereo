@@ -5,6 +5,7 @@ import type {
   MobileConversationDetail,
   MobileConversationSummary,
   MobileEventDetail,
+  MobilePostComment,
   MobileProfile,
   MobileProfileDetail,
   MobileSearchPayload,
@@ -220,6 +221,16 @@ export async function deletePost(postId: string) {
 export async function likePost(postId: string) {
   return readJson<{ ok: boolean }>(
     await fetch(`/api/mobile/posts/${postId}/like`, { method: "POST" })
+  );
+}
+
+export async function createPostComment(postId: string, body: string) {
+  return readJson<MobilePostComment>(
+    await fetch(`/api/mobile/posts/${postId}/comments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body })
+    })
   );
 }
 

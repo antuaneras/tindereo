@@ -17,6 +17,7 @@ import type {
   MobileModerationAction,
   MobileNotification,
   MobilePost,
+  MobilePostComment,
   MobileProfile,
   MobileProfileDetail,
   MobileSearchPayload,
@@ -60,6 +61,7 @@ const TABLES = {
   messages: "messages",
   notifications: "notifications",
   postLikes: "post_likes",
+  postComments: "post_comments",
   posts: "posts",
   profiles: "profiles",
   pushSubscriptions: "push_subscriptions",
@@ -230,6 +232,14 @@ type PostLikeRow = {
   user_id: string;
 };
 
+type PostCommentRow = {
+  author_id: string;
+  body: string;
+  created_at: string;
+  id: string;
+  post_id: string;
+};
+
 type NotificationRow = {
   body: string;
   created_at: string;
@@ -362,6 +372,19 @@ function mapNotification(row: NotificationRow): MobileNotification {
       row.data_json && typeof row.data_json === "object" && !Array.isArray(row.data_json)
         ? (row.data_json as Record<string, string | number | boolean | null>)
         : {}
+  };
+}
+
+function mapPostComment(row: PostCommentRow, author: MobileProfile | undefined): MobilePostComment {
+  return {
+    id: row.id,
+    postId: row.post_id,
+    authorId: row.author_id,
+    authorHandle: author?.handle ?? "usuario",
+    authorDisplayName: author?.displayName ?? author?.handle ?? "Usuario",
+    authorAvatarUrl: author?.avatarUrl ?? null,
+    body: row.body,
+    createdAt: row.created_at
   };
 }
 
@@ -551,9 +574,10 @@ export async function listMobileConversationSummaries(viewerId: string) {
 }
 
 async function loadPostsForViewer(viewerId: string) {
-  const [postRows, likeRows, assetRows, profileRows, eventRows] = await Promise.all([
+  const [postRows, likeRows, commentRows, assetRows, profileRows, eventRows] = await Promise.all([
     selectRows<PostRow>(TABLES.posts, { order: [{ column: "created_at", ascending: false }], limit: 40 }),
     selectRows<PostLikeRow>(TABLES.postLikes),
+    selectRows<PostCommentRow>(TABLES.postComments, { order: [{ column: "created_at", ascending: true }] }),
     selectRows<MediaAssetRow>(TABLES.mediaAssets),
     selectRows<ProfileRow>(TABLES.profiles),
     selectRows<EventRow>(TABLES.events)
@@ -565,6 +589,10 @@ async function loadPostsForViewer(viewerId: string) {
   return postRows.map((row): MobilePost => {
     const author = profilesById.get(row.author_id);
     const eventOwner = row.owner_type === "event" ? eventsById.get(row.owner_id) : null;
+    const comments = commentRows
+      .filter((comment) => comment.post_id === row.id)
+      .map((comment) => mapPostComment(comment, profilesById.get(comment.author_id)));
+
     return {
       id: row.id,
       ownerType: row.owner_type,
@@ -589,7 +617,9 @@ async function loadPostsForViewer(viewerId: string) {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       likeCount: likeRows.filter((like) => like.post_id === row.id).length,
-      hasLiked: likeRows.some((like) => like.post_id === row.id && like.user_id === viewerId)
+      commentCount: comments.length,
+      hasLiked: likeRows.some((like) => like.post_id === row.id && like.user_id === viewerId),
+      comments
     };
   });
 }
@@ -1895,6 +1925,54 @@ export async function toggleMobilePostLike(viewerId: string, postId: string) {
   publishMobileRealtimeEvent({ type: "feed", viewerId });
 }
 
+export async function createMobilePostComment(viewerId: string, postId: string, body: string) {
+  const trimmedBody = body.trim();
+  if (!trimmedBody) {
+    throw new Error("Escribe un comentario antes de enviarlo.");
+  }
+
+  const [postRows, authorProfiles] = await Promise.all([
+    selectRows<PostRow>(TABLES.posts, {
+      filters: [{ column: "id", op: "eq", value: postId }],
+      limit: 1
+    }),
+    loadProfiles([viewerId])
+  ]);
+
+  const post = postRows[0];
+  const author = authorProfiles[0];
+
+  if (!post || !author) {
+    throw new Error("No se pudo comentar esta publicacion.");
+  }
+
+  const created = await insertRow<PostCommentRow, PostCommentRow>(TABLES.postComments, {
+    id: buildMobileId("comment"),
+    post_id: postId,
+    author_id: viewerId,
+    body: trimmedBody,
+    created_at: new Date().toISOString()
+  });
+
+  if (!created) {
+    throw new Error("No se pudo guardar el comentario.");
+  }
+
+  if (post.author_id !== viewerId) {
+    await notifyUsers([post.author_id], {
+      kind: "mention",
+      title: `@${author.handle} comento tu publicacion`,
+      body: trimmedBody,
+      entityType: "post",
+      entityId: postId,
+      data: { postId }
+    });
+  }
+
+  publishMobileRealtimeEvent({ type: "feed", viewerId });
+  return mapPostComment(created, author);
+}
+
 export async function markStoryViewed(viewerId: string, storyId: string) {
   await insertRow(TABLES.storyViews, {
     id: buildMobileId("story-view"),
@@ -1985,22 +2063,31 @@ export async function getMobileProfileDetail(viewerId: string, handle: string): 
     throw new Error("No se encontro ese perfil.");
   }
   const profile = mapProfile(row);
-  const [events, friendships, posts, storyClusters, memberships] = await Promise.all([
+  const [viewerProfiles, events, friendships, posts, storyClusters, memberships] = await Promise.all([
+    loadProfiles([viewerId]),
     loadAllEvents(),
     selectRows<{ user_a_id: string; user_b_id: string }>(TABLES.friendships),
     loadPostsForViewer(viewerId),
     loadActiveStoriesForViewer(viewerId),
     selectRows<EventMemberRow>(TABLES.eventMembers)
   ]);
+  const viewer = viewerProfiles[0];
+  if (!viewer) {
+    throw new Error("No se ha encontrado tu perfil.");
+  }
   const isFriend = friendships.some(
     (friendship) =>
       (friendship.user_a_id === viewerId && friendship.user_b_id === profile.id) ||
       (friendship.user_b_id === viewerId && friendship.user_a_id === profile.id)
   );
   return {
+    viewer,
     profile,
     isViewer: profile.id === viewerId,
     isFriend,
+    friendCount: friendships.filter(
+      (friendship) => friendship.user_a_id === profile.id || friendship.user_b_id === profile.id
+    ).length,
     createdEvents: events.filter((event) => event.hostId === profile.id),
     joinedEvents: events.filter((event) =>
       memberships.some(

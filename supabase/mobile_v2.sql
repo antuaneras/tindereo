@@ -242,6 +242,47 @@ create table if not exists public.post_likes (
   unique (post_id, user_id)
 );
 
+create table if not exists public.post_comments (
+  id text primary key,
+  post_id text not null references public.posts(id) on delete cascade,
+  author_id text not null references public.profiles(id) on delete cascade,
+  body text not null default '',
+  created_at timestamptz not null default timezone('utc', now())
+);
+
+create index if not exists post_comments_post_created_idx on public.post_comments (post_id, created_at);
+
+insert into public.profiles (
+  id,
+  handle,
+  handle_lower,
+  display_name,
+  city,
+  bio,
+  avatar_url,
+  cover_url,
+  created_at,
+  updated_at
+)
+select
+  account.user_id,
+  account.username,
+  account.username_lower,
+  account.username,
+  'Madrid',
+  '',
+  null,
+  null,
+  account.created_at,
+  account.updated_at
+from public.tindereo_auth_accounts as account
+where not exists (
+  select 1
+  from public.profiles as profile
+  where profile.id = account.user_id
+)
+on conflict (id) do nothing;
+
 create table if not exists public.notifications (
   id text primary key,
   user_id text not null references public.profiles(id) on delete cascade,
@@ -302,6 +343,7 @@ begin
     'story_views',
     'posts',
     'post_likes',
+    'post_comments',
     'notifications',
     'push_subscriptions',
     'reminder_logs'
@@ -309,7 +351,7 @@ begin
     execute format('alter table public.%I enable row level security', table_name);
     execute format('revoke all on public.%I from anon, authenticated', table_name);
     execute format('grant all on public.%I to service_role', table_name);
-    execute format('drop policy if exists %L on public.%I', table_name || '_no_direct_access', table_name);
+    execute format('drop policy if exists %I on public.%I', table_name || '_no_direct_access', table_name);
     execute format(
       'create policy %I on public.%I as restrictive for all to anon, authenticated using (false) with check (false)',
       table_name || '_no_direct_access',

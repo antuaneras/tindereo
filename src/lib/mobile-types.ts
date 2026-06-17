@@ -92,6 +92,17 @@ export interface MobileStoryCluster {
   stories: MobileStory[];
 }
 
+export interface MobilePostComment {
+  id: string;
+  postId: string;
+  authorId: string;
+  authorHandle: string;
+  authorDisplayName: string;
+  authorAvatarUrl: string | null;
+  body: string;
+  createdAt: string;
+}
+
 export interface MobilePost {
   id: string;
   ownerType: MobileStoryOwnerType;
@@ -108,7 +119,9 @@ export interface MobilePost {
   createdAt: string;
   updatedAt: string;
   likeCount: number;
+  commentCount: number;
   hasLiked: boolean;
+  comments: MobilePostComment[];
 }
 
 export interface MobileEventMember {
@@ -208,9 +221,11 @@ export interface MobileEventDetail {
 }
 
 export interface MobileProfileDetail {
+  viewer: MobileProfile;
   profile: MobileProfile;
   isViewer: boolean;
   isFriend: boolean;
+  friendCount: number;
   createdEvents: MobileEvent[];
   joinedEvents: MobileEvent[];
   stories: MobileStory[];
