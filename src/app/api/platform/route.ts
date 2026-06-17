@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { getAuthenticatedUserId } from "../../../lib/server/tindereo-auth";
+import { resolveDatasetMediaUrls } from "../../../lib/server/tindereo-media";
 import { sanitizePlatformDataForViewer } from "../../../lib/server/tindereo-privacy";
 import { getPlatformEnvelope } from "../../../lib/server/tindereo-service";
 
@@ -15,7 +16,7 @@ export async function GET() {
 
     return NextResponse.json({
       ...payload,
-      data: sanitizePlatformDataForViewer(payload.data, currentUserId),
+      data: resolveDatasetMediaUrls(sanitizePlatformDataForViewer(payload.data, currentUserId)),
       meta: {
         ...payload.meta,
         currentUserId

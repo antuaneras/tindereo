@@ -4,6 +4,7 @@ import {
   authenticateUser,
   setAuthenticatedUserCookie
 } from "@/lib/server/tindereo-auth";
+import { resolveDatasetMediaUrls } from "@/lib/server/tindereo-media";
 import { sanitizePlatformDataForViewer } from "@/lib/server/tindereo-privacy";
 import {
   getDatasetRevision,
@@ -35,7 +36,7 @@ export async function POST(request: Request) {
     const data = await readAppDataset();
 
     return NextResponse.json({
-      data: sanitizePlatformDataForViewer(data, userId),
+      data: resolveDatasetMediaUrls(sanitizePlatformDataForViewer(data, userId)),
       meta: {
         currentUserId: userId,
         revision: await getDatasetRevision()

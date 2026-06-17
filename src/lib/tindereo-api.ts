@@ -143,6 +143,33 @@ export async function saveWebPushSubscription(subscription: PushSubscriptionJSON
   return payload;
 }
 
+export async function uploadManagedMediaFromClient(
+  file: File,
+  purpose: "avatar" | "chat" | "post" | "story"
+): Promise<{ assetRef: string; previewUrl: string | null }> {
+  const formData = new FormData();
+  formData.set("file", file);
+  formData.set("purpose", purpose);
+
+  const response = await fetch("/api/media/upload", {
+    method: "POST",
+    body: formData
+  });
+
+  const payload = (await response.json().catch(() => null)) as
+    | { assetRef?: string; error?: string; previewUrl?: string }
+    | null;
+
+  if (!response.ok || !payload?.assetRef) {
+    throw new Error(payload?.error ?? "No se pudo subir el archivo.");
+  }
+
+  return {
+    assetRef: payload.assetRef,
+    previewUrl: payload.previewUrl ?? null
+  };
+}
+
 export async function deleteWebPushSubscription(endpoint?: string | null) {
   const response = await fetch("/api/push/subscription", {
     method: "DELETE",

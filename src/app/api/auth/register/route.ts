@@ -6,6 +6,7 @@ import {
   createSessionAfterRegistration,
   setAuthenticatedUserCookie
 } from "@/lib/server/tindereo-auth";
+import { resolveDatasetMediaUrls } from "@/lib/server/tindereo-media";
 import { sanitizePlatformDataForViewer } from "@/lib/server/tindereo-privacy";
 import { publishPlatformUpdate } from "@/lib/server/tindereo-realtime";
 import {
@@ -69,7 +70,7 @@ export async function POST(request: Request) {
     setAuthenticatedUserCookie(await cookies(), token);
 
     return NextResponse.json({
-      data: sanitizePlatformDataForViewer(nextData, createdUser.id),
+      data: resolveDatasetMediaUrls(sanitizePlatformDataForViewer(nextData, createdUser.id)),
       meta: {
         currentUserId: createdUser.id,
         revision

@@ -31,7 +31,7 @@ as $$
 begin
   insert into public.platform_state (id, data, revision, updated_at)
   values ('main', next_data, 1, timezone('utc', now()))
-  on conflict (id) do update
+  on conflict on constraint platform_state_pkey do update
     set data = excluded.data,
         revision = public.platform_state.revision + 1,
         updated_at = timezone('utc', now());

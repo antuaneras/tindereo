@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { getAuthenticatedUserId } from "../../../../lib/server/tindereo-auth";
+import { resolveDatasetMediaUrls } from "../../../../lib/server/tindereo-media";
 import { sanitizePlatformDataForViewer } from "../../../../lib/server/tindereo-privacy";
 import { getPlatformEnvelope } from "../../../../lib/server/tindereo-service";
 import { subscribeToPlatformUpdates } from "../../../../lib/server/tindereo-realtime";
@@ -33,7 +34,9 @@ export async function GET(request: Request) {
           encoder.encode(
             serializeSseMessage({
               ...payload,
-              data: sanitizePlatformDataForViewer(payload.data, currentUserId),
+              data: resolveDatasetMediaUrls(
+                sanitizePlatformDataForViewer(payload.data, currentUserId)
+              ),
               meta: {
                 ...payload.meta,
                 currentUserId

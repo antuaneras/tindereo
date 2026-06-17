@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { useEffect, useRef, useState } from "react";
@@ -41,7 +41,8 @@ import {
   logoutAccount,
   registerAccount,
   resetPlatformData,
-  subscribeToPlatformStream
+  subscribeToPlatformStream,
+  uploadManagedMediaFromClient
 } from "@/lib/tindereo-api";
 import { APP_NAME, APP_TAGLINE, EVENT_CATEGORY_OPTIONS } from "@/lib/tindereo-data";
 import {
@@ -169,7 +170,7 @@ function buildEventShareUrl(eventSlug: string) {
 }
 
 function buildEventShareCopy(event: EventItem, shareUrl: string) {
-  return `Te paso ${event.title} en Tindereo. ${event.summary} Únete aquí: ${shareUrl}`;
+  return `Te paso ${event.title} en Tindereo. ${event.summary} Ãšnete aquÃ­: ${shareUrl}`;
 }
 
 function getUserIdentityLabel(user: Pick<PlatformUser, "handle" | "name">) {
@@ -246,6 +247,7 @@ type MediaDraft = {
   caption: string;
   durationMs?: number | null;
   mediaType?: "image" | "video";
+  pendingFile?: File | null;
 };
 
 type ReplyTarget = {
@@ -294,6 +296,7 @@ type CameraComposerState = {
   imageUrl: string;
   mediaType: "image" | "video";
   mode: "post" | "story";
+  pendingFile: File | null;
   taggedUserIds: string[];
   target: "user" | "event";
 };
@@ -337,6 +340,7 @@ const CAMERA_COMPOSER_INITIAL_STATE: CameraComposerState = {
   imageUrl: "",
   mediaType: "image",
   mode: "story",
+  pendingFile: null,
   taggedUserIds: [],
   target: "user"
 };
@@ -571,6 +575,49 @@ async function readFileAsDataUrl(file: File) {
   });
 }
 
+function revokePreviewUrlIfNeeded(url: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  if (url.startsWith("blob:")) {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function createObjectPreviewUrl(file: Blob) {
+  return typeof window === "undefined" ? "" : URL.createObjectURL(file);
+}
+
+async function uploadMediaFileForAction(
+  file: File,
+  purpose: "avatar" | "chat" | "post" | "story"
+) {
+  const payload = await uploadManagedMediaFromClient(file, purpose);
+  return payload.assetRef;
+}
+
+async function canvasToJpegFile(canvas: HTMLCanvasElement) {
+  return new Promise<File>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          reject(new Error("No se pudo preparar la foto."));
+          return;
+        }
+
+        resolve(
+          new File([blob], `capture-${Date.now()}.jpg`, {
+            type: "image/jpeg"
+          })
+        );
+      },
+      "image/jpeg",
+      0.92
+    );
+  });
+}
+
 async function readVideoDurationFromFile(file: File) {
   return new Promise<number>((resolve, reject) => {
     if (typeof document === "undefined") {
@@ -629,24 +676,15 @@ async function readVideoDurationFromUrl(url: string) {
 }
 
 async function readComposerMedia(file: File) {
-  const imageUrl = await readFileAsDataUrl(file);
   const mediaType = file.type.startsWith("video/") ? "video" : "image";
   const durationMs = mediaType === "video" ? await readVideoDurationFromFile(file) : null;
 
   return {
     durationMs,
-    imageUrl,
-    mediaType
-  } satisfies Pick<CameraComposerState, "durationMs" | "imageUrl" | "mediaType">;
-}
-
-async function readBlobAsDataUrl(blob: Blob) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(blob);
-  });
+    imageUrl: createObjectPreviewUrl(file),
+    mediaType,
+    pendingFile: file
+  } satisfies Pick<CameraComposerState, "durationMs" | "imageUrl" | "mediaType" | "pendingFile">;
 }
 
 function getSupportedRecordingMimeType() {
@@ -1084,7 +1122,7 @@ export function TindereoApp() {
     setIsSyncing(true);
 
     try {
-      const imageUrl = await readFileAsDataUrl(file);
+      const imageUrl = await uploadMediaFileForAction(file, "avatar");
       const payload = await executePlatformAction({
         type: "update-user-avatar",
         actorId: state.session.currentUserId,
@@ -1517,7 +1555,7 @@ export function TindereoApp() {
     }
 
     try {
-      const imageUrl = await readFileAsDataUrl(file);
+      const imageUrl = await uploadMediaFileForAction(file, "chat");
       const payload = await runPlatformMutation({
         type: "send-private-media-message",
         actorId: state.session.currentUserId,
@@ -1541,7 +1579,7 @@ export function TindereoApp() {
     }
 
     try {
-      const imageUrl = await readFileAsDataUrl(file);
+      const imageUrl = await uploadMediaFileForAction(file, "chat");
       const payload = await runPlatformMutation({
         type: "send-group-media-message",
         actorId: state.session.currentUserId,
@@ -2041,6 +2079,9 @@ export function TindereoApp() {
   };
 
   const closeCameraComposer = () => {
+    if (cameraComposer?.imageUrl) {
+      revokePreviewUrlIfNeeded(cameraComposer.imageUrl);
+    }
     setCameraComposer(null);
   };
 
@@ -2052,21 +2093,27 @@ export function TindereoApp() {
     try {
       const media = await readComposerMedia(file);
       if (media.mediaType === "video" && (media.durationMs ?? 0) > STORY_MAX_VIDEO_MS) {
+        revokePreviewUrlIfNeeded(media.imageUrl);
         setUiNotice("El video para historia no puede durar mas de 20 segundos.");
         return;
       }
 
-      setCameraComposer((current) =>
-        current
-          ? {
-              ...current,
-              durationMs: media.durationMs,
-              imageUrl: media.imageUrl,
-              mediaType: media.mediaType,
-              mode: media.mediaType === "video" ? "story" : current.mode
-            }
-          : current
-      );
+      setCameraComposer((current) => {
+        if (!current) {
+          revokePreviewUrlIfNeeded(media.imageUrl);
+          return current;
+        }
+
+        revokePreviewUrlIfNeeded(current.imageUrl);
+        return {
+          ...current,
+          durationMs: media.durationMs,
+          imageUrl: media.imageUrl,
+          mediaType: media.mediaType,
+          mode: media.mediaType === "video" ? "story" : current.mode,
+          pendingFile: media.pendingFile
+        };
+      });
     } catch {
       setUiNotice("No se pudo leer ese archivo.");
     }
@@ -2081,17 +2128,24 @@ export function TindereoApp() {
       cameraComposer.taggedUserIds.includes(user.id)
     );
     const caption = appendTaggedHandles(cameraComposer.caption, taggedUsers);
-    const mediaDraft = {
-      durationMs: cameraComposer.durationMs,
-      imageUrl: cameraComposer.imageUrl,
-      caption,
-      mediaType: cameraComposer.mediaType
-    };
-
     if (cameraComposer.mediaType === "video" && cameraComposer.mode !== "story") {
       setUiNotice("Los videos se publican como historias.");
       return;
     }
+
+    const uploadedImageUrl = cameraComposer.pendingFile
+      ? await uploadMediaFileForAction(
+          cameraComposer.pendingFile,
+          cameraComposer.mode === "story" ? "story" : "post"
+        )
+      : cameraComposer.imageUrl;
+    const mediaDraft = {
+      durationMs: cameraComposer.durationMs,
+      imageUrl: uploadedImageUrl,
+      caption,
+      mediaType: cameraComposer.mediaType,
+      pendingFile: null
+    };
 
     if (cameraComposer.target === "event" && cameraComposer.eventId) {
       if (cameraComposer.mode === "story") {
@@ -2105,6 +2159,7 @@ export function TindereoApp() {
       await handleCreateUserPost(mediaDraft);
     }
 
+    revokePreviewUrlIfNeeded(cameraComposer.imageUrl);
     setCameraComposer(null);
     setUiNotice(cameraComposer.mode === "story" ? "Historia publicada." : "Publicacion subida.");
   };
@@ -2380,7 +2435,7 @@ export function TindereoApp() {
             <div className="hidden rounded-full border border-[#eadfd3] bg-white/88 px-4 py-2 text-sm text-[#6d5749] md:block">
               <span>
                 {joinedCount} grupos - {hostedCount} creados - {pendingApprovalsCount} por revisar
-              <span>{hostedCount} creados · {pendingApprovalsCount} por revisar</span>
+              <span>{hostedCount} creados Â· {pendingApprovalsCount} por revisar</span>
             </div>
             <button
               className="inline-flex items-center gap-2 rounded-full border border-[#eadfd3] bg-white/88 px-4 py-2 text-sm font-semibold text-[#5f4b3f] shadow-[0_10px_24px_rgba(52,34,22,0.06)]"
@@ -2422,6 +2477,7 @@ export function TindereoApp() {
             <SocialHomeSection
               currentUser={currentUser}
               onOpenEvent={(eventId) => openEvent(eventId, "discover")}
+              onOpenProfileUser={openProfileUser}
               onRespondEventInvite={handleRespondEventInvite}
               pendingEventInvites={pendingEventInvites}
               posts={feedPosts}
@@ -2668,7 +2724,7 @@ export function TindereoApp() {
             ) : (
               <EmptyState
                 title="Todavia no tienes eventos en agenda"
-                copy="Solicita acceso a un evento publico o crea el tuyo propio desde la pestaña Crear."
+                copy="Solicita acceso a un evento publico o crea el tuyo propio desde la pestaÃ±a Crear."
                 action={
                   <button
                     className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#ff6b57] to-[#f08a24] px-5 py-3 text-sm font-semibold text-white"
@@ -2873,7 +2929,7 @@ function PushNotificationsPrompt({
         <p className="mt-3 text-sm leading-6 text-[#5f4b3f]">
           {needsStandaloneInstall
             ? "En iPhone solo funcionan si abres Tindereo desde el acceso directo de pantalla de inicio, no desde Safari normal."
-            : "Asi te llegarán mensajes privados, respuestas de historias y movimiento de tus eventos aunque la app este en segundo plano."}
+            : "Asi te llegarÃ¡n mensajes privados, respuestas de historias y movimiento de tus eventos aunque la app este en segundo plano."}
         </p>
         <div className="mt-5 flex flex-col gap-3 sm:flex-row">
           {!needsStandaloneInstall ? (
@@ -3666,7 +3722,7 @@ function GroupChatComposerSheet({
           <div className="mt-3 space-y-3">
             {friends.length === 0 ? (
               <EmptyState
-                copy="Primero necesitas tener al menos dos amistades añadidas."
+                copy="Primero necesitas tener al menos dos amistades aÃ±adidas."
                 title="Aun no puedes crear grupos"
               />
             ) : (
@@ -5944,13 +6000,14 @@ function MobileUserProfileScreen({
   const posts = getProfilePosts(state, user.id);
   const stories = getProfileStories(state, user.id);
   const isFriend = areFriends(state, currentUser.id, user.id);
+  const friendCount = getFriends(state, user.id).length;
   const privateChat = getPrivateChatsForUser(state, currentUser.id).find((chat) =>
     !isGroupChat(chat) && chat.participantIds.includes(user.id)
   );
 
   return (
     <div className="fixed inset-0 z-[55] overflow-y-auto bg-[#f6efe7] pb-6">
-      <div className="relative h-44">
+      <div className="relative h-36">
         <img alt={user.name} className="h-full w-full object-cover" src={user.coverImage} />
         <button className="absolute left-4 top-[max(1rem,env(safe-area-inset-top))] inline-flex h-10 w-10 items-center justify-center rounded-full bg-black/35 text-white" onClick={onBack} type="button">
           <ChevronLeft className="h-5 w-5" />
@@ -5958,32 +6015,42 @@ function MobileUserProfileScreen({
       </div>
       <div className="px-3">
         <section className="-mt-10 rounded-[30px] border border-[#eadfd3] bg-white/92 p-4 shadow-[0_20px_40px_rgba(52,34,22,0.08)]">
-          <div className="flex items-end gap-3">
-            <div className="h-20 w-20 overflow-hidden rounded-full border-4 border-[#f6efe7] bg-white">
+          <div className="flex items-start gap-4">
+            <div className="h-24 w-24 overflow-hidden rounded-full border-4 border-[#f6efe7] bg-white">
               <img alt={user.name} className="h-full w-full object-cover" src={user.avatar} />
             </div>
-            <div className="min-w-0 flex-1">
-              <h1 className="text-2xl font-black tracking-tight text-[#1d160f]">{getUserIdentityLabel(user)}</h1>
-              <p className="text-sm text-[#8f6f59]">{user.title}</p>
-              <p className="mt-1 text-sm text-[#5f4b3f]">{user.city}</p>
+            <div className="min-w-0 flex-1 pt-2">
+              <div className="flex items-center gap-2">
+                <h1 className="truncate text-2xl font-black tracking-tight text-[#1d160f]">{user.handle}</h1>
+                {user.verified ? (
+                  <span className="rounded-full bg-[#1d160f] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-white">
+                    Verificado
+                  </span>
+                ) : null}
+              </div>
+              <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+                <div>
+                  <p className="text-lg font-black text-[#1d160f]">{posts.length}</p>
+                  <p className="text-xs uppercase tracking-[0.14em] text-[#8f6f59]">Posts</p>
+                </div>
+                <div>
+                  <p className="text-lg font-black text-[#1d160f]">{stories.length}</p>
+                  <p className="text-xs uppercase tracking-[0.14em] text-[#8f6f59]">Stories</p>
+                </div>
+                <div>
+                  <p className="text-lg font-black text-[#1d160f]">{friendCount}</p>
+                  <p className="text-xs uppercase tracking-[0.14em] text-[#8f6f59]">Amigos</p>
+                </div>
+              </div>
             </div>
           </div>
-          <p className="mt-4 text-sm leading-6 text-[#5f4b3f]">{user.bio}</p>
-          <div className="mt-4 grid grid-cols-3 gap-2">
-            <div className="rounded-[20px] border border-[#eadfd3] bg-[#fffaf6] px-3 py-3 text-center">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">Historias</p>
-              <p className="mt-2 text-xl font-black text-[#1d160f]">{stories.length}</p>
-            </div>
-            <div className="rounded-[20px] border border-[#eadfd3] bg-[#fffaf6] px-3 py-3 text-center">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">Posts</p>
-              <p className="mt-2 text-xl font-black text-[#1d160f]">{posts.length}</p>
-            </div>
-            <div className="rounded-[20px] border border-[#eadfd3] bg-[#fffaf6] px-3 py-3 text-center">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8f6f59]">Ciudad</p>
-              <p className="mt-2 text-sm font-bold text-[#1d160f]">{user.city}</p>
-            </div>
+          <div className="mt-4 space-y-1">
+            <p className="font-semibold text-[#1d160f]">{user.name}</p>
+            <p className="text-sm text-[#8f6f59]">{user.title}</p>
+            <p className="text-sm text-[#8f6f59]">{user.city}</p>
+            <p className="pt-1 text-sm leading-6 text-[#5f4b3f]">{user.bio}</p>
           </div>
-          <div className="mt-4 flex flex-wrap gap-2">
+          <div className="mt-4 grid grid-cols-2 gap-2">
             <button className={`rounded-full px-4 py-3 text-sm font-semibold ${isFriend ? "border border-[#eadfd3] bg-white text-[#6d5749]" : "bg-[#1d160f] text-white"}`} onClick={() => onToggleFriendship(user.id)} type="button">
               {isFriend ? "Quitar de amigos" : "Agregar a amigos"}
             </button>
@@ -5995,7 +6062,11 @@ function MobileUserProfileScreen({
               >
                 {privateChat ? "Abrir chat" : "Escribir"}
               </button>
-            ) : null}
+            ) : (
+              <div className="rounded-full border border-[#eadfd3] bg-[#fffaf6] px-4 py-3 text-center text-sm font-semibold text-[#8f6f59]">
+                @{user.handle.replace(/^@/, "")}
+              </div>
+            )}
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
             {user.interests.map((interest) => (
@@ -6021,25 +6092,15 @@ function MobileUserProfileScreen({
           {posts.length === 0 ? (
             <p className="mt-4 text-sm text-[#6d5749]">Todavia no ha subido publicaciones.</p>
           ) : (
-            <div className="mt-4 grid grid-cols-2 gap-3">
+            <div className="mt-4 grid grid-cols-3 gap-1">
               {posts.map((post) => (
                 <button
                   key={post.id}
-                  className="overflow-hidden rounded-[22px] border border-[#eadfd3] bg-[#fffaf6] text-left"
+                  className="aspect-square overflow-hidden rounded-[18px] border border-[#eadfd3] bg-[#fffaf6] text-left"
                   onClick={() => onTogglePostLike(post.id)}
                   type="button"
                 >
-                  <MediaSurface alt={user.name} className="h-36 w-full object-cover" src={post.imageUrl} />
-                  <div className="p-3">
-                    <p className="line-clamp-2 text-sm text-[#5f4b3f]">
-                      {post.caption || user.tagline}
-                    </p>
-                    <p className="mt-2 text-xs font-semibold text-[#8f6f59]">
-                      {likedPostKeys.includes(buildPostLikeKey(currentUser.id, post.id))
-                        ? "Te gusta"
-                        : "Toca para indicar que te gusta"}
-                    </p>
-                  </div>
+                  <MediaSurface alt={user.name} className="h-full w-full object-cover" src={post.imageUrl} />
                 </button>
               ))}
             </div>
@@ -6075,16 +6136,21 @@ function MobileCameraComposerScreen({
   const libraryInputRef = useRef<HTMLInputElement>(null);
   const liveVideoRef = useRef<HTMLVideoElement>(null);
   const holdTimerRef = useRef<number | null>(null);
+  const capturePressStartedAtRef = useRef<number | null>(null);
   const videoCaptureStartedRef = useRef(false);
   const streamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordingChunksRef = useRef<Blob[]>([]);
   const recordingStartedAtRef = useRef<number | null>(null);
   const recordingTimeoutRef = useRef<number | null>(null);
+  const recordingFrameRef = useRef<number | null>(null);
   const [tagSearchTerm, setTagSearchTerm] = useState("");
   const [cameraAccessError, setCameraAccessError] = useState<string | null>(null);
+  const [cameraFacingMode, setCameraFacingMode] = useState<"environment" | "user">("environment");
   const [hasLiveCamera, setHasLiveCamera] = useState(false);
   const [isRecordingVideo, setIsRecordingVideo] = useState(false);
+  const [recordingProgress, setRecordingProgress] = useState(0);
+  const [cameraRetryNonce, setCameraRetryNonce] = useState(0);
   const selectableUsers =
     composer.target === "event" && currentEvent
       ? getEventMembers(state, currentEvent.id).filter((user) => user.id !== currentUser.id)
@@ -6113,10 +6179,53 @@ function MobileCameraComposerScreen({
     }
   };
 
+  const clearRecordingProgress = () => {
+    if (recordingFrameRef.current !== null && typeof window !== "undefined") {
+      window.cancelAnimationFrame(recordingFrameRef.current);
+      recordingFrameRef.current = null;
+    }
+
+    setRecordingProgress(0);
+  };
+
   const stopLiveStream = () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
+    if (liveVideoRef.current) {
+      liveVideoRef.current.pause();
+      liveVideoRef.current.srcObject = null;
+    }
     setHasLiveCamera(false);
+  };
+
+  const openNativePhotoCapture = () => {
+    photoCaptureInputRef.current?.click();
+  };
+
+  const openNativeVideoCapture = () => {
+    videoCaptureInputRef.current?.click();
+  };
+
+  const updateRecordingProgressFrame = () => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (!recordingStartedAtRef.current || !isRecordingVideo) {
+      clearRecordingProgress();
+      return;
+    }
+
+    const elapsedMs = Date.now() - recordingStartedAtRef.current;
+    const nextProgress = Math.min(100, (elapsedMs / STORY_MAX_VIDEO_MS) * 100);
+    setRecordingProgress(nextProgress);
+
+    if (nextProgress >= 100) {
+      recordingFrameRef.current = null;
+      return;
+    }
+
+    recordingFrameRef.current = window.requestAnimationFrame(updateRecordingProgressFrame);
   };
 
   useEffect(() => {
@@ -6131,13 +6240,29 @@ function MobileCameraComposerScreen({
         return;
       }
 
+      stopLiveStream();
+
+      const preferredFacingMode =
+        cameraFacingMode === "user" ? "user" : ({ ideal: "environment" } as const);
+
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: {
-            facingMode: { ideal: "environment" }
-          }
-        });
+        let stream: MediaStream;
+
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: {
+              facingMode: preferredFacingMode,
+              height: { ideal: 1920 },
+              width: { ideal: 1080 }
+            }
+          });
+        } catch {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: true
+          });
+        }
 
         if (cancelled) {
           stream.getTracks().forEach((track) => track.stop());
@@ -6155,7 +6280,7 @@ function MobileCameraComposerScreen({
         if (!cancelled) {
           setHasLiveCamera(false);
           setCameraAccessError(
-            "No he podido abrir la camara en directo. Puedes usar la camara del sistema o la fototeca."
+            "No he podido abrir la camara en directo. Puedes reintentarlo o usar la camara del sistema."
           );
         }
       }
@@ -6167,16 +6292,17 @@ function MobileCameraComposerScreen({
       cancelled = true;
       clearCaptureTimer();
       clearRecordingTimeout();
+      clearRecordingProgress();
       mediaRecorderRef.current?.stop?.();
       mediaRecorderRef.current = null;
       stopLiveStream();
     };
-  }, [composer.imageUrl]);
+  }, [cameraFacingMode, cameraRetryNonce, composer.imageUrl]);
 
   const capturePhotoFromLiveCamera = async () => {
     const video = liveVideoRef.current;
     if (!video || !hasLiveCamera || video.videoWidth === 0 || video.videoHeight === 0) {
-      photoCaptureInputRef.current?.click();
+      openNativePhotoCapture();
       return;
     }
 
@@ -6186,22 +6312,33 @@ function MobileCameraComposerScreen({
     const context = canvas.getContext("2d");
 
     if (!context) {
-      photoCaptureInputRef.current?.click();
+      openNativePhotoCapture();
       return;
     }
 
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const imageUrl = canvas.toDataURL("image/jpeg", 0.92);
-    onUpdateComposer((current) =>
-      current
-        ? {
-            ...current,
-            durationMs: null,
-            imageUrl,
-            mediaType: "image"
-          }
-        : current
-    );
+
+    try {
+      const file = await canvasToJpegFile(canvas);
+      const imageUrl = createObjectPreviewUrl(file);
+      onUpdateComposer((current) => {
+        if (!current) {
+          revokePreviewUrlIfNeeded(imageUrl);
+          return current;
+        }
+
+        revokePreviewUrlIfNeeded(current.imageUrl);
+        return {
+          ...current,
+          durationMs: null,
+          imageUrl,
+          mediaType: "image",
+          pendingFile: file
+        };
+      });
+    } catch {
+      openNativePhotoCapture();
+    }
   };
 
   const stopVideoRecording = () => {
@@ -6209,11 +6346,18 @@ function MobileCameraComposerScreen({
       mediaRecorderRef.current.stop();
     }
     clearRecordingTimeout();
+    clearRecordingProgress();
   };
 
   const startVideoRecording = () => {
-    if (!streamRef.current || typeof MediaRecorder === "undefined" || isSubmitting) {
-      videoCaptureInputRef.current?.click();
+    if (isSubmitting) {
+      return;
+    }
+
+    if (!streamRef.current || typeof MediaRecorder === "undefined") {
+      setCameraAccessError(
+        "No he podido grabar en directo. Usa el acceso de video del sistema o la fototeca."
+      );
       return;
     }
 
@@ -6236,45 +6380,58 @@ function MobileCameraComposerScreen({
         const durationMs = recordingStartedAtRef.current
           ? Math.min(Date.now() - recordingStartedAtRef.current, STORY_MAX_VIDEO_MS)
           : STORY_MAX_VIDEO_MS;
-        const nextMimeType =
-          recordingChunksRef.current[0]?.type || mimeType || "video/webm";
+        const nextMimeType = recordingChunksRef.current[0]?.type || mimeType || "video/webm";
         const nextBlob = new Blob(recordingChunksRef.current, { type: nextMimeType });
-        void readBlobAsDataUrl(nextBlob)
-          .then((imageUrl) => {
-            onUpdateComposer((current) =>
-              current
-                ? {
-                    ...current,
-                    durationMs,
-                    imageUrl,
-                    mediaType: "video",
-                    mode: "story"
-                  }
-                : current
-            );
-          })
-          .catch(() => {
-            videoCaptureInputRef.current?.click();
-          });
+        const extension = nextMimeType.includes("mp4") ? "mp4" : "webm";
+        const nextFile = new File([nextBlob], `story-${Date.now()}.${extension}`, {
+          type: nextMimeType
+        });
+        const imageUrl = createObjectPreviewUrl(nextFile);
+        onUpdateComposer((current) => {
+          if (!current) {
+            revokePreviewUrlIfNeeded(imageUrl);
+            return current;
+          }
+
+          revokePreviewUrlIfNeeded(current.imageUrl);
+          return {
+            ...current,
+            durationMs,
+            imageUrl,
+            mediaType: "video",
+            mode: "story",
+            pendingFile: nextFile
+          };
+        });
         recordingChunksRef.current = [];
         recordingStartedAtRef.current = null;
         setIsRecordingVideo(false);
+        clearRecordingProgress();
       };
 
       recorder.onerror = () => {
         setIsRecordingVideo(false);
         recordingChunksRef.current = [];
         recordingStartedAtRef.current = null;
+        clearRecordingProgress();
+        setCameraAccessError("La grabacion en directo ha fallado. Puedes probar otra vez.");
       };
 
       recorder.start();
       setIsRecordingVideo(true);
+      setRecordingProgress(0);
+      if (typeof window !== "undefined") {
+        clearRecordingProgress();
+        recordingFrameRef.current = window.requestAnimationFrame(updateRecordingProgressFrame);
+      }
       clearRecordingTimeout();
       recordingTimeoutRef.current = window.setTimeout(() => {
         stopVideoRecording();
       }, STORY_MAX_VIDEO_MS);
     } catch {
-      videoCaptureInputRef.current?.click();
+      setCameraAccessError(
+        "No he podido iniciar la grabacion en directo. Usa el video del sistema si lo prefieres."
+      );
     }
   };
 
@@ -6283,7 +6440,13 @@ function MobileCameraComposerScreen({
       return;
     }
 
+    capturePressStartedAtRef.current = window.performance.now();
     videoCaptureStartedRef.current = false;
+
+    if (!hasLiveCamera) {
+      return;
+    }
+
     clearCaptureTimer();
     holdTimerRef.current = window.setTimeout(() => {
       videoCaptureStartedRef.current = true;
@@ -6297,10 +6460,26 @@ function MobileCameraComposerScreen({
       return;
     }
 
-    const shouldOpenVideoCapture = videoCaptureStartedRef.current;
+    const pressStartedAt = capturePressStartedAtRef.current;
+    const wasLongPress =
+      typeof window !== "undefined" &&
+      pressStartedAt !== null &&
+      window.performance.now() - pressStartedAt >= STORY_LONG_PRESS_VIDEO_MS;
+    capturePressStartedAtRef.current = null;
+
+    if (!hasLiveCamera) {
+      if (wasLongPress) {
+        openNativeVideoCapture();
+      } else {
+        openNativePhotoCapture();
+      }
+      return;
+    }
+
+    const shouldStopVideo = videoCaptureStartedRef.current;
     clearCaptureTimer();
 
-    if (shouldOpenVideoCapture) {
+    if (shouldStopVideo) {
       stopVideoRecording();
     } else {
       void capturePhotoFromLiveCamera();
@@ -6314,11 +6493,46 @@ function MobileCameraComposerScreen({
   };
 
   const handleCapturePressCancel = () => {
+    capturePressStartedAtRef.current = null;
     clearCaptureTimer();
     if (videoCaptureStartedRef.current) {
       stopVideoRecording();
     }
     videoCaptureStartedRef.current = false;
+  };
+
+  const handleRetryCamera = () => {
+    if (isSubmitting) {
+      return;
+    }
+
+    setCameraAccessError(null);
+    setCameraRetryNonce((current) => current + 1);
+  };
+
+  const handleSwitchCamera = () => {
+    if (isSubmitting || isRecordingVideo || composer.imageUrl) {
+      return;
+    }
+
+    setCameraFacingMode((current) => (current === "environment" ? "user" : "environment"));
+  };
+
+  const handleResetPreview = () => {
+    revokePreviewUrlIfNeeded(composer.imageUrl);
+    onUpdateComposer((current) =>
+      current
+        ? {
+            ...current,
+            durationMs: null,
+            imageUrl: "",
+            mediaType: "image",
+            pendingFile: null
+          }
+        : current
+    );
+    setCameraAccessError(null);
+    setCameraRetryNonce((current) => current + 1);
   };
 
   return (
@@ -6327,10 +6541,12 @@ function MobileCameraComposerScreen({
         <button className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-white/10" onClick={onClose} type="button">
           <X className="h-5 w-5" />
         </button>
-        <p className="text-sm font-semibold uppercase tracking-[0.2em] text-white/72">Camara</p>
+        <p className="text-sm font-semibold uppercase tracking-[0.2em] text-white/72">
+          {composer.mode === "story" ? "Historia" : "Publicacion"}
+        </p>
         <button
           className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-[#1d160f] disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={isSubmitting}
+          disabled={isSubmitting || !composer.imageUrl}
           onClick={onSubmit}
           type="button"
         >
@@ -6341,45 +6557,101 @@ function MobileCameraComposerScreen({
       <div className="space-y-4">
         <div className="overflow-hidden rounded-[32px] border border-white/10 bg-white/5">
           {composer.imageUrl ? (
-            <MediaSurface
-              alt="Preview"
-              autoPlay={composer.mediaType === "video"}
-              className="h-[360px] w-full object-cover"
-              controls={composer.mediaType === "video"}
-              muted={composer.mediaType === "video"}
-              src={composer.imageUrl}
-            />
+            <div className="relative">
+              <MediaSurface
+                alt="Preview"
+                autoPlay={composer.mediaType === "video"}
+                className="h-[420px] w-full object-cover"
+                controls={composer.mediaType === "video"}
+                muted={composer.mediaType === "video"}
+                src={composer.imageUrl}
+              />
+              <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-[linear-gradient(180deg,rgba(0,0,0,0.54),transparent)] px-4 pb-10 pt-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-white/70">
+                  Vista previa
+                </p>
+                <button
+                  className="inline-flex items-center gap-2 rounded-full bg-black/35 px-4 py-2 text-sm font-semibold text-white"
+                  onClick={handleResetPreview}
+                  type="button"
+                >
+                  <RefreshCw className="h-4 w-4" />
+                  Repetir
+                </button>
+              </div>
+            </div>
           ) : hasLiveCamera ? (
-            <div className="relative h-[360px] w-full bg-black">
+            <div className="relative h-[420px] w-full bg-black">
+              {isRecordingVideo ? (
+                <div className="absolute inset-x-4 top-4 z-10 h-1.5 overflow-hidden rounded-full bg-white/18">
+                  <div
+                    className="h-full rounded-full bg-[#ff6b57] transition-[width] duration-100"
+                    style={{ width: `${recordingProgress}%` }}
+                  />
+                </div>
+              ) : null}
               <video
                 autoPlay
-                className="h-full w-full object-cover"
+                className={`h-full w-full object-cover ${cameraFacingMode === "user" ? "-scale-x-100" : ""}`}
                 muted
                 playsInline
                 ref={liveVideoRef}
               />
+              <div className="absolute inset-x-0 top-0 flex items-center justify-end bg-[linear-gradient(180deg,rgba(0,0,0,0.52),transparent)] px-4 pb-16 pt-4">
+                <button
+                  className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-black/35 text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  disabled={isRecordingVideo}
+                  onClick={handleSwitchCamera}
+                  type="button"
+                >
+                  <RefreshCw className="h-5 w-5" />
+                </button>
+              </div>
               <div className="absolute inset-x-0 bottom-0 bg-[linear-gradient(180deg,transparent,rgba(0,0,0,0.72))] px-5 pb-5 pt-14">
                 <p className="text-sm text-white/78">
                   {isRecordingVideo
                     ? "Grabando historia en video. Suelta para terminar."
-                    : "Toca para foto. Mantén pulsado para grabar una historia de hasta 20 segundos."}
+                    : "Toca para foto. Manten pulsado para grabar una historia de hasta 20 segundos."}
                 </p>
               </div>
             </div>
           ) : (
-            <div className="flex h-[360px] flex-col items-center justify-center gap-4 px-6 text-center">
+            <div className="flex h-[420px] flex-col items-center justify-center gap-4 px-6 text-center">
               <Camera className="h-12 w-12 text-white/72" />
               <p className="max-w-xs text-sm text-white/72">
-                Toca el obturador para una foto o mantenlo pulsado para grabar una historia en video de hasta 20 segundos.
+                Intento abrir la camara al entrar. Si tu movil la bloquea, puedes reintentarlo o usar la del sistema.
               </p>
               {cameraAccessError ? <p className="max-w-xs text-xs text-[#ffd0c2]">{cameraAccessError}</p> : null}
+              <div className="flex flex-wrap justify-center gap-2">
+                <button
+                  className="rounded-full bg-white px-4 py-3 text-sm font-semibold text-[#1d160f]"
+                  onClick={handleRetryCamera}
+                  type="button"
+                >
+                  Reintentar camara
+                </button>
+                <button
+                  className="rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white"
+                  onClick={openNativePhotoCapture}
+                  type="button"
+                >
+                  Foto del sistema
+                </button>
+                <button
+                  className="rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white"
+                  onClick={openNativeVideoCapture}
+                  type="button"
+                >
+                  Video del sistema
+                </button>
+              </div>
             </div>
           )}
         </div>
 
         <input
           accept="image/*"
-          capture="environment"
+          capture={cameraFacingMode}
           className="hidden"
           onChange={(event) => onUploadCameraFile(event.target.files?.[0] ?? null)}
           ref={photoCaptureInputRef}
@@ -6387,7 +6659,7 @@ function MobileCameraComposerScreen({
         />
         <input
           accept="video/*"
-          capture="environment"
+          capture={cameraFacingMode}
           className="hidden"
           onChange={(event) => onUploadCameraFile(event.target.files?.[0] ?? null)}
           ref={videoCaptureInputRef}
@@ -6401,37 +6673,81 @@ function MobileCameraComposerScreen({
           type="file"
         />
 
-        <div className="grid grid-cols-[1fr_auto] items-center gap-3">
+        <div className="flex items-center justify-between gap-4 px-1">
           <button
-            className="rounded-[28px] border border-white/15 bg-white/8 px-4 py-4 text-left"
+            className="inline-flex h-14 w-14 items-center justify-center overflow-hidden rounded-2xl border border-white/15 bg-white/8 text-white"
+            onClick={() => libraryInputRef.current?.click()}
+            type="button"
+          >
+            <Image className="h-5 w-5" />
+          </button>
+          <button
+            className="relative inline-flex h-24 w-24 items-center justify-center rounded-full border-2 border-white bg-white/12 text-white shadow-[0_18px_40px_rgba(0,0,0,0.28)]"
+            onContextMenu={(event) => event.preventDefault()}
             onPointerCancel={handleCapturePressCancel}
             onPointerDown={handleCapturePressStart}
             onPointerLeave={handleCapturePressCancel}
             onPointerUp={handleCapturePressEnd}
             type="button"
           >
-            <div className="flex items-center gap-3">
-              <span
-                className={`inline-flex h-14 w-14 items-center justify-center rounded-full ${
-                  isRecordingVideo ? "bg-[#ff6b57] text-white" : "bg-white text-[#1d160f]"
-                }`}
-              >
-                <Camera className="h-6 w-6" />
-              </span>
-              <div>
-                <p className="text-sm font-semibold text-white">Obturador</p>
-                <p className="mt-1 text-xs uppercase tracking-[0.18em] text-white/60">
-                  Toca foto · Mantén video
-                </p>
-              </div>
-            </div>
+            <span
+              className={`inline-flex h-[4.4rem] w-[4.4rem] items-center justify-center rounded-full transition ${
+                isRecordingVideo ? "scale-90 bg-[#ff6b57]" : "bg-white text-[#1d160f]"
+              }`}
+            >
+              {isRecordingVideo ? (
+                <span className="h-7 w-7 rounded-2xl bg-white" />
+              ) : (
+                <Camera className="h-7 w-7" />
+              )}
+            </span>
           </button>
           <button
-            className="inline-flex h-16 w-16 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white"
-            onClick={() => libraryInputRef.current?.click()}
+            className="inline-flex h-14 w-14 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={isRecordingVideo || Boolean(composer.imageUrl)}
+            onClick={handleSwitchCamera}
             type="button"
           >
-            <Image className="h-5 w-5" />
+            <RefreshCw className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="space-y-2 text-center">
+          <p className="text-sm font-semibold text-white">
+            {hasLiveCamera
+              ? isRecordingVideo
+                ? "Grabando historia en video"
+                : cameraFacingMode === "user"
+                  ? "Camara selfie activa"
+                  : "Camara trasera activa"
+              : "Usa la camara en directo o la del sistema"}
+          </p>
+          <p className="text-xs uppercase tracking-[0.18em] text-white/60">
+            Toca foto · Manten video
+          </p>
+        </div>
+
+        <div className="flex items-center justify-center gap-3">
+          <button
+            className="rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white"
+            onClick={openNativePhotoCapture}
+            type="button"
+          >
+            Foto
+          </button>
+          <button
+            className="rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white"
+            onClick={openNativeVideoCapture}
+            type="button"
+          >
+            Video
+          </button>
+          <button
+            className="rounded-full border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white"
+            onClick={handleRetryCamera}
+            type="button"
+          >
+            Reintentar
           </button>
         </div>
 
@@ -6572,7 +6888,7 @@ function MobileCameraComposerScreen({
               })}
             </div>
             {filteredSelectableUsers.length === 0 ? (
-              <p className="mt-3 text-sm text-white/52">No he encontrado a nadie con esa búsqueda.</p>
+              <p className="mt-3 text-sm text-white/52">No he encontrado a nadie con esa bÃºsqueda.</p>
             ) : null}
           </div>
         ) : null}
@@ -7027,7 +7343,7 @@ function SummaryBanner({
             </div>
             <p className="mt-1 text-sm font-semibold text-[#8f6f59]">
               {currentUser.title}
-              {currentUser.company ? ` · ${currentUser.company}` : ""}
+              {currentUser.company ? ` Â· ${currentUser.company}` : ""}
             </p>
             <p className="mt-2 text-sm text-[#6d5749]">{currentUser.tagline}</p>
           </div>
@@ -7047,6 +7363,7 @@ function SummaryBanner({
 function SocialHomeSection({
   currentUser,
   onOpenEvent,
+  onOpenProfileUser,
   onRespondEventInvite,
   pendingEventInvites,
   posts,
@@ -7055,6 +7372,7 @@ function SocialHomeSection({
 }: {
   currentUser: PlatformUser;
   onOpenEvent: (eventId: string) => void;
+  onOpenProfileUser: (userId: string) => void;
   onRespondEventInvite: (inviteId: string, accept: boolean) => void;
   pendingEventInvites: EventInvite[];
   posts: SocialPost[];
@@ -7198,6 +7516,7 @@ function SocialHomeSection({
             <SocialPostCard
               key={post.id}
               onOpenEvent={onOpenEvent}
+              onOpenProfileUser={onOpenProfileUser}
               post={post}
               state={state}
             />
@@ -7290,10 +7609,12 @@ function StoriesRail({
 
 function SocialPostCard({
   onOpenEvent,
+  onOpenProfileUser,
   post,
   state
 }: {
   onOpenEvent: (eventId: string) => void;
+  onOpenProfileUser: (userId: string) => void;
   post: SocialPost;
   state: PersistedState;
 }) {
@@ -7349,7 +7670,7 @@ function SocialPostCard({
 
   return (
     <SectionCard>
-      <div className="flex items-center gap-3">
+      <button className="flex w-full items-center gap-3 text-left" onClick={() => onOpenProfileUser(author.id)} type="button">
         <AvatarChip user={author} />
         <div className="min-w-0 flex-1">
           <p className="font-semibold text-[#1d160f]">{getUserIdentityLabel(author)}</p>
@@ -7359,7 +7680,7 @@ function SocialPostCard({
           <Heart className="h-3.5 w-3.5" />
           Perfil
         </div>
-      </div>
+      </button>
       <div className="mt-4 overflow-hidden rounded-[28px] border border-[#eadfd3] bg-[#f6efe7]">
         <img alt={author.name} className="h-[320px] w-full object-cover" src={post.imageUrl} />
       </div>
@@ -8380,7 +8701,7 @@ function EventWorkspace({
                           </div>
                           <p className="mt-1 text-sm font-semibold text-[#8f6f59]">
                             {attendee.title}
-                            {attendee.company ? ` · ${attendee.company}` : ""}
+                            {attendee.company ? ` Â· ${attendee.company}` : ""}
                           </p>
                           <p className="mt-2 text-sm text-[#5f4b3f]">{attendee.bio}</p>
                         </div>
@@ -8673,7 +8994,7 @@ function EventWorkspace({
                     <p className="font-semibold text-[#1d160f]">{getUserIdentityLabel(host)}</p>
                     <p className="text-sm text-[#6d5749]">
                       {host.title}
-                      {host.company ? ` · ${host.company}` : ""}
+                      {host.company ? ` Â· ${host.company}` : ""}
                     </p>
                   </div>
                 </div>
@@ -9159,7 +9480,7 @@ function ProfileSection({
               </div>
               <p className="mt-1 text-sm font-semibold text-[#8f6f59]">
                 {currentUser.title}
-                {currentUser.company ? ` · ${currentUser.company}` : ""}
+                {currentUser.company ? ` Â· ${currentUser.company}` : ""}
               </p>
             </div>
           </div>

@@ -7,6 +7,11 @@ import {
   callSupabase,
   isSupabaseConfigured
 } from "./tindereo-supabase";
+import {
+  compactDatasetForPrimaryStore,
+  persistLegacyMessagesIfNeeded,
+  readNormalizedMessages
+} from "./tindereo-message-store";
 
 const PLATFORM_STATE_ID = "main";
 const LOCAL_STATE_PATH = path.join(process.cwd(), "storage", "platform-state.json");
@@ -192,7 +197,17 @@ export async function readAppDataset() {
   }
 
   const row = await readSupabasePlatformState();
-  return row.data;
+  const normalizedMessages = await persistLegacyMessagesIfNeeded(row.data);
+
+  if (!normalizedMessages) {
+    return row.data;
+  }
+
+  return {
+    ...row.data,
+    groupMessages: normalizedMessages.groupMessages,
+    privateMessages: normalizedMessages.privateMessages
+  };
 }
 
 export async function replaceAppDataset(data: AppDataset) {
@@ -204,7 +219,10 @@ export async function replaceAppDataset(data: AppDataset) {
     }).data;
   }
 
-  const row = await setSupabasePlatformState(data);
+  const normalizedMessages = await readNormalizedMessages();
+  const row = await setSupabasePlatformState(
+    normalizedMessages ? compactDatasetForPrimaryStore(data) : data
+  );
   return row.data;
 }
 

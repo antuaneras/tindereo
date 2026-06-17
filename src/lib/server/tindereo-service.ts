@@ -5,6 +5,7 @@ import {
   replaceAppDataset,
   resetAppDataset
 } from "./tindereo-store";
+import { persistMessageCollectionsDelta } from "./tindereo-message-store";
 import { publishPlatformUpdate } from "./tindereo-realtime";
 import { sendPushNotificationsForNotifications } from "./tindereo-web-push";
 import type {
@@ -74,6 +75,7 @@ async function runStateMutation(
   const previousNotificationIds = new Set(currentData.notifications.map((notification) => notification.id));
   const nextState = mutation(hydratePersistedState(currentData, { currentUserId: actorId }));
   const nextData = stripSession(nextState);
+  await persistMessageCollectionsDelta(currentData, nextData);
   await replaceAppDataset(nextData);
   const payload = await buildPlatformEnvelope(nextData, metaBuilder?.(nextState));
   publishPlatformUpdate(payload);
