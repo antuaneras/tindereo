@@ -2,19 +2,33 @@ name: Keep Render Awake
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:
   ping-render:
     runs-on: ubuntu-latest
-    steps:
-      - name: Check configuration
-        if: ${{ secrets.RENDER_PING_URL == '' }}
-        run: echo "Define el secret RENDER_PING_URL con la URL publica de Render, idealmente /api/health."
+    env:
+      DEFAULT_RENDER_PING_URL: https://tindereo.onrender.com/api/health
 
-      - name: Ping Render
-        if: ${{ secrets.RENDER_PING_URL != '' }}
+    steps:
+      - name: Resolve ping URL
+        id: ping-url
         env:
           RENDER_PING_URL: ${{ secrets.RENDER_PING_URL }}
-        run: curl --fail --silent --show-error --max-time 30 "$RENDER_PING_URL"
+        run: |
+          if [ -n "$RENDER_PING_URL" ]; then
+            echo "url=$RENDER_PING_URL" >> "$GITHUB_OUTPUT"
+            echo "Usando URL definida en secret."
+          else
+            echo "url=$DEFAULT_RENDER_PING_URL" >> "$GITHUB_OUTPUT"
+            echo "Usando URL por defecto: $DEFAULT_RENDER_PING_URL"
+          fi
+
+      - name: Ping Render
+        run: |
+          curl --fail --silent --show-error \
+            --max-time 30 \
+            --retry 3 \
+            --retry-delay 5 \
+            "${{ steps.ping-url.outputs.url }}"

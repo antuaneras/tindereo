@@ -782,6 +782,46 @@ function revokePreviewUrlIfNeeded(url: string) {
   }
 }
 
+let sharedCameraSessionStream: MediaStream | null = null;
+let sharedCameraSessionFacingMode: "environment" | "user" | null = null;
+
+function stopSharedCameraSessionStream() {
+  sharedCameraSessionStream?.getTracks().forEach((track) => track.stop());
+  sharedCameraSessionStream = null;
+  sharedCameraSessionFacingMode = null;
+}
+
+function getReusableCameraSessionStream(facingMode: "environment" | "user") {
+  if (
+    !sharedCameraSessionStream ||
+    sharedCameraSessionFacingMode !== facingMode ||
+    sharedCameraSessionStream.getTracks().every((track) => track.readyState === "ended")
+  ) {
+    if (sharedCameraSessionStream?.getTracks().every((track) => track.readyState === "ended")) {
+      stopSharedCameraSessionStream();
+    }
+
+    return null;
+  }
+
+  sharedCameraSessionStream.getVideoTracks().forEach((track) => {
+    track.enabled = true;
+  });
+
+  return sharedCameraSessionStream;
+}
+
+function parkCameraSessionStream(stream: MediaStream | null) {
+  if (!stream) {
+    return;
+  }
+
+  sharedCameraSessionStream = stream;
+  stream.getVideoTracks().forEach((track) => {
+    track.enabled = false;
+  });
+}
+
 function createObjectPreviewUrl(file: Blob) {
   return typeof window === "undefined" ? "" : URL.createObjectURL(file);
 }
@@ -7168,13 +7208,28 @@ function MobileCameraComposerScreen({
     return true;
   };
 
-  const stopLiveStream = () => {
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
+  const detachLiveVideoElement = () => {
     if (liveVideoRef.current) {
       liveVideoRef.current.pause();
       liveVideoRef.current.srcObject = null;
     }
+  };
+
+  const stopLiveStream = (mode: "dispose" | "park" = "dispose") => {
+    const stream = streamRef.current;
+
+    if (mode === "park") {
+      parkCameraSessionStream(stream);
+    } else {
+      if (stream && sharedCameraSessionStream === stream) {
+        stopSharedCameraSessionStream();
+      } else {
+        stream?.getTracks().forEach((track) => track.stop());
+      }
+    }
+
+    streamRef.current = null;
+    detachLiveVideoElement();
     setHasLiveCamera(false);
     setIsLivePreviewReady(false);
   };
@@ -7222,7 +7277,15 @@ function MobileCameraComposerScreen({
       }
 
       setIsLivePreviewReady(false);
-      stopLiveStream();
+      const reusableStream = getReusableCameraSessionStream(cameraFacingMode);
+      if (reusableStream) {
+        streamRef.current = reusableStream;
+        setCameraAccessError(null);
+        setHasLiveCamera(true);
+        return;
+      }
+
+      stopLiveStream("dispose");
 
       const preferredFacingMode =
         cameraFacingMode === "user" ? "user" : ({ ideal: "environment" } as const);
@@ -7252,6 +7315,8 @@ function MobileCameraComposerScreen({
         }
 
         streamRef.current = stream;
+        sharedCameraSessionStream = stream;
+        sharedCameraSessionFacingMode = cameraFacingMode;
         setCameraAccessError(null);
         setHasLiveCamera(true);
       } catch {
@@ -7274,7 +7339,7 @@ function MobileCameraComposerScreen({
       clearRecordingProgress();
       mediaRecorderRef.current?.stop?.();
       mediaRecorderRef.current = null;
-      stopLiveStream();
+      stopLiveStream("park");
     };
   }, [cameraFacingMode, cameraRetryNonce, composer.imageUrl]);
 
@@ -7535,6 +7600,7 @@ function MobileCameraComposerScreen({
     }
 
     setCameraAccessError(null);
+    stopLiveStream("dispose");
     setCameraRetryNonce((current) => current + 1);
   };
 
@@ -7544,6 +7610,7 @@ function MobileCameraComposerScreen({
     }
 
     setIsLivePreviewReady(false);
+    stopLiveStream("dispose");
     setCameraFacingMode((current) => (current === "environment" ? "user" : "environment"));
   };
 
