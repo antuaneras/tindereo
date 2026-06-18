@@ -9,8 +9,7 @@ import {
   Heart,
   LogOut,
   MessageCircle,
-  Send,
-  Sparkles
+  Send
 } from "lucide-react";
 import {
   createPostComment,
@@ -327,39 +326,27 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
               <div className="mt-1 text-sm font-semibold">{profile.profile.displayName}</div>
               <div className="mt-1 text-sm text-[var(--text-soft)]">{profile.profile.city}</div>
 
-              <div className="mt-4 grid grid-cols-3 gap-3">
+              <div className="mt-4 grid grid-cols-3 gap-2">
                 {[
-                  ["Publicaciones", profile.posts.length],
-                  ["Creados", profile.createdEvents.length],
+                  ["Posts", profile.posts.length],
+                  ["Eventos", profile.createdEvents.length],
                   ["Amigos", profile.friendCount]
                 ].map(([label, value]) => (
-                  <div key={label} className="text-center">
-                    <div className="text-xl font-black tracking-[-0.04em]">{value}</div>
-                    <div className="mt-1 text-[11px] uppercase tracking-[0.16em] text-[var(--text-soft)]">{label}</div>
+                  <div key={label} className="rounded-[1.2rem] bg-[var(--bg-soft)] px-2 py-2 text-center">
+                    <div className="text-lg font-black tracking-[-0.04em]">{value}</div>
+                    <div className="mt-1 text-[10px] font-semibold text-[var(--text-soft)]">{label}</div>
                   </div>
                 ))}
               </div>
             </div>
           </div>
 
-          <div className="mt-4 space-y-2">
+          <div className="mt-4">
             {profile.profile.bio ? (
               <p className="text-sm leading-6 text-[var(--text-main)]">{profile.profile.bio}</p>
             ) : (
               <p className="text-sm text-[var(--text-soft)]">Sin bio todavia.</p>
             )}
-            {hasStories ? (
-              <button
-                type="button"
-                onClick={() => setActiveStoryOpen(true)}
-                className="inline-flex items-center gap-2 rounded-full bg-[rgba(255,107,87,0.08)] px-3 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[var(--coral)]"
-              >
-                <Sparkles className="h-3.5 w-3.5" />
-                {hasUnseenStories
-                  ? `${storyCluster[0]?.unseenCount ?? activeStories.length} por ver`
-                  : `${activeStories.length} historia${activeStories.length === 1 ? "" : "s"} vista${activeStories.length === 1 ? "" : "s"}`}
-              </button>
-            ) : null}
           </div>
         </section>
 

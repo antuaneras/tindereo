@@ -106,12 +106,15 @@ function EventTicketPreview({
 
   return (
     <>
-      <div className="fixed inset-0 z-[70] bg-black/65 px-4 py-[calc(1rem+env(safe-area-inset-top))]" onClick={onClose}>
+      <div
+        className="fixed inset-0 z-[70] bg-black/65 px-4 py-[calc(0.5rem+env(safe-area-inset-top))] pb-[calc(0.5rem+env(safe-area-inset-bottom))]"
+        onClick={onClose}
+      >
         <div
           className="mx-auto flex h-full w-full max-w-[480px] flex-col overflow-hidden rounded-[2rem] bg-[var(--bg-main)] shadow-2xl"
           onClick={(eventMouse) => eventMouse.stopPropagation()}
         >
-        <div className="relative min-h-[240px] overflow-hidden bg-[var(--text-main)]">
+        <div className="relative min-h-[172px] overflow-hidden bg-[var(--text-main)]">
           {event.coverImage ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={event.coverImage} alt={event.title} className="h-full w-full object-cover opacity-75" />
@@ -120,19 +123,19 @@ function EventTicketPreview({
           <button
             type="button"
             onClick={onClose}
-            className="absolute right-4 top-4 flex h-11 w-11 items-center justify-center rounded-full bg-black/30 text-white backdrop-blur"
+            className="absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full bg-black/30 text-white backdrop-blur"
           >
             <X className="h-5 w-5" />
           </button>
-          <div className="absolute inset-x-0 bottom-0 px-5 pb-5 text-white">
+          <div className="absolute inset-x-0 bottom-0 px-5 pb-4 text-white">
             <div className="text-xs uppercase tracking-[0.24em] text-white/70">{ticket.roleLabel}</div>
-            <div className="mt-2 text-3xl font-black tracking-[-0.04em]">{event.title}</div>
+            <div className="mt-2 text-[2rem] font-black leading-8 tracking-[-0.04em]">{event.title}</div>
             <div className="mt-2 text-sm text-white/80">{formatMobileDateTime(event.startsAt)} · {event.city}</div>
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] pt-5">
-          <div className="rounded-[2rem] border border-[var(--line-soft)] bg-white p-5 shadow-sm">
+        <div className="flex flex-1 flex-col overflow-y-auto px-5 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-4">
+          <div className="rounded-[2rem] border border-[var(--line-soft)] bg-white p-4 shadow-sm">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-soft)]">Titular</div>
@@ -147,10 +150,10 @@ function EventTicketPreview({
             <button
               type="button"
               onClick={() => setQrFocusOpen(true)}
-              className="mt-5 block w-full rounded-[1.8rem] bg-[var(--bg-soft)] p-4"
+              className="mt-4 block w-full rounded-[1.8rem] bg-[var(--bg-soft)] p-4"
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={ticket.qrImageUrl} alt="QR de entrada" className="mx-auto h-56 w-56 rounded-[1.5rem] bg-white p-3" />
+              <img src={ticket.qrImageUrl} alt="QR de entrada" className="mx-auto h-48 w-48 rounded-[1.5rem] bg-white p-3" />
               <div className="mt-3 text-center text-xs text-[var(--text-soft)]">
                 Valida hasta {formatMobileDateTime(ticket.validUntil)}
               </div>
@@ -158,16 +161,16 @@ function EventTicketPreview({
             </button>
           </div>
 
-          <div className="mt-4 grid grid-cols-3 gap-3">
-            <button type="button" onClick={() => void onShare()} className="rounded-[1.4rem] border border-[var(--line-soft)] bg-white px-3 py-4 text-center">
+          <div className="mt-auto grid grid-cols-3 gap-3 bg-[var(--bg-main)] pb-1 pt-4">
+            <button type="button" onClick={() => void onShare()} className="rounded-[1.4rem] border border-[var(--line-soft)] bg-white px-3 py-4 text-center shadow-sm">
               <Share2 className="mx-auto h-5 w-5 text-[var(--coral)]" />
               <div className="mt-2 text-xs font-semibold">Compartir</div>
             </button>
-            <button type="button" onClick={() => void onDownload()} className="rounded-[1.4rem] border border-[var(--line-soft)] bg-white px-3 py-4 text-center">
+            <button type="button" onClick={() => void onDownload()} className="rounded-[1.4rem] border border-[var(--line-soft)] bg-white px-3 py-4 text-center shadow-sm">
               <Download className="mx-auto h-5 w-5 text-[var(--coral)]" />
               <div className="mt-2 text-xs font-semibold">Guardar</div>
             </button>
-            <button type="button" onClick={onCalendar} className="rounded-[1.4rem] border border-[var(--line-soft)] bg-white px-3 py-4 text-center">
+            <button type="button" onClick={onCalendar} className="rounded-[1.4rem] border border-[var(--line-soft)] bg-white px-3 py-4 text-center shadow-sm">
               <CalendarPlus className="mx-auto h-5 w-5 text-[var(--coral)]" />
               <div className="mt-2 text-xs font-semibold">Calendario</div>
             </button>

@@ -182,7 +182,7 @@ export function MobileConversationScreen({
       <div className="mx-auto flex min-h-[100dvh] w-full max-w-[480px] flex-col bg-[var(--bg-main)]">
         <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-[var(--line-soft)] bg-[rgba(246,239,231,0.94)] px-4 pb-3 pt-[calc(1rem+env(safe-area-inset-top))] backdrop-blur-xl">
           <Link
-            href={conversation.summary.eventSlug ? "/eventos" : "/chats"}
+            href={conversation.summary.eventSlug ? "/inicio" : "/chats"}
             className="flex h-11 w-11 items-center justify-center rounded-full bg-white/80 shadow-sm"
           >
             <ArrowLeft className="h-5 w-5" />
