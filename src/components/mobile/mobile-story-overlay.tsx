@@ -2,8 +2,9 @@
 
 import { createPortal } from "react-dom";
 import { Heart, MoreHorizontal, Play, Send, Volume2, VolumeX, X } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createConversation, markStoryAsViewed, sendConversationMessage } from "@/lib/mobile-api";
+import { createConversation, deleteStory, markStoryAsViewed, sendConversationMessage } from "@/lib/mobile-api";
 import { formatRelativeMobileTime } from "@/lib/mobile-shared";
 import type { MobileProfile, MobileStory, MobileStoryCluster } from "@/lib/mobile-types";
 
@@ -47,6 +48,7 @@ export function MobileStoryOverlay({
   viewer,
   onStorySeen
 }: MobileStoryOverlayProps) {
+  const router = useRouter();
   const normalizedClusters = useMemo(
     () =>
       clusters.map((cluster) => ({
@@ -66,6 +68,8 @@ export function MobileStoryOverlay({
   const [dismissOffsetY, setDismissOffsetY] = useState(0);
   const [isVideoMuted, setIsVideoMuted] = useState(true);
   const [viewersOpen, setViewersOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [isDeletingStory, setIsDeletingStory] = useState(false);
 
   const progressFrameRef = useRef<number | null>(null);
   const elapsedMsRef = useRef(0);
@@ -83,9 +87,10 @@ export function MobileStoryOverlay({
 
   const activeCluster = normalizedClusters[activeClusterIndex] ?? null;
   const activeStory = activeCluster?.stories[storyIndex] ?? null;
-  const isPaused = isHolding || isReplyFocused || isSendingReply || viewersOpen;
+  const isPaused = isHolding || isReplyFocused || isSendingReply || viewersOpen || menuOpen || isDeletingStory;
   const canReply = Boolean(activeStory && activeStory.authorId !== viewer.id);
   const isActiveStoryVideo = Boolean(activeStory?.media?.mimeType?.startsWith("video/"));
+  const isOwnStory = Boolean(activeStory && activeStory.authorId === viewer.id);
 
   const isSeen = (story: MobileStory) => story.hasSeen || seenStoryIds.includes(story.id);
   const dismissProgress = Math.min(1, dismissOffsetY / 220);
@@ -153,14 +158,14 @@ export function MobileStoryOverlay({
     setIsReplyFocused(false);
     setDismissOffsetY(0);
     setViewersOpen(false);
+    setMenuOpen(false);
     elapsedMsRef.current = 0;
     lastFrameAtRef.current = null;
-    if (activeStory) {
-      const activeProgressBar = progressBarRefs.current[activeStory.id];
-      if (activeProgressBar) {
-        activeProgressBar.style.transform = "scaleX(0)";
+    Object.values(progressBarRefs.current).forEach((progressBar) => {
+      if (progressBar) {
+        progressBar.style.transform = "scaleX(0)";
       }
-    }
+    });
   }, [activeStory?.id]);
 
   useEffect(() => {
@@ -290,6 +295,27 @@ export function MobileStoryOverlay({
     }
   }
 
+  async function handleDeleteActiveStory() {
+    if (!activeStory || !isOwnStory || isDeletingStory) {
+      return;
+    }
+
+    setIsDeletingStory(true);
+    setReplyError(null);
+
+    try {
+      await deleteStory(activeStory.id);
+      setMenuOpen(false);
+      setViewersOpen(false);
+      onClose();
+      router.refresh();
+    } catch (error) {
+      setReplyError(error instanceof Error ? error.message : "No pude borrar la historia.");
+    } finally {
+      setIsDeletingStory(false);
+    }
+  }
+
   if (!activeStory || !activeCluster || typeof document === "undefined") {
     return null;
   }
@@ -323,7 +349,7 @@ export function MobileStoryOverlay({
                 }}
                 className="block h-full rounded-full bg-white"
                 style={{
-                  transform: `scaleX(${index < storyIndex ? 1 : 0})`,
+                  transform: "scaleX(0)",
                   transformOrigin: "left center",
                   willChange: "transform"
                 }}
@@ -424,6 +450,7 @@ export function MobileStoryOverlay({
           <div data-story-ui="true" className="flex items-center gap-2">
             <button
               type="button"
+              onClick={() => setMenuOpen((current) => !current)}
               className="flex h-10 w-10 items-center justify-center rounded-full bg-black/35 text-white"
               aria-label="Mas opciones"
             >
@@ -456,6 +483,49 @@ export function MobileStoryOverlay({
             </button>
           </div>
         </div>
+
+        {menuOpen ? (
+          <div
+            data-story-ui="true"
+            className="absolute inset-0 z-30 bg-black/28"
+            onClick={() => setMenuOpen(false)}
+          >
+            <div
+              className="absolute right-4 top-[calc(4.5rem+env(safe-area-inset-top))] min-w-[190px] rounded-[1.5rem] border border-white/10 bg-[#120d0a]/96 p-2 text-white shadow-2xl backdrop-blur"
+              onClick={(event) => event.stopPropagation()}
+            >
+              {isOwnStory ? (
+                <button
+                  type="button"
+                  onClick={() => void handleDeleteActiveStory()}
+                  disabled={isDeletingStory}
+                  className="flex w-full items-center justify-between rounded-[1rem] px-4 py-3 text-left text-sm font-semibold hover:bg-white/6 disabled:opacity-50"
+                >
+                  <span>{isDeletingStory ? "Borrando..." : "Borrar historia"}</span>
+                </button>
+              ) : null}
+              {showOwnStoryStats && isOwnStory ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setViewersOpen(true);
+                  }}
+                  className="flex w-full items-center justify-between rounded-[1rem] px-4 py-3 text-left text-sm font-semibold hover:bg-white/6"
+                >
+                  <span>Ver vistas</span>
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => setMenuOpen(false)}
+                className="flex w-full items-center justify-between rounded-[1rem] px-4 py-3 text-left text-sm font-semibold text-white/72 hover:bg-white/6"
+              >
+                <span>Cancelar</span>
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         {isActiveStoryVideo && activeStory.media?.previewUrl ? (
           <video
@@ -499,11 +569,7 @@ export function MobileStoryOverlay({
                       void handleSendReply();
                     }
                   }}
-                  placeholder={
-                    activeStory.ownerType === "event"
-                      ? "Enviar mensaje..."
-                      : "Enviar mensaje..."
-                  }
+                  placeholder="Enviar mensaje..."
                   className="h-7 min-w-0 flex-1 bg-transparent text-base text-white outline-none placeholder:text-white/58"
                 />
               </div>
@@ -530,6 +596,20 @@ export function MobileStoryOverlay({
                 <Send className="h-6 w-6" />
               </button>
             </div>
+            {replyError ? <p className="mt-2 px-1 text-xs text-[#ffd1c4]">{replyError}</p> : null}
+          </div>
+        ) : isOwnStory ? (
+          <div data-story-ui="true" className="absolute inset-x-0 bottom-0 z-20 px-4 pb-[calc(0.9rem+env(safe-area-inset-bottom))] pt-14">
+            <button
+              type="button"
+              onClick={() => setViewersOpen(true)}
+              className="flex w-full items-center justify-between rounded-full border border-white/18 bg-black/26 px-4 py-3 text-sm font-semibold text-white/92 backdrop-blur"
+            >
+              <span>Actividad</span>
+              <span className="text-xs font-medium text-white/68">
+                {activeStory.viewCount} vista{activeStory.viewCount === 1 ? "" : "s"}
+              </span>
+            </button>
             {replyError ? <p className="mt-2 px-1 text-xs text-[#ffd1c4]">{replyError}</p> : null}
           </div>
         ) : null}
