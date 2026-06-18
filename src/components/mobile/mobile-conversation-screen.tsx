@@ -56,6 +56,42 @@ function ConversationAvatar({
   );
 }
 
+function StoryContextCard({
+  previewUrl,
+  ownerLabel,
+  caption,
+  mode,
+  text
+}: {
+  previewUrl: string | null;
+  ownerLabel: string;
+  caption: string;
+  mode: "reaction" | "comment";
+  text: string;
+}) {
+  const summary = caption || (mode === "reaction" ? `Reacciono con ${text}` : text) || "Historia compartida";
+
+  return (
+    <div className="mb-3 rounded-[1.2rem] border border-[var(--line-soft)] bg-[var(--bg-soft)] p-2.5">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--text-soft)]">
+        {mode === "reaction" ? "Historia" : "Respuesta a historia"}
+      </div>
+      <div className="mt-2 flex items-center gap-3">
+        {previewUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={previewUrl} alt={ownerLabel} className="h-14 w-14 rounded-[1rem] object-cover" />
+        ) : (
+          <div className="h-14 w-14 rounded-[1rem] bg-white" />
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-xs font-semibold">{ownerLabel}</div>
+          <div className="mt-1 line-clamp-2 text-xs text-[var(--text-soft)]">{summary}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type ConversationScreenProps = {
   initialConversation: MobileConversationDetail;
   initialEvent?: MobileEventDetail | null;
@@ -97,6 +133,22 @@ export function MobileConversationScreen({
     eventDetail.event.chatMode === "open" ||
     eventDetail.event.hostId === conversation.viewerId ||
     eventDetail.cohosts.some((cohost) => cohost.id === conversation.viewerId);
+
+  function getReplySnippet(message: MobileMessage) {
+    if (message.storyContext) {
+      return `Historia de ${message.storyContext.ownerLabel}`;
+    }
+
+    if (message.body.trim()) {
+      return message.body;
+    }
+
+    if (message.media?.previewUrl) {
+      return "Foto";
+    }
+
+    return "mensaje";
+  }
 
   async function refreshConversation() {
     const nextConversation = await fetchConversation(conversation.summary.id);
@@ -157,7 +209,8 @@ export function MobileConversationScreen({
         deletedForEveryone: false,
         ephemeralExpiresAt: null,
         deliveryStatus: "sending",
-        receipts: []
+        receipts: [],
+        storyContext: null
       };
       setPendingMessages((current) => [...current, optimistic]);
       await sendConversationMessage(conversation.summary.id, {
@@ -265,6 +318,15 @@ export function MobileConversationScreen({
                         : "border border-[var(--line-soft)] bg-white"
                     )}
                   >
+                    {message.storyContext ? (
+                      <StoryContextCard
+                        previewUrl={message.storyContext.previewUrl}
+                        ownerLabel={message.storyContext.ownerLabel}
+                        caption={message.storyContext.caption}
+                        mode={message.storyContext.mode}
+                        text={message.storyContext.text}
+                      />
+                    ) : null}
                     {message.media?.previewUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
@@ -317,7 +379,7 @@ export function MobileConversationScreen({
             {replyRoot ? (
               <div className="mb-2 flex items-center justify-between rounded-2xl bg-[var(--bg-soft)] px-3 py-2 text-xs text-[var(--text-soft)]">
                 <span className="truncate">
-                  Respondiendo a: {replyRoot.body || "mensaje"}
+                  Respondiendo a: {getReplySnippet(replyRoot)}
                 </span>
                 <button type="button" onClick={() => setReplyRoot(null)}>
                   <X className="h-3.5 w-3.5" />
@@ -353,7 +415,8 @@ export function MobileConversationScreen({
                 deletedForEveryone: false,
                 ephemeralExpiresAt: null,
                 deliveryStatus: "sending",
-                receipts: []
+                receipts: [],
+                storyContext: null
               };
               setDraft("");
               setPendingMessages((current) => [...current, optimistic]);
@@ -401,6 +464,15 @@ export function MobileConversationScreen({
             <div className="space-y-3">
               <div className="rounded-[1.4rem] border border-[var(--line-soft)] bg-[var(--bg-soft)] px-4 py-3">
                 <div className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-soft)]">Raíz</div>
+                {threadRoot.storyContext ? (
+                  <StoryContextCard
+                    previewUrl={threadRoot.storyContext.previewUrl}
+                    ownerLabel={threadRoot.storyContext.ownerLabel}
+                    caption={threadRoot.storyContext.caption}
+                    mode={threadRoot.storyContext.mode}
+                    text={threadRoot.storyContext.text}
+                  />
+                ) : null}
                 <p className="mt-2 text-sm leading-6">{threadRoot.body || "Mensaje"}</p>
               </div>
               {threadMessages.map((message) => {
@@ -410,6 +482,15 @@ export function MobileConversationScreen({
                     <div className="mb-1 text-xs font-semibold text-[var(--coral)]">
                       {author ? `@${author.handle}` : "Sistema"}
                     </div>
+                    {message.storyContext ? (
+                      <StoryContextCard
+                        previewUrl={message.storyContext.previewUrl}
+                        ownerLabel={message.storyContext.ownerLabel}
+                        caption={message.storyContext.caption}
+                        mode={message.storyContext.mode}
+                        text={message.storyContext.text}
+                      />
+                    ) : null}
                     <p className="text-sm leading-6">{message.body}</p>
                     <div className="mt-2 text-xs text-[var(--text-soft)]">{formatMobileDateTime(message.createdAt)}</div>
                   </div>

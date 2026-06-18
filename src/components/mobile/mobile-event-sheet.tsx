@@ -1,17 +1,18 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CalendarPlus, Download, Link2, MapPin, QrCode, Share2, Ticket, UserPlus, Users, X } from "lucide-react";
 import {
   addEventCohost,
-  fetchCheckInToken,
   fetchEventTicket,
   inviteFriendToEvent,
   joinEvent,
   moderateEventMember,
   reportEventMember,
   setArrivalStatus,
-  setEventChatMode
+  setEventChatMode,
+  setEventMemberStaffRoles,
+  submitCheckInToken
 } from "@/lib/mobile-api";
 import { StoryStrip, PostCard } from "@/components/mobile/mobile-feed";
 import { formatMobileDateTime, getArrivalStatusLabel, getMapLink } from "@/lib/mobile-shared";
@@ -67,6 +68,38 @@ function buildEventShareUrl(slug: string) {
   return `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/evento/${slug}`;
 }
 
+type BarcodeDetectorLike = {
+  detect: (input: ImageBitmapSource) => Promise<Array<{ rawValue?: string }>>;
+};
+
+type BarcodeDetectorCtor = new (options?: { formats?: string[] }) => BarcodeDetectorLike;
+
+function getBarcodeDetectorCtor() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  return (window as Window & { BarcodeDetector?: BarcodeDetectorCtor }).BarcodeDetector ?? null;
+}
+
+function normalizeScannedToken(rawValue: string) {
+  const trimmed = rawValue.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  try {
+    const parsedUrl = new URL(trimmed);
+    return parsedUrl.searchParams.get("entry") ?? parsedUrl.searchParams.get("checkin") ?? trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
+function formatStaffRoleLabel(role: "moderator" | "scanner") {
+  return role === "moderator" ? "Moderador" : "Escaner";
+}
+
 async function urlToDataUrl(url: string) {
   const response = await fetch(url);
   const blob = await response.blob();
@@ -103,6 +136,23 @@ function EventTicketPreview({
   onShare: () => Promise<void>;
 }) {
   const [qrFocusOpen, setQrFocusOpen] = useState(false);
+  const isTicketActive = ticket.status === "active";
+  const ticketStatusLabel =
+    ticket.status === "used"
+      ? "Entrada usada"
+      : ticket.status === "expired"
+        ? "Entrada caducada"
+        : ticket.status === "invalid"
+          ? "Entrada invalida"
+          : "Entrada activa";
+  const ticketStatusDescription =
+    ticket.status === "used"
+      ? `Escaneada ${formatMobileDateTime(ticket.scannedAt ?? ticket.validUntil)}${ticket.scannedByHandle ? ` por ${ticket.scannedByHandle}` : ""}.`
+      : ticket.status === "expired"
+        ? "Ya no se puede volver a usar porque ha caducado."
+        : ticket.status === "invalid"
+          ? ticket.invalidReason || "Esta entrada ya no es valida."
+          : `Valida hasta ${formatMobileDateTime(ticket.validUntil)}`;
 
   return (
     <>
@@ -147,26 +197,31 @@ function EventTicketPreview({
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setQrFocusOpen(true)}
-              className="mt-4 block w-full rounded-[1.8rem] bg-[var(--bg-soft)] p-4"
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={ticket.qrImageUrl} alt="QR de entrada" className="mx-auto h-48 w-48 rounded-[1.5rem] bg-white p-3" />
-              <div className="mt-3 text-center text-xs text-[var(--text-soft)]">
-                Valida hasta {formatMobileDateTime(ticket.validUntil)}
+            {isTicketActive ? (
+              <button
+                type="button"
+                onClick={() => setQrFocusOpen(true)}
+                className="mt-4 block w-full rounded-[1.8rem] bg-[var(--bg-soft)] p-4"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={ticket.qrImageUrl} alt="QR de entrada" className="mx-auto h-48 w-48 rounded-[1.5rem] bg-white p-3" />
+                <div className="mt-3 text-center text-xs text-[var(--text-soft)]">{ticketStatusDescription}</div>
+                <div className="mt-2 text-center text-xs font-semibold text-[var(--coral)]">Tocar para ampliar QR</div>
+              </button>
+            ) : (
+              <div className="mt-4 rounded-[1.8rem] border border-[var(--line-soft)] bg-[var(--bg-soft)] px-4 py-6 text-center">
+                <div className="text-sm font-semibold">{ticketStatusLabel}</div>
+                <div className="mt-2 text-sm text-[var(--text-soft)]">{ticketStatusDescription}</div>
               </div>
-              <div className="mt-2 text-center text-xs font-semibold text-[var(--coral)]">Tocar para ampliar QR</div>
-            </button>
+            )}
           </div>
 
           <div className="mt-auto grid grid-cols-3 gap-3 bg-[var(--bg-main)] pb-1 pt-4">
-            <button type="button" onClick={() => void onShare()} className="rounded-[1.4rem] border border-[var(--line-soft)] bg-white px-3 py-4 text-center shadow-sm">
+            <button type="button" disabled={!isTicketActive} onClick={() => void onShare()} className="rounded-[1.4rem] border border-[var(--line-soft)] bg-white px-3 py-4 text-center shadow-sm disabled:opacity-45">
               <Share2 className="mx-auto h-5 w-5 text-[var(--coral)]" />
               <div className="mt-2 text-xs font-semibold">Compartir</div>
             </button>
-            <button type="button" onClick={() => void onDownload()} className="rounded-[1.4rem] border border-[var(--line-soft)] bg-white px-3 py-4 text-center shadow-sm">
+            <button type="button" disabled={!isTicketActive} onClick={() => void onDownload()} className="rounded-[1.4rem] border border-[var(--line-soft)] bg-white px-3 py-4 text-center shadow-sm disabled:opacity-45">
               <Download className="mx-auto h-5 w-5 text-[var(--coral)]" />
               <div className="mt-2 text-xs font-semibold">Guardar</div>
             </button>
@@ -192,7 +247,7 @@ function EventTicketPreview({
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={ticket.qrImageUrl} alt="QR ampliado de entrada" className="mx-auto h-[78vw] max-h-[320px] w-[78vw] max-w-[320px] rounded-[1.5rem] bg-white p-3" />
             </div>
-            <div className="mt-4 text-xs text-[var(--text-soft)]">Valida hasta {formatMobileDateTime(ticket.validUntil)}</div>
+            <div className="mt-4 text-xs text-[var(--text-soft)]">{ticketStatusDescription}</div>
             <button
               type="button"
               onClick={() => setQrFocusOpen(false)}
@@ -218,20 +273,24 @@ export function EventInfoSheet({
   onClose: () => void;
   onRefresh: () => Promise<void>;
 }) {
-  const [tab, setTab] = useState<"live" | "info" | "people" | "stories" | "faq">("live");
-  const [qr, setQr] = useState<{ expiresAt: string; qrImageUrl: string; token: string; url: string } | null>(null);
+  const [tab, setTab] = useState<"live" | "info" | "people" | "stories" | "faq" | "scan">("live");
   const [ticket, setTicket] = useState<MobileEventTicket | null>(null);
   const [ticketOpen, setTicketOpen] = useState(false);
   const [loadingTicket, setLoadingTicket] = useState(false);
   const [invitingUserId, setInvitingUserId] = useState<string | null>(null);
   const [moderatingUserId, setModeratingUserId] = useState<string | null>(null);
   const [reportingUserId, setReportingUserId] = useState<string | null>(null);
+  const [updatingRoleUserId, setUpdatingRoleUserId] = useState<string | null>(null);
   const [sharingEvent, setSharingEvent] = useState(false);
-  const canManage = Boolean(
-    eventDetail &&
-      (eventDetail.event.hostId === conversation.viewerId ||
-        eventDetail.cohosts.some((cohost) => cohost.id === conversation.viewerId))
-  );
+  const [manualScanValue, setManualScanValue] = useState("");
+  const [scanMessage, setScanMessage] = useState<string | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [scanBusy, setScanBusy] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const scanStreamRef = useRef<MediaStream | null>(null);
+  const scanIntervalRef = useRef<number | null>(null);
+  const scanLockRef = useRef(false);
   const myMembership = eventDetail?.myMembership ?? null;
   const isInside = myMembership?.arrivalStatus === "inside";
   const storyClusters = useMemo(
@@ -258,6 +317,9 @@ export function EventInfoSheet({
   }
 
   const event = eventDetail.event;
+  const canManage = eventDetail.canManage;
+  const canModerateMembers = eventDetail.canModerateMembers;
+  const canScan = eventDetail.canScan;
   const eventShareUrl = buildEventShareUrl(event.slug);
   const mapLink = getMapLink(
     event.meetingPointAddress,
@@ -391,6 +453,130 @@ export function EventInfoSheet({
     );
   }
 
+  function stopScannerCamera() {
+    if (scanIntervalRef.current !== null) {
+      window.clearInterval(scanIntervalRef.current);
+      scanIntervalRef.current = null;
+    }
+
+    if (scanStreamRef.current) {
+      for (const track of scanStreamRef.current.getTracks()) {
+        track.stop();
+      }
+      scanStreamRef.current = null;
+    }
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+
+    setCameraReady(false);
+  }
+
+  async function handleResolveScannedValue(rawValue: string) {
+    const token = normalizeScannedToken(rawValue);
+    if (!token || scanLockRef.current) {
+      return;
+    }
+
+    scanLockRef.current = true;
+    setScanBusy(true);
+    setScanError(null);
+    setScanMessage("Validando entrada...");
+
+    try {
+      const result = await submitCheckInToken(token, event.id);
+
+      setManualScanValue("");
+      setScanMessage(`${result.attendeeHandle} dentro. QR invalidado.`);
+      await onRefresh();
+    } catch (error) {
+      setScanError(error instanceof Error ? error.message : "No pude validar esta entrada.");
+    } finally {
+      setScanBusy(false);
+      window.setTimeout(() => {
+        scanLockRef.current = false;
+      }, 900);
+    }
+  }
+
+  useEffect(() => {
+    if (typeof window === "undefined" || tab !== "scan" || !canScan) {
+      stopScannerCamera();
+      return;
+    }
+
+    let cancelled = false;
+    const barcodeDetectorCtor = getBarcodeDetectorCtor();
+
+    async function startScanner() {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setScanError("Tu navegador no deja abrir la camara. Puedes pegar el codigo manualmente.");
+        return;
+      }
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: "environment" }
+          },
+          audio: false
+        });
+
+        if (cancelled) {
+          for (const track of stream.getTracks()) {
+            track.stop();
+          }
+          return;
+        }
+
+        scanStreamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play().catch(() => undefined);
+        }
+
+        setCameraReady(true);
+        setScanError(null);
+        setScanMessage(
+          barcodeDetectorCtor
+            ? "Apunta al QR para validar acceso."
+            : "Camara lista. Si tu navegador no detecta QR en vivo, pega el codigo debajo."
+        );
+
+        if (!barcodeDetectorCtor) {
+          return;
+        }
+
+        const detector = new barcodeDetectorCtor({ formats: ["qr_code"] });
+        scanIntervalRef.current = window.setInterval(async () => {
+          if (scanLockRef.current || !videoRef.current || videoRef.current.readyState < 2) {
+            return;
+          }
+
+          try {
+            const results = await detector.detect(videoRef.current);
+            const rawValue = results[0]?.rawValue?.trim();
+            if (rawValue) {
+              void handleResolveScannedValue(rawValue);
+            }
+          } catch {
+            // Keep trying while the camera is alive.
+          }
+        }, 700);
+      } catch {
+        setScanError("No pude abrir la camara. Revisa permisos o usa el pegado manual.");
+      }
+    }
+
+    void startScanner();
+
+    return () => {
+      cancelled = true;
+      stopScannerCamera();
+    };
+  }, [canScan, event.id, onRefresh, tab]);
+
   return (
     <>
       <div className="fixed inset-0 z-50 bg-black/30" onClick={onClose}>
@@ -414,7 +600,8 @@ export function EventInfoSheet({
             ["info", "Info"],
             ["people", "Miembros"],
             ["stories", "Historias"],
-            ["faq", "FAQ"]
+            ["faq", "FAQ"],
+            ...(canScan ? ([["scan", "Escanear"]] as const) : [])
           ].map(([value, label]) => (
             <button
               key={value}
@@ -579,24 +766,22 @@ export function EventInfoSheet({
                   Cuando te aprueben en el evento, aquí te aparecerá tu entrada digital.
                 </div>
               ) : null}
-              {canManage ? (
+              {canScan ? (
                 <section className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
                   <div className="flex items-center justify-between">
                     <div>
-                      <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">Check-in QR</div>
-                      <div className="mt-2 text-sm text-[var(--text-soft)]">Escanean, pasan a dentro y se confirma asistencia real.</div>
+                      <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">Control de acceso</div>
+                      <div className="mt-2 text-sm text-[var(--text-soft)]">Usa la pestana Escanear para validar asistentes y bloquear el QR al primer uso.</div>
                     </div>
                     <QrCode className="h-5 w-5 text-[var(--coral)]" />
                   </div>
                   <div className="mt-4 flex gap-2">
                     <button
                       type="button"
-                      onClick={async () => {
-                        setQr(await fetchCheckInToken(event.slug));
-                      }}
+                      onClick={() => setTab("scan")}
                       className="rounded-full bg-[var(--text-main)] px-4 py-2 text-sm font-semibold text-white"
                     >
-                      Generar QR
+                      Abrir escaner
                     </button>
                     <button
                       type="button"
@@ -612,15 +797,6 @@ export function EventInfoSheet({
                       Chat {event.chatMode === "open" ? "abierto" : "solo staff"}
                     </button>
                   </div>
-                  {qr ? (
-                    <div className="mt-4 rounded-[1.6rem] bg-[var(--bg-soft)] p-4">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={qr.qrImageUrl} alt="QR check-in" className="mx-auto h-48 w-48 rounded-2xl bg-white p-2" />
-                      <div className="mt-3 text-center text-xs text-[var(--text-soft)]">
-                        Valido hasta {formatMobileDateTime(qr.expiresAt)}
-                      </div>
-                    </div>
-                  ) : null}
                 </section>
               ) : null}
               {!myMembership ? (
@@ -801,7 +977,12 @@ export function EventInfoSheet({
                 const membership = participant.membership;
                 const isMuted = eventDetail.mutedUserIds.includes(member.id);
                 const isBanned = eventDetail.bannedUserIds.includes(member.id);
-                const isBusy = moderatingUserId === member.id || reportingUserId === member.id;
+                const hasModeratorRole = participant.staffRoles.includes("moderator");
+                const hasScannerRole = participant.staffRoles.includes("scanner");
+                const isBusy =
+                  moderatingUserId === member.id ||
+                  reportingUserId === member.id ||
+                  updatingRoleUserId === member.id;
 
                 return (
                   <div key={member.id} className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
@@ -818,6 +999,16 @@ export function EventInfoSheet({
                           {participant.isCohost ? (
                             <span className="rounded-full bg-[rgba(255,107,87,0.1)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--coral)]">
                               Cohost
+                            </span>
+                          ) : null}
+                          {hasModeratorRole ? (
+                            <span className="rounded-full bg-[rgba(42,168,118,0.12)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#2a8a66]">
+                              Moderador
+                            </span>
+                          ) : null}
+                          {hasScannerRole ? (
+                            <span className="rounded-full bg-[rgba(52,99,235,0.12)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#3463eb]">
+                              Escaner
                             </span>
                           ) : null}
                           {isMuted ? (
@@ -850,7 +1041,49 @@ export function EventInfoSheet({
                     </div>
 
                     <div className="mt-4 flex flex-wrap gap-2">
-                      {canManage && member.id !== conversation.viewerId && member.id !== event.hostId ? (
+                      {canManage && member.id !== event.hostId ? (
+                        <>
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={async () => {
+                              setUpdatingRoleUserId(member.id);
+                              try {
+                                const nextRoles = hasModeratorRole
+                                  ? participant.staffRoles.filter((role) => role !== "moderator")
+                                  : [...participant.staffRoles, "moderator"];
+                                await setEventMemberStaffRoles(event.slug, member.id, nextRoles);
+                                await onRefresh();
+                              } finally {
+                                setUpdatingRoleUserId(null);
+                              }
+                            }}
+                            className="rounded-full border border-[var(--line-warm)] px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                          >
+                            {hasModeratorRole ? "Quitar moderador" : "Moderador"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={async () => {
+                              setUpdatingRoleUserId(member.id);
+                              try {
+                                const nextRoles = hasScannerRole
+                                  ? participant.staffRoles.filter((role) => role !== "scanner")
+                                  : [...participant.staffRoles, "scanner"];
+                                await setEventMemberStaffRoles(event.slug, member.id, nextRoles);
+                                await onRefresh();
+                              } finally {
+                                setUpdatingRoleUserId(null);
+                              }
+                            }}
+                            className="rounded-full border border-[var(--line-warm)] px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                          >
+                            {hasScannerRole ? "Quitar escaner" : "Escaner"}
+                          </button>
+                        </>
+                      ) : null}
+                      {canModerateMembers && member.id !== conversation.viewerId && member.id !== event.hostId ? (
                         <>
                           {!participant.isCohost ? (
                             <button
@@ -959,6 +1192,69 @@ export function EventInfoSheet({
                   Cuando el evento empiece a moverse, aquí aparecerán historias y publicaciones.
                 </div>
               ) : null}
+            </div>
+          ) : null}
+
+          {tab === "scan" ? (
+            <div className="space-y-4">
+              <section className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">Escaner del evento</div>
+                    <div className="mt-2 text-sm text-[var(--text-soft)]">
+                      Valida asistentes en la puerta. En cuanto entra un QR, se marca dentro y no vuelve a valer.
+                    </div>
+                  </div>
+                  <QrCode className="h-5 w-5 text-[var(--coral)]" />
+                </div>
+
+                <div className="mt-4 overflow-hidden rounded-[1.8rem] bg-[#120d0a]">
+                  <video ref={videoRef} playsInline muted className="aspect-[4/5] w-full object-cover" />
+                </div>
+
+                <div className="mt-3 rounded-[1.4rem] bg-[var(--bg-soft)] px-4 py-3 text-sm text-[var(--text-soft)]">
+                  {cameraReady ? scanMessage || "Camara lista." : "Preparando camara..."}
+                </div>
+                {scanError ? (
+                  <div className="rounded-[1.4rem] border border-[rgba(184,64,49,0.16)] bg-[rgba(184,64,49,0.06)] px-4 py-3 text-sm text-[#b84031]">
+                    {scanError}
+                  </div>
+                ) : null}
+              </section>
+
+              <section className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
+                <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">Validacion manual</div>
+                <div className="mt-2 text-sm text-[var(--text-soft)]">
+                  Si el movil no detecta el QR en vivo, pega aqui el contenido del codigo o el enlace completo.
+                </div>
+                <textarea
+                  value={manualScanValue}
+                  onChange={(eventInput) => setManualScanValue(eventInput.target.value)}
+                  placeholder="Pega aqui el QR o la URL de entrada"
+                  className="mt-4 min-h-28 w-full rounded-[1.4rem] border border-[var(--line-soft)] bg-[var(--bg-soft)] px-4 py-3 text-sm outline-none"
+                />
+                <div className="mt-3 flex gap-2">
+                  <button
+                    type="button"
+                    disabled={scanBusy || !manualScanValue.trim()}
+                    onClick={() => void handleResolveScannedValue(manualScanValue)}
+                    className="rounded-full bg-[var(--text-main)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                  >
+                    {scanBusy ? "Validando..." : "Validar entrada"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setManualScanValue("");
+                      setScanError(null);
+                      setScanMessage(cameraReady ? "Apunta al QR para validar acceso." : null);
+                    }}
+                    className="rounded-full border border-[var(--line-warm)] px-4 py-2 text-sm font-semibold"
+                  >
+                    Limpiar
+                  </button>
+                </div>
+              </section>
             </div>
           ) : null}
 

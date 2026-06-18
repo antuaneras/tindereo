@@ -5,7 +5,7 @@ import { Heart, MoreHorizontal, Play, Send, Volume2, VolumeX, X } from "lucide-r
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createConversation, deleteStory, markStoryAsViewed, sendConversationMessage } from "@/lib/mobile-api";
-import { formatRelativeMobileTime } from "@/lib/mobile-shared";
+import { buildStoryMessageText, formatRelativeMobileTime } from "@/lib/mobile-shared";
 import type { MobileProfile, MobileStory, MobileStoryCluster } from "@/lib/mobile-types";
 
 function cn(...values: Array<string | false | null | undefined>) {
@@ -72,8 +72,11 @@ export function MobileStoryOverlay({
   const [isDeletingStory, setIsDeletingStory] = useState(false);
   const [viewportHeight, setViewportHeight] = useState<number | null>(null);
   const [browserBottomInset, setBrowserBottomInset] = useState(0);
+  const [replyNotice, setReplyNotice] = useState<string | null>(null);
+  const [reactedStoryIds, setReactedStoryIds] = useState<string[]>([]);
 
   const progressFrameRef = useRef<number | null>(null);
+  const replyNoticeTimeoutRef = useRef<number | null>(null);
   const elapsedMsRef = useRef(0);
   const lastFrameAtRef = useRef<number | null>(null);
   const gestureRef = useRef<{
@@ -85,7 +88,19 @@ export function MobileStoryOverlay({
     mode: "tap" | "dismiss";
   } | null>(null);
   const progressBarRefs = useRef<Record<string, HTMLSpanElement | null>>({});
+  const preloadedUrlsRef = useRef<Set<string>>(new Set());
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const flatStoryQueue = useMemo(
+    () =>
+      normalizedClusters.flatMap((cluster) =>
+        cluster.stories.map((story, normalizedStoryIndex) => ({
+          clusterIndex: normalizedClusters.findIndex((item) => item.ownerId === cluster.ownerId && item.ownerType === cluster.ownerType),
+          storyIndex: normalizedStoryIndex,
+          story
+        }))
+      ),
+    [normalizedClusters]
+  );
 
   const activeCluster = normalizedClusters[activeClusterIndex] ?? null;
   const activeStory = activeCluster?.stories[storyIndex] ?? null;
@@ -93,6 +108,7 @@ export function MobileStoryOverlay({
   const canReply = Boolean(activeStory && activeStory.authorId !== viewer.id);
   const isActiveStoryVideo = Boolean(activeStory?.media?.mimeType?.startsWith("video/"));
   const isOwnStory = Boolean(activeStory && activeStory.authorId === viewer.id);
+  const hasReactedToActiveStory = Boolean(activeStory && reactedStoryIds.includes(activeStory.id));
 
   const isSeen = (story: MobileStory) => story.hasSeen || seenStoryIds.includes(story.id);
   const dismissProgress = Math.min(1, dismissOffsetY / 220);
@@ -157,6 +173,7 @@ export function MobileStoryOverlay({
   useEffect(() => {
     setReplyDraft("");
     setReplyError(null);
+    setReplyNotice(null);
     setIsReplyFocused(false);
     setDismissOffsetY(0);
     setViewersOpen(false);
@@ -169,6 +186,14 @@ export function MobileStoryOverlay({
       }
     });
   }, [activeStory?.id]);
+
+  useEffect(() => {
+    return () => {
+      if (replyNoticeTimeoutRef.current !== null) {
+        window.clearTimeout(replyNoticeTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof document === "undefined") {
@@ -234,6 +259,38 @@ export function MobileStoryOverlay({
   }, [activeStory, onStorySeen, seenStoryIds, viewer.id]);
 
   useEffect(() => {
+    if (typeof window === "undefined" || !activeStory) {
+      return;
+    }
+
+    const activeFlatIndex = flatStoryQueue.findIndex((item) => item.story.id === activeStory.id);
+    const nearbyStories = flatStoryQueue.slice(
+      Math.max(0, activeFlatIndex - 1),
+      Math.min(flatStoryQueue.length, activeFlatIndex + 4)
+    );
+
+    for (const candidate of nearbyStories) {
+      const previewUrl = candidate.story.media?.previewUrl;
+      if (!previewUrl || preloadedUrlsRef.current.has(previewUrl)) {
+        continue;
+      }
+
+      preloadedUrlsRef.current.add(previewUrl);
+      if (candidate.story.media?.mimeType?.startsWith("video/")) {
+        const video = document.createElement("video");
+        video.preload = "auto";
+        video.src = previewUrl;
+        video.load();
+        continue;
+      }
+
+      const image = new window.Image();
+      image.decoding = "async";
+      image.src = previewUrl;
+    }
+  }, [activeStory, flatStoryQueue]);
+
+  useEffect(() => {
     if (!activeStory || isPaused) {
       return;
     }
@@ -290,20 +347,44 @@ export function MobileStoryOverlay({
     void videoRef.current.play().catch(() => undefined);
   }, [activeStory?.id, isActiveStoryVideo, isPaused]);
 
-  async function handleSendReply(overrideBody?: string) {
-    const bodyToSend = (overrideBody ?? replyDraft).trim();
+  function setTransientReplyNotice(message: string) {
+    setReplyNotice(message);
+    if (replyNoticeTimeoutRef.current !== null) {
+      window.clearTimeout(replyNoticeTimeoutRef.current);
+    }
 
-    if (!activeStory || !bodyToSend || isSendingReply || !canReply) {
+    replyNoticeTimeoutRef.current = window.setTimeout(() => {
+      setReplyNotice(null);
+      replyNoticeTimeoutRef.current = null;
+    }, 1800);
+  }
+
+  async function handleSendReply(overrideBody?: string) {
+    const rawBody = (overrideBody ?? replyDraft).trim();
+    const isReaction = overrideBody === "\u2764\uFE0F";
+
+    if (!activeStory || !rawBody || isSendingReply || !canReply) {
       return;
     }
 
+    if (isReaction && reactedStoryIds.includes(activeStory.id)) {
+      setTransientReplyNotice("Ya reaccionaste a esta historia.");
+      return;
+    }
+
+    const encodedBody = buildStoryMessageText(activeStory.id, isReaction ? "reaction" : "comment", rawBody);
+    const previousDraft = replyDraft;
     setIsSendingReply(true);
     setReplyError(null);
+    setReplyNotice(isReaction ? "Enviando reaccion..." : "Enviando respuesta...");
+    if (!isReaction) {
+      setReplyDraft("");
+    }
 
     try {
       if (activeStory.ownerType === "event") {
         await sendConversationMessage(`event-chat-${activeStory.ownerId}`, {
-          body: bodyToSend
+          body: encodedBody
         });
       } else {
         const created = await createConversation({
@@ -313,13 +394,20 @@ export function MobileStoryOverlay({
         });
 
         await sendConversationMessage(created.conversationId, {
-          body: bodyToSend
+          body: encodedBody
         });
       }
 
-      setReplyDraft("");
       setIsReplyFocused(false);
+      if (isReaction) {
+        setReactedStoryIds((current) => (current.includes(activeStory.id) ? current : [...current, activeStory.id]));
+      }
+      setTransientReplyNotice(isReaction ? "Reaccion enviada." : "Mensaje enviado.");
     } catch (error) {
+      if (!isReaction) {
+        setReplyDraft(previousDraft);
+      }
+      setReplyNotice(null);
       setReplyError(error instanceof Error ? error.message : "No pude enviar la respuesta.");
     } finally {
       setIsSendingReply(false);
@@ -615,7 +703,7 @@ export function MobileStoryOverlay({
                       void handleSendReply();
                     }
                   }}
-                  placeholder="Enviar mensaje..."
+                  placeholder="Responder historia..."
                   className="h-7 min-w-0 flex-1 bg-transparent text-base text-white outline-none placeholder:text-white/58"
                 />
               </div>
@@ -628,7 +716,7 @@ export function MobileStoryOverlay({
                 className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-black/26 text-white backdrop-blur disabled:opacity-50"
                 aria-label="Reaccionar con corazon"
               >
-                <Heart className="h-7 w-7" />
+                <Heart className={cn("h-7 w-7 transition-colors", hasReactedToActiveStory && "fill-[var(--coral)] text-[var(--coral)]")} />
               </button>
               <button
                 type="button"
@@ -643,6 +731,7 @@ export function MobileStoryOverlay({
               </button>
             </div>
             {replyError ? <p className="mt-2 px-1 text-xs text-[#ffd1c4]">{replyError}</p> : null}
+            {!replyError && replyNotice ? <p className="mt-2 px-1 text-xs text-white/72">{replyNotice}</p> : null}
           </div>
         ) : isOwnStory ? (
           <div

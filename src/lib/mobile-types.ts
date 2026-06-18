@@ -3,12 +3,14 @@ export type MobileEventStatus = "upcoming" | "live" | "afterglow";
 export type MobileEventMemberStatus = "pending" | "approved" | "rejected" | "waitlisted";
 export type MobileEventInviteStatus = "pending" | "accepted" | "rejected" | "cancelled";
 export type MobileArrivalStatus = "none" | "going" | "eta20" | "inside";
+export type MobileEventStaffRole = "moderator" | "scanner";
 export type MobileConversationKind = "event" | "direct" | "group";
 export type MobileConversationRole = "owner" | "cohost" | "member";
 export type MobileChatMode = "open" | "announcements";
 export type MobileMessageKind = "text" | "system" | "media";
 export type MobileDeliveryStatus = "sending" | "sent" | "delivered" | "read" | "failed";
 export type MobileStoryOwnerType = "user" | "event";
+export type MobileStoryMessageMode = "reaction" | "comment";
 export type MobileNotificationKind =
   | "event-invite"
   | "event-invite-response"
@@ -182,6 +184,7 @@ export interface MobileEventParticipant {
   profile: MobileProfile;
   membership: MobileEventMember;
   isCohost: boolean;
+  staffRoles: MobileEventStaffRole[];
 }
 
 export interface MobileEventInvite {
@@ -241,6 +244,18 @@ export interface MobileMessageReceipt {
   readAt: string | null;
 }
 
+export interface MobileStoryMessageContext {
+  storyId: string;
+  mode: MobileStoryMessageMode;
+  text: string;
+  ownerType: MobileStoryOwnerType;
+  ownerId: string;
+  ownerLabel: string;
+  previewUrl: string | null;
+  caption: string;
+  createdAt: string;
+}
+
 export interface MobileMessage {
   id: string;
   conversationId: string;
@@ -255,6 +270,7 @@ export interface MobileMessage {
   ephemeralExpiresAt: string | null;
   deliveryStatus: MobileDeliveryStatus;
   receipts: MobileMessageReceipt[];
+  storyContext: MobileStoryMessageContext | null;
 }
 
 export interface MobileConversationDetail {
@@ -277,6 +293,9 @@ export interface MobileEventDetail {
   invites: MobileEventInvite[];
   inviteCandidates: MobileProfile[];
   canInviteFriends: boolean;
+  canManage: boolean;
+  canModerateMembers: boolean;
+  canScan: boolean;
   mutedUserIds: string[];
   bannedUserIds: string[];
   stories: MobileStory[];
@@ -291,6 +310,10 @@ export interface MobileEventTicket {
   validUntil: string;
   holderLabel: string;
   roleLabel: string;
+  status: "active" | "used" | "expired" | "invalid";
+  scannedAt: string | null;
+  scannedByHandle: string | null;
+  invalidReason: string | null;
 }
 
 export interface MobileProfileDetail {

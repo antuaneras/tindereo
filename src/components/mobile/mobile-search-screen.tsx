@@ -8,7 +8,6 @@ import type {
   MobileEvent,
   MobilePost,
   MobileProfile,
-  MobileSearchFilters,
   MobileSearchPayload,
   MobileSuggestedProfile
 } from "@/lib/mobile-types";
@@ -23,13 +22,6 @@ const EMPTY_RESULTS: MobileSearchPayload = {
     cities: [],
     categories: []
   }
-};
-
-const DEFAULT_FILTERS: MobileSearchFilters = {
-  city: "",
-  when: "all",
-  visibility: "all",
-  category: ""
 };
 
 type SearchHistoryEntry = {
@@ -142,31 +134,6 @@ function Avatar({
   );
 }
 
-function FilterChip({
-  active,
-  label,
-  onClick
-}: {
-  active: boolean;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "rounded-full border px-3 py-2 text-xs font-semibold transition",
-        active
-          ? "border-[rgba(255,107,87,0.26)] bg-[rgba(255,107,87,0.1)] text-[var(--coral)]"
-          : "border-[var(--line-soft)] bg-white/88 text-[var(--text-soft)]"
-      )}
-    >
-      {label}
-    </button>
-  );
-}
-
 function SuggestedProfileCard({
   profile,
   onOpen
@@ -264,7 +231,6 @@ function SearchResultEmpty({ query }: { query: string }) {
 export function MobileSearchScreen() {
   const router = useRouter();
   const [query, setQuery] = useState("");
-  const [filters, setFilters] = useState<MobileSearchFilters>(DEFAULT_FILTERS);
   const deferredQuery = useDeferredValue(query.trim());
   const [results, setResults] = useState<MobileSearchPayload>(EMPTY_RESULTS);
   const [history, setHistory] = useState<SearchHistoryEntry[]>([]);
@@ -280,7 +246,7 @@ export function MobileSearchScreen() {
     const timer = window.setTimeout(async () => {
       setLoading(true);
       try {
-        const payload = await searchMobile(deferredQuery, filters);
+        const payload = await searchMobile(deferredQuery);
         if (!cancelled) {
           setResults(payload);
         }
@@ -299,7 +265,7 @@ export function MobileSearchScreen() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [deferredQuery, filters]);
+  }, [deferredQuery]);
 
   const suggestedGridPosts = useMemo(
     () => results.suggestedPosts.filter((post) => post.mediaItems[0]?.previewUrl).slice(0, 18),
@@ -381,12 +347,6 @@ export function MobileSearchScreen() {
     setQuery(query.trim());
   };
 
-  const hasActiveFilters =
-    Boolean(filters.city) ||
-    Boolean(filters.category) ||
-    filters.when !== "all" ||
-    filters.visibility !== "all";
-
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
@@ -416,107 +376,6 @@ export function MobileSearchScreen() {
           ) : null}
         </label>
       </form>
-
-      <section className="space-y-3">
-        <div className="scrollbar-hide -mx-1 flex gap-2 overflow-x-auto px-1">
-          <FilterChip
-            active={filters.when === "live"}
-            label="En vivo"
-            onClick={() =>
-              setFilters((current) => ({
-                ...current,
-                when: current.when === "live" ? "all" : "live"
-              }))
-            }
-          />
-          <FilterChip
-            active={filters.when === "week"}
-            label="Esta semana"
-            onClick={() =>
-              setFilters((current) => ({
-                ...current,
-                when: current.when === "week" ? "all" : "week"
-              }))
-            }
-          />
-          <FilterChip
-            active={filters.when === "month"}
-            label="Este mes"
-            onClick={() =>
-              setFilters((current) => ({
-                ...current,
-                when: current.when === "month" ? "all" : "month"
-              }))
-            }
-          />
-          <FilterChip
-            active={filters.visibility === "public"}
-            label="Publicos"
-            onClick={() =>
-              setFilters((current) => ({
-                ...current,
-                visibility: current.visibility === "public" ? "all" : "public"
-              }))
-            }
-          />
-          <FilterChip
-            active={filters.visibility === "private"}
-            label="Privados"
-            onClick={() =>
-              setFilters((current) => ({
-                ...current,
-                visibility: current.visibility === "private" ? "all" : "private"
-              }))
-            }
-          />
-        </div>
-
-        {results.facets.cities.length ? (
-          <div className="scrollbar-hide -mx-1 flex gap-2 overflow-x-auto px-1">
-            {results.facets.cities.slice(0, 8).map((city) => (
-              <FilterChip
-                key={city}
-                active={filters.city === city}
-                label={city}
-                onClick={() =>
-                  setFilters((current) => ({
-                    ...current,
-                    city: current.city === city ? "" : city
-                  }))
-                }
-              />
-            ))}
-          </div>
-        ) : null}
-
-        {results.facets.categories.length ? (
-          <div className="scrollbar-hide -mx-1 flex gap-2 overflow-x-auto px-1">
-            {results.facets.categories.slice(0, 8).map((category) => (
-              <FilterChip
-                key={category}
-                active={filters.category.toLowerCase() === category.toLowerCase()}
-                label={category}
-                onClick={() =>
-                  setFilters((current) => ({
-                    ...current,
-                    category: current.category.toLowerCase() === category.toLowerCase() ? "" : category
-                  }))
-                }
-              />
-            ))}
-          </div>
-        ) : null}
-
-        {hasActiveFilters ? (
-          <button
-            type="button"
-            onClick={() => setFilters(DEFAULT_FILTERS)}
-            className="text-xs font-semibold text-[var(--coral)]"
-          >
-            Limpiar filtros
-          </button>
-        ) : null}
-      </section>
 
       {loading ? (
         <div className="rounded-[1.7rem] bg-white/70 px-4 py-3 text-sm text-[var(--text-soft)]">

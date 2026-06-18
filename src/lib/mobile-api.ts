@@ -148,12 +148,12 @@ export async function fetchEventTicket(slug: string) {
   );
 }
 
-export async function submitCheckInToken(token: string) {
-  return readJson<{ eventId: string }>(
+export async function submitCheckInToken(token: string, eventId?: string) {
+  return readJson<{ eventId: string; attendeeHandle: string; ticketStatus: string }>(
     await fetch("/api/mobile/checkin", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token })
+      body: JSON.stringify({ token, eventId })
     })
   );
 }
@@ -174,6 +174,16 @@ export async function addEventCohost(slug: string, targetUserId: string) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ targetUserId })
+    })
+  );
+}
+
+export async function setEventMemberStaffRoles(slug: string, targetUserId: string, roles: string[]) {
+  return readJson<{ ok: boolean }>(
+    await fetch(`/api/mobile/events/${slug}/staff-roles`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetUserId, roles })
     })
   );
 }

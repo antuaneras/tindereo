@@ -104,6 +104,17 @@ create table if not exists public.event_cohosts (
   unique (event_id, user_id)
 );
 
+create table if not exists public.event_staff_roles (
+  id text primary key,
+  event_id text not null references public.events(id) on delete cascade,
+  user_id text not null references public.profiles(id) on delete cascade,
+  role text not null check (role in ('moderator', 'scanner')),
+  created_at timestamptz not null default timezone('utc', now()),
+  unique (event_id, user_id, role)
+);
+
+create index if not exists event_staff_roles_event_user_idx on public.event_staff_roles (event_id, user_id);
+
 create table if not exists public.event_presence (
   id text primary key,
   event_id text not null references public.events(id) on delete cascade,
@@ -115,6 +126,27 @@ create table if not exists public.event_presence (
   updated_at timestamptz not null default timezone('utc', now()),
   unique (event_id, user_id)
 );
+
+create table if not exists public.event_entry_tickets (
+  id text primary key,
+  event_id text not null references public.events(id) on delete cascade,
+  user_id text not null references public.profiles(id) on delete cascade,
+  membership_id text references public.event_members(id) on delete set null,
+  role_label text not null default 'Entrada confirmada',
+  token text not null unique,
+  ticket_code text not null unique,
+  valid_until timestamptz not null,
+  scanned_at timestamptz,
+  scanned_by_user_id text references public.profiles(id) on delete set null,
+  invalidated_at timestamptz,
+  invalidated_reason text,
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now()),
+  unique (event_id, user_id)
+);
+
+create index if not exists event_entry_tickets_event_user_idx on public.event_entry_tickets (event_id, user_id);
+create index if not exists event_entry_tickets_scanned_idx on public.event_entry_tickets (event_id, scanned_at);
 
 create table if not exists public.event_mutes (
   id text primary key,
@@ -373,7 +405,9 @@ begin
     'event_waitlist',
     'event_invites',
     'event_cohosts',
+    'event_staff_roles',
     'event_presence',
+    'event_entry_tickets',
     'event_mutes',
     'event_bans',
     'event_reports',

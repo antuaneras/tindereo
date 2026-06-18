@@ -1,4 +1,6 @@
-import type { MobileArrivalStatus, MobileEvent, MobileEventStatus } from "@/lib/mobile-types";
+import type { MobileArrivalStatus, MobileEvent, MobileEventStatus, MobileStoryMessageMode } from "@/lib/mobile-types";
+
+const STORY_MESSAGE_PREFIX = "[story:";
 
 export function buildMobileId(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 8)}-${Date.now().toString(36)}`;
@@ -116,7 +118,51 @@ export function formatRelativeMobileTime(dateIso: string) {
   return formatter.format(Math.round(hours / 24), "day");
 }
 
+export function buildStoryMessageText(storyId: string, mode: MobileStoryMessageMode, text: string) {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  return `${STORY_MESSAGE_PREFIX}${storyId}|${mode}|${encodeURIComponent(trimmed)}]`;
+}
+
+export function parseStoryMessageText(text: string) {
+  if (!text.startsWith(STORY_MESSAGE_PREFIX)) {
+    return null;
+  }
+
+  const closingIndex = text.indexOf("]");
+  if (closingIndex === -1) {
+    return null;
+  }
+
+  const metadata = text.slice(STORY_MESSAGE_PREFIX.length, closingIndex).split("|");
+  if (metadata.length < 3) {
+    return null;
+  }
+
+  const storyId = metadata[0] ?? "";
+  const mode = metadata[1] === "reaction" ? "reaction" : metadata[1] === "comment" ? "comment" : null;
+  if (!storyId || !mode) {
+    return null;
+  }
+
+  return {
+    storyId,
+    mode,
+    text: decodeURIComponent(metadata.slice(2).join("|"))
+  } as const;
+}
+
 export function getConversationPreview(body: string) {
+  const storyMessage = parseStoryMessageText(body.trim());
+  if (storyMessage) {
+    return storyMessage.mode === "reaction"
+      ? `Reacciono a una historia: ${storyMessage.text}`
+      : `Respondio a una historia: ${storyMessage.text}`;
+  }
+
   const text = body.trim();
   if (!text) {
     return "Sin mensajes";

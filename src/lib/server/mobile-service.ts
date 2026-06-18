@@ -26,6 +26,7 @@ import type {
   MobileProfileDetail,
   MobileSearchFilters,
   MobileSearchPayload,
+  MobileStoryMessageContext,
   MobileSuggestedProfile,
   MobileStory,
   MobileStoryCluster,
@@ -40,6 +41,7 @@ import {
   formatRelativeMobileTime,
   getConversationPreview,
   getEventExperienceState,
+  parseStoryMessageText,
   safeJsonArray,
   toJson,
   uniqueMobileSlug
@@ -55,11 +57,13 @@ const TABLES = {
   conversations: "conversations",
   eventBans: "event_bans",
   eventCohosts: "event_cohosts",
+  eventEntryTickets: "event_entry_tickets",
   eventInvites: "event_invites",
   eventMembers: "event_members",
   eventMutes: "event_mutes",
   eventPresence: "event_presence",
   eventReports: "event_reports",
+  eventStaffRoles: "event_staff_roles",
   eventWaitlist: "event_waitlist",
   events: "events",
   friendships: "friendships",
@@ -147,6 +151,31 @@ type EventCohostRow = {
   event_id: string;
   id: string;
   user_id: string;
+};
+
+type EventStaffRoleRow = {
+  created_at: string;
+  event_id: string;
+  id: string;
+  role: "moderator" | "scanner";
+  user_id: string;
+};
+
+type EventEntryTicketRow = {
+  created_at: string;
+  event_id: string;
+  id: string;
+  invalidated_at: string | null;
+  invalidated_reason: string | null;
+  membership_id: string | null;
+  role_label: string;
+  scanned_at: string | null;
+  scanned_by_user_id: string | null;
+  ticket_code: string;
+  token: string;
+  updated_at: string;
+  user_id: string;
+  valid_until: string;
 };
 
 type EventInviteRow = {
@@ -962,6 +991,65 @@ async function loadActiveStoriesForViewer(viewerId: string) {
   });
 }
 
+async function loadStoryMessageContexts(storyIds: string[]) {
+  const uniqueStoryIds = [...new Set(storyIds.filter(Boolean))];
+  if (uniqueStoryIds.length === 0) {
+    return new Map<string, MobileStoryMessageContext>();
+  }
+
+  const storyRows = await selectRows<StoryRow>(TABLES.stories, {
+    filters: [{ column: "id", op: "in", value: uniqueStoryIds }]
+  });
+
+  if (storyRows.length === 0) {
+    return new Map<string, MobileStoryMessageContext>();
+  }
+
+  const mediaAssetIds = storyRows.map((row) => row.media_asset_id).filter((id): id is string => Boolean(id));
+  const profileIds = [...new Set(storyRows.map((row) => row.author_id))];
+  const eventIds = [...new Set(storyRows.filter((row) => row.owner_type === "event").map((row) => row.owner_id))];
+
+  const [mediaAssets, profiles, eventRows] = await Promise.all([
+    loadMediaAssets(mediaAssetIds),
+    loadProfiles(profileIds),
+    eventIds.length
+      ? selectRows<EventRow>(TABLES.events, { filters: [{ column: "id", op: "in", value: eventIds }] })
+      : Promise.resolve([] as EventRow[])
+  ]);
+
+  const assetsById = new Map(mediaAssets.map((asset) => [asset.id, asset]));
+  const profilesById = new Map(profiles.map((profile) => [profile.id, profile]));
+  const eventsById = new Map(eventRows.map((row) => [row.id, row]));
+
+  return new Map(
+    storyRows.map((row) => {
+      const author = profilesById.get(row.author_id);
+      const ownerEvent = row.owner_type === "event" ? eventsById.get(row.owner_id) : null;
+      const ownerLabel =
+        row.owner_type === "event"
+          ? ownerEvent?.title ?? "Evento"
+          : author?.handle
+            ? `@${author.handle}`
+            : "Historia";
+
+      return [
+        row.id,
+        {
+          storyId: row.id,
+          mode: "comment",
+          text: "",
+          ownerType: row.owner_type,
+          ownerId: row.owner_id,
+          ownerLabel,
+          previewUrl: row.media_asset_id ? assetsById.get(row.media_asset_id)?.previewUrl ?? null : null,
+          caption: row.caption,
+          createdAt: row.created_at
+        } satisfies MobileStoryMessageContext
+      ];
+    })
+  );
+}
+
 async function listNotificationsForViewer(viewerId: string) {
   const rows = await selectRows<NotificationRow>(TABLES.notifications, {
     filters: [{ column: "user_id", op: "eq", value: viewerId }],
@@ -1705,6 +1793,49 @@ async function viewerCanManageEvent(viewerId: string, eventId: string) {
   return Boolean(eventRow[0] && (eventRow[0].host_id === viewerId || cohostRow[0]));
 }
 
+async function loadEventStaffRoleRows(eventId: string) {
+  return selectRows<EventStaffRoleRow>(TABLES.eventStaffRoles, {
+    filters: [{ column: "event_id", op: "eq", value: eventId }]
+  }).catch(async () => [] as EventStaffRoleRow[]);
+}
+
+async function loadEventStaffRoleRowsFromSlug(_slug: string) {
+  return selectRows<EventStaffRoleRow>(TABLES.eventStaffRoles).catch(async () => [] as EventStaffRoleRow[]);
+}
+
+async function viewerHasEventStaffRole(
+  viewerId: string,
+  eventId: string,
+  role: EventStaffRoleRow["role"]
+) {
+  const rows = await selectRows<EventStaffRoleRow>(TABLES.eventStaffRoles, {
+    filters: [
+      { column: "event_id", op: "eq", value: eventId },
+      { column: "user_id", op: "eq", value: viewerId },
+      { column: "role", op: "eq", value: role }
+    ],
+    limit: 1
+  }).catch(async () => [] as EventStaffRoleRow[]);
+
+  return Boolean(rows[0]);
+}
+
+async function viewerCanModerateEvent(viewerId: string, eventId: string) {
+  if (await viewerCanManageEvent(viewerId, eventId)) {
+    return true;
+  }
+
+  return viewerHasEventStaffRole(viewerId, eventId, "moderator");
+}
+
+async function viewerCanScanEvent(viewerId: string, eventId: string) {
+  if (await viewerCanManageEvent(viewerId, eventId)) {
+    return true;
+  }
+
+  return viewerHasEventStaffRole(viewerId, eventId, "scanner");
+}
+
 async function viewerCanInviteToEvent(viewerId: string, eventId: string) {
   const [eventRows, cohostRows, membershipRows] = await Promise.all([
     selectRows<EventRow>(TABLES.events, {
@@ -2033,14 +2164,62 @@ export async function addEventCohost(viewerId: string, eventId: string, targetUs
   publishMobileRealtimeEvent({ type: "event", eventId, viewerId });
 }
 
+export async function setEventMemberStaffRoles(
+  viewerId: string,
+  eventId: string,
+  targetUserId: string,
+  roles: Array<"moderator" | "scanner">
+) {
+  const canManage = await viewerCanManageEvent(viewerId, eventId);
+  if (!canManage) {
+    throw new Error("No puedes cambiar los roles de staff.");
+  }
+
+  const normalizedRoles = [...new Set(roles.filter((role) => role === "moderator" || role === "scanner"))];
+  const membershipRows = await selectRows<EventMemberRow>(TABLES.eventMembers, {
+    filters: [
+      { column: "event_id", op: "eq", value: eventId },
+      { column: "user_id", op: "eq", value: targetUserId }
+    ],
+    limit: 1
+  });
+
+  if (!membershipRows[0] || membershipRows[0].status !== "approved") {
+    throw new Error("Solo puedes dar roles a personas que ya estan dentro.");
+  }
+
+  await deleteRows(TABLES.eventStaffRoles, [
+    { column: "event_id", op: "eq", value: eventId },
+    { column: "user_id", op: "eq", value: targetUserId }
+  ]).catch(async () => undefined);
+
+  if (normalizedRoles.length > 0) {
+    const now = new Date().toISOString();
+    await insertRows(
+      TABLES.eventStaffRoles,
+      normalizedRoles.map((role) => ({
+        id: buildMobileId("staff-role"),
+        event_id: eventId,
+        user_id: targetUserId,
+        role,
+        created_at: now
+      })),
+      { returning: "minimal" }
+    );
+  }
+
+  publishMobileRealtimeEvent({ type: "event", eventId, viewerId });
+  publishMobileRealtimeEvent({ type: "event", eventId, viewerId: targetUserId });
+}
+
 export async function moderateEventMember(
   viewerId: string,
   eventId: string,
   targetUserId: string,
   action: MobileModerationAction
 ) {
-  const canManage = await viewerCanManageEvent(viewerId, eventId);
-  if (!canManage) {
+  const canModerate = await viewerCanModerateEvent(viewerId, eventId);
+  if (!canModerate) {
     throw new Error("No puedes moderar este evento.");
   }
 
@@ -2166,6 +2345,27 @@ function parseCheckInToken(token: string) {
   };
 }
 
+function parseEventAccessTicketToken(token: string) {
+  const [prefix, eventId, viewerId, ticketId, issuedAt, expiresAt, signature] = token.split(".");
+  if (prefix !== "ticket" || !eventId || !viewerId || !ticketId || !issuedAt || !expiresAt || !signature) {
+    throw new Error("QR invalido.");
+  }
+
+  const payload = `${prefix}.${eventId}.${viewerId}.${ticketId}.${issuedAt}.${expiresAt}`;
+  const expectedSignature = createHmac("sha256", getCheckInSecret()).update(payload).digest("hex");
+  if (signature !== expectedSignature) {
+    throw new Error("QR invalido.");
+  }
+
+  return {
+    eventId,
+    viewerId,
+    ticketId,
+    issuedAt: Number(issuedAt),
+    expiresAt: Number(expiresAt)
+  };
+}
+
 export async function getEventCheckInToken(viewerId: string, eventId: string) {
   const canManage = await viewerCanManageEvent(viewerId, eventId);
   if (!canManage) {
@@ -2198,7 +2398,7 @@ export async function getEventCheckInToken(viewerId: string, eventId: string) {
 }
 
 export async function getEventAccessTicket(viewerId: string, eventId: string): Promise<MobileEventTicket> {
-  const [eventRows, membershipRows, cohostRows, viewerProfiles] = await Promise.all([
+  const [eventRows, membershipRows, cohostRows, viewerProfiles, existingTicketRows] = await Promise.all([
     selectRows<EventRow>(TABLES.events, {
       filters: [{ column: "id", op: "eq", value: eventId }],
       limit: 1
@@ -2217,7 +2417,14 @@ export async function getEventAccessTicket(viewerId: string, eventId: string): P
       ],
       limit: 1
     }),
-    loadProfiles([viewerId])
+    loadProfiles([viewerId]),
+    selectRows<EventEntryTicketRow>(TABLES.eventEntryTickets, {
+      filters: [
+        { column: "event_id", op: "eq", value: eventId },
+        { column: "user_id", op: "eq", value: viewerId }
+      ],
+      limit: 1
+    })
   ]);
 
   const eventRow = eventRows[0];
@@ -2237,73 +2444,241 @@ export async function getEventAccessTicket(viewerId: string, eventId: string): P
   const expiresAtMs = Number.isFinite(new Date(eventRow.ends_at).getTime())
     ? new Date(eventRow.ends_at).getTime()
     : fallbackEndAt;
-  const token = createEventAccessTicketToken(
-    eventId,
-    viewerId,
-    membership?.id ?? (isStaff ? `staff-${viewerId}` : viewerId),
-    expiresAtMs
-  );
+  const roleLabel = isStaff ? "Staff" : "Entrada confirmada";
+  let ticketRow: EventEntryTicketRow | null = existingTicketRows[0] ?? null;
+
+  if (!ticketRow) {
+    const ticketId = buildMobileId("ticket");
+    const token = createEventAccessTicketToken(eventId, viewerId, ticketId, expiresAtMs);
+    ticketRow = await insertRow<EventEntryTicketRow, EventEntryTicketRow>(TABLES.eventEntryTickets, {
+      id: ticketId,
+      event_id: eventId,
+      user_id: viewerId,
+      membership_id: membership?.id ?? null,
+      role_label: roleLabel,
+      token,
+      ticket_code: `TDR-${eventRow.slug.slice(0, 3).toUpperCase()}-${ticketId.slice(-6).toUpperCase()}`,
+      valid_until: new Date(Math.max(Date.now() + 1000 * 60 * 30, expiresAtMs)).toISOString(),
+      scanned_at: null,
+      scanned_by_user_id: null,
+      invalidated_at: null,
+      invalidated_reason: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    });
+  } else if (ticketRow.role_label !== roleLabel || ticketRow.membership_id !== (membership?.id ?? null)) {
+    const patchedRows = await patchRows<EventEntryTicketRow>(
+      TABLES.eventEntryTickets,
+      [{ column: "id", op: "eq", value: ticketRow.id }],
+      {
+        role_label: roleLabel,
+        membership_id: membership?.id ?? null,
+        updated_at: new Date().toISOString()
+      }
+    );
+    ticketRow = patchedRows[0] ?? ticketRow;
+  }
+
+  if (!ticketRow) {
+    throw new Error("No se pudo preparar la entrada.");
+  }
+
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "";
   const shareUrl = `${appUrl}/evento/${eventRow.slug}`;
-  const qrTarget = `${shareUrl}?entry=${encodeURIComponent(token)}`;
+  const qrTarget = `${shareUrl}?entry=${encodeURIComponent(ticketRow.token)}`;
   const viewerProfile = viewerProfiles[0] ?? null;
   const holderLabel = viewerProfile?.handle ? `@${viewerProfile.handle}` : "Mi entrada";
+  const scannerProfiles =
+    ticketRow.scanned_by_user_id ? await loadProfiles([ticketRow.scanned_by_user_id]) : [];
+  const scannedByProfile = scannerProfiles[0] ?? null;
+  const ticketStatus =
+    ticketRow.invalidated_at
+      ? "invalid"
+      : ticketRow.scanned_at
+        ? "used"
+        : new Date(ticketRow.valid_until).getTime() < Date.now()
+          ? "expired"
+          : "active";
 
   return {
-    token,
-    ticketCode: `TDR-${eventRow.slug.slice(0, 3).toUpperCase()}-${token.slice(-6).toUpperCase()}`,
+    token: ticketRow.token,
+    ticketCode: ticketRow.ticket_code,
     qrImageUrl: `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(qrTarget)}`,
     shareUrl,
-    validUntil: new Date(Math.max(Date.now() + 1000 * 60 * 30, expiresAtMs)).toISOString(),
+    validUntil: ticketRow.valid_until,
     holderLabel,
-    roleLabel: isStaff ? "Staff" : "Entrada confirmada"
+    roleLabel: ticketRow.role_label,
+    status: ticketStatus,
+    scannedAt: ticketRow.scanned_at,
+    scannedByHandle: scannedByProfile?.handle ? `@${scannedByProfile.handle}` : null,
+    invalidReason: ticketRow.invalidated_reason
   };
 }
 
-export async function checkInToEvent(viewerId: string, token: string) {
-  const parsed = parseCheckInToken(token);
-  const [membershipRows, banRows] = await Promise.all([
-    selectRows<EventMemberRow>(TABLES.eventMembers, {
-      filters: [
-        { column: "event_id", op: "eq", value: parsed.eventId },
-        { column: "user_id", op: "eq", value: viewerId }
-      ],
-      limit: 1
-    }),
-    selectRows(TABLES.eventBans, {
-      filters: [
-        { column: "event_id", op: "eq", value: parsed.eventId },
-        { column: "user_id", op: "eq", value: viewerId }
-      ],
-      limit: 1
-    })
-  ]);
+export async function checkInToEvent(viewerId: string, token: string, expectedEventId?: string | null) {
+  try {
+    const parsedTicket = parseEventAccessTicketToken(token);
+    if (expectedEventId && parsedTicket.eventId !== expectedEventId) {
+      throw new Error("Ese QR pertenece a otro evento.");
+    }
+    const canScan = await viewerCanScanEvent(viewerId, parsedTicket.eventId);
+    if (!canScan) {
+      throw new Error("No puedes escanear accesos en este evento.");
+    }
 
-  if (banRows[0]) {
-    throw new Error("No puedes hacer check-in en este evento.");
-  }
+    const [ticketRows, membershipRows, banRows, attendeeProfiles] = await Promise.all([
+      selectRows<EventEntryTicketRow>(TABLES.eventEntryTickets, {
+        filters: [
+          { column: "id", op: "eq", value: parsedTicket.ticketId },
+          { column: "event_id", op: "eq", value: parsedTicket.eventId },
+          { column: "user_id", op: "eq", value: parsedTicket.viewerId }
+        ],
+        limit: 1
+      }),
+      selectRows<EventMemberRow>(TABLES.eventMembers, {
+        filters: [
+          { column: "event_id", op: "eq", value: parsedTicket.eventId },
+          { column: "user_id", op: "eq", value: parsedTicket.viewerId }
+        ],
+        limit: 1
+      }),
+      selectRows(TABLES.eventBans, {
+        filters: [
+          { column: "event_id", op: "eq", value: parsedTicket.eventId },
+          { column: "user_id", op: "eq", value: parsedTicket.viewerId }
+        ],
+        limit: 1
+      }),
+      loadProfiles([parsedTicket.viewerId])
+    ]);
 
-  const membership = membershipRows[0];
-  if (!membership || membership.status !== "approved") {
-    throw new Error("Solo puede hacer check-in gente aprobada.");
-  }
+    const ticketRow = ticketRows[0];
+    if (!ticketRow || ticketRow.token !== token) {
+      throw new Error("Esta entrada ya no es valida.");
+    }
 
-  const now = new Date().toISOString();
-  await patchRows(
-    TABLES.eventPresence,
-    [
-      { column: "event_id", op: "eq", value: parsed.eventId },
-      { column: "user_id", op: "eq", value: viewerId }
-    ],
-    {
+    if (ticketRow.invalidated_at) {
+      throw new Error(ticketRow.invalidated_reason || "Esta entrada ya no es valida.");
+    }
+
+    if (ticketRow.scanned_at) {
+      throw new Error("Esta entrada ya fue escaneada.");
+    }
+
+    if (new Date(ticketRow.valid_until).getTime() < Date.now() || parsedTicket.expiresAt < Date.now()) {
+      throw new Error("Esta entrada ha caducado.");
+    }
+
+    if (banRows[0]) {
+      throw new Error("Esta persona no puede hacer check-in en este evento.");
+    }
+
+    const membership = membershipRows[0];
+    if (!membership || membership.status !== "approved") {
+      throw new Error("Solo puede hacer check-in gente aprobada.");
+    }
+
+    const now = new Date().toISOString();
+    await insertRow(TABLES.eventPresence, {
+      id: buildMobileId("presence"),
+      event_id: parsedTicket.eventId,
+      user_id: parsedTicket.viewerId,
       arrival_status: "inside",
       checked_in_at: now,
-      checked_in_by_user_id: parsed.issuedByUserId,
+      checked_in_by_user_id: viewerId,
+      created_at: now,
       updated_at: now
+    }, {
+      onConflict: "event_id,user_id",
+      returning: "minimal"
+    });
+    await patchRows(
+      TABLES.eventPresence,
+      [
+        { column: "event_id", op: "eq", value: parsedTicket.eventId },
+        { column: "user_id", op: "eq", value: parsedTicket.viewerId }
+      ],
+      {
+        arrival_status: "inside",
+        checked_in_at: now,
+        checked_in_by_user_id: viewerId,
+        updated_at: now
+      }
+    );
+    await patchRows(
+      TABLES.eventEntryTickets,
+      [{ column: "id", op: "eq", value: ticketRow.id }],
+      {
+        scanned_at: now,
+        scanned_by_user_id: viewerId,
+        updated_at: now
+      }
+    );
+
+    const attendee = attendeeProfiles[0];
+    publishMobileRealtimeEvent({ type: "event", eventId: parsedTicket.eventId, viewerId });
+    publishMobileRealtimeEvent({ type: "event", eventId: parsedTicket.eventId, viewerId: parsedTicket.viewerId });
+    return {
+      eventId: parsedTicket.eventId,
+      attendeeHandle: attendee?.handle ? `@${attendee.handle}` : "Entrada validada",
+      ticketStatus: "used"
+    };
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== "QR invalido.") {
+      throw error;
     }
-  );
-  publishMobileRealtimeEvent({ type: "event", eventId: parsed.eventId, viewerId });
-  return parsed.eventId;
+
+    const parsed = parseCheckInToken(token);
+    if (expectedEventId && parsed.eventId !== expectedEventId) {
+      throw new Error("Ese QR pertenece a otro evento.");
+    }
+    const [membershipRows, banRows] = await Promise.all([
+      selectRows<EventMemberRow>(TABLES.eventMembers, {
+        filters: [
+          { column: "event_id", op: "eq", value: parsed.eventId },
+          { column: "user_id", op: "eq", value: viewerId }
+        ],
+        limit: 1
+      }),
+      selectRows(TABLES.eventBans, {
+        filters: [
+          { column: "event_id", op: "eq", value: parsed.eventId },
+          { column: "user_id", op: "eq", value: viewerId }
+        ],
+        limit: 1
+      })
+    ]);
+
+    if (banRows[0]) {
+      throw new Error("No puedes hacer check-in en este evento.");
+    }
+
+    const membership = membershipRows[0];
+    if (!membership || membership.status !== "approved") {
+      throw new Error("Solo puede hacer check-in gente aprobada.");
+    }
+
+    const now = new Date().toISOString();
+    await patchRows(
+      TABLES.eventPresence,
+      [
+        { column: "event_id", op: "eq", value: parsed.eventId },
+        { column: "user_id", op: "eq", value: viewerId }
+      ],
+      {
+        arrival_status: "inside",
+        checked_in_at: now,
+        checked_in_by_user_id: parsed.issuedByUserId,
+        updated_at: now
+      }
+    );
+    publishMobileRealtimeEvent({ type: "event", eventId: parsed.eventId, viewerId });
+    return {
+      eventId: parsed.eventId,
+      attendeeHandle: "Check-in completado",
+      ticketStatus: "legacy"
+    };
+  }
 }
 
 async function canViewerWriteConversation(viewerId: string, conversation: ConversationRow) {
@@ -2341,7 +2716,10 @@ export async function sendMobileMessage(viewerId: string, input: SendMobileMessa
     throw new Error("No puedes escribir en este chat.");
   }
 
-  if (!input.body.trim() && !input.media) {
+  const normalizedBody = input.body.trim();
+  const storyMessage = normalizedBody ? parseStoryMessageText(normalizedBody) : null;
+
+  if (!normalizedBody && !input.media) {
     throw new Error("Escribe algo antes de enviar.");
   }
 
@@ -2362,7 +2740,7 @@ export async function sendMobileMessage(viewerId: string, input: SendMobileMessa
     id: buildMobileId("message"),
     conversation_id: input.conversationId,
     author_id: viewerId,
-    body: input.body.trim(),
+    body: normalizedBody,
     kind: input.media ? "media" : input.kind ?? "text",
     created_at: now,
     media_asset_id: mediaAssetId,
@@ -2404,11 +2782,25 @@ export async function sendMobileMessage(viewerId: string, input: SendMobileMessa
   await notifyUsers(
     otherUserIds,
     {
-      kind: "message",
-      title: "Mensaje nuevo",
-      body: input.body.trim() || "Te han enviado una foto",
+      kind: storyMessage ? (storyMessage.mode === "reaction" ? "story-reaction" : "story-reply") : "message",
+      title: storyMessage
+        ? storyMessage.mode === "reaction"
+          ? "Nueva reaccion a una historia"
+          : "Nueva respuesta a una historia"
+        : "Mensaje nuevo",
+      body:
+        storyMessage?.text ||
+        normalizedBody ||
+        "Te han enviado una foto",
       entityType: "conversation",
-      entityId: input.conversationId
+      entityId: input.conversationId,
+      data: storyMessage
+        ? {
+            storyId: storyMessage.storyId,
+            conversationId: input.conversationId,
+            mode: storyMessage.mode
+          }
+        : { conversationId: input.conversationId }
     }
   );
 
@@ -2505,7 +2897,12 @@ export async function getMobileConversationDetail(viewerId: string, conversation
   }
 
   const participantIds = memberRows.map((row) => row.user_id);
-  const [profiles, eventRows, mediaAssets] = await Promise.all([
+  const parsedStoryMessages = new Map(
+    messageRows
+      .map((row) => [row.id, parseStoryMessageText(row.body)] as const)
+      .filter((entry): entry is readonly [string, NonNullable<ReturnType<typeof parseStoryMessageText>>] => Boolean(entry[1]))
+  );
+  const [profiles, eventRows, mediaAssets, storyContexts] = await Promise.all([
     loadProfiles(participantIds),
     conversation.event_id
       ? selectRows<EventRow>(TABLES.events, {
@@ -2513,7 +2910,8 @@ export async function getMobileConversationDetail(viewerId: string, conversation
           limit: 1
         })
       : Promise.resolve([]),
-    loadMediaAssets(messageRows.map((row) => row.media_asset_id).filter((id): id is string => Boolean(id)))
+    loadMediaAssets(messageRows.map((row) => row.media_asset_id).filter((id): id is string => Boolean(id))),
+    loadStoryMessageContexts([...parsedStoryMessages.values()].map((item) => item.storyId))
   ]);
   const profilesById = new Map(profiles.map((profile) => [profile.id, profile]));
   const assetsById = new Map(mediaAssets.map((asset) => [asset.id, asset]));
@@ -2552,12 +2950,27 @@ export async function getMobileConversationDetail(viewerId: string, conversation
           : receipts.every((receipt) => receipt.deliveredAt)
             ? "delivered"
             : "sent";
+    const parsedStoryMessage = parsedStoryMessages.get(row.id) ?? null;
+    const baseStoryContext = parsedStoryMessage ? storyContexts.get(parsedStoryMessage.storyId) ?? null : null;
+    const storyContext = baseStoryContext && parsedStoryMessage
+      ? {
+          ...baseStoryContext,
+          mode: parsedStoryMessage.mode,
+          text: parsedStoryMessage.text
+        }
+      : null;
+    const body =
+      row.deleted_for_everyone
+        ? "Este mensaje ha sido borrado"
+        : parsedStoryMessage
+          ? parsedStoryMessage.text
+          : row.body;
 
     return {
       id: row.id,
       conversationId: row.conversation_id,
       authorId: row.author_id,
-      body: row.deleted_for_everyone ? "Este mensaje ha sido borrado" : row.body,
+      body,
       kind: row.kind,
       createdAt: row.created_at,
       threadRootId: row.thread_root_id,
@@ -2566,7 +2979,8 @@ export async function getMobileConversationDetail(viewerId: string, conversation
       deletedForEveryone: row.deleted_for_everyone,
       ephemeralExpiresAt: row.ephemeral_expires_at,
       deliveryStatus,
-      receipts
+      receipts,
+      storyContext
     };
   });
 
@@ -2768,7 +3182,7 @@ export async function markStoryViewed(viewerId: string, storyId: string) {
 }
 
 export async function getMobileEventDetail(viewerId: string, slug: string): Promise<MobileEventDetail> {
-  const [eventRows, memberRows, presenceRows, cohostRows, postRows, storyRows, inviteRows, muteRows, banRows] = await Promise.all([
+  const [eventRows, memberRows, presenceRows, cohostRows, postRows, storyRows, inviteRows, muteRows, banRows, staffRoleRows] = await Promise.all([
     selectRows<EventRow>(TABLES.events, {
       filters: [{ column: "slug", op: "eq", value: slug }],
       limit: 1
@@ -2786,7 +3200,8 @@ export async function getMobileEventDetail(viewerId: string, slug: string): Prom
     ),
     selectRows<{ event_id: string; user_id: string }>(TABLES.eventBans).catch(
       async () => [] as Array<{ event_id: string; user_id: string }>
-    )
+    ),
+    loadEventStaffRoleRowsFromSlug(slug)
   ]);
 
   const eventRow = eventRows[0];
@@ -2802,9 +3217,22 @@ export async function getMobileEventDetail(viewerId: string, slug: string): Prom
   const event = mapEvent(eventRow, eventMemberships, eventPresences);
   const myMembership = eventMemberships.find((member) => member.user_id === viewerId) ?? null;
   const cohostIds = new Set(cohostRows.filter((row) => row.event_id === event.id).map((row) => row.user_id));
-  const isStaff = event.hostId === viewerId || cohostIds.has(viewerId);
+  const eventStaffRoleRows = staffRoleRows.filter((row) => row.event_id === event.id);
+  const staffRolesByUserId = new Map<string, Array<"moderator" | "scanner">>();
+  for (const row of eventStaffRoleRows) {
+    const current = staffRolesByUserId.get(row.user_id) ?? [];
+    if (!current.includes(row.role)) {
+      current.push(row.role);
+    }
+    staffRolesByUserId.set(row.user_id, current);
+  }
+  const viewerStaffRoles = staffRolesByUserId.get(viewerId) ?? [];
+  const canManage = event.hostId === viewerId || cohostIds.has(viewerId);
+  const canModerateMembers = canManage || viewerStaffRoles.includes("moderator");
+  const canScan = canManage || viewerStaffRoles.includes("scanner");
+  const isStaff = canManage || canModerateMembers || canScan;
   const isApproved = myMembership?.status === "approved" || isStaff;
-  const canInviteFriends = isStaff || myMembership?.status === "approved";
+  const canInviteFriends = canManage || myMembership?.status === "approved";
   const approvedMemberIds = new Set(
     eventMemberships.filter((member) => member.status === "approved").map((member) => member.user_id)
   );
@@ -2871,7 +3299,8 @@ export async function getMobileEventDetail(viewerId: string, slug: string): Prom
       return {
         profile,
         membership: mapMember(membership, eventPresences.find((presence) => presence.user_id === membership.user_id)),
-        isCohost: cohostIds.has(membership.user_id)
+        isCohost: cohostIds.has(membership.user_id),
+        staffRoles: staffRolesByUserId.get(membership.user_id) ?? []
       };
     })
     .filter((participant): participant is MobileEventParticipant => Boolean(participant));
@@ -2892,6 +3321,9 @@ export async function getMobileEventDetail(viewerId: string, slug: string): Prom
     invites: mappedInvites,
     inviteCandidates,
     canInviteFriends,
+    canManage,
+    canModerateMembers,
+    canScan,
     mutedUserIds: eventMuteRows.map((row) => row.user_id),
     bannedUserIds: eventBanRows.map((row) => row.user_id),
     stories: eventStories,
