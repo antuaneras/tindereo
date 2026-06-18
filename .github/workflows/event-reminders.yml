@@ -8,21 +8,40 @@ on:
 jobs:
   reminders:
     runs-on: ubuntu-latest
+    env:
+      DEFAULT_RENDER_PING_URL: https://tindereo.onrender.com
     steps:
-      - name: Trigger reminder job
+      - name: Resolve app URL
+        id: app-url
         env:
-          APP_URL: ${{ secrets.RENDER_PING_URL }}
-          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          RENDER_PING_URL: ${{ secrets.RENDER_PING_URL }}
         run: |
-          if [ -z "$APP_URL" ]; then
-            echo "Falta RENDER_PING_URL"
-            exit 1
+          if [ -n "$RENDER_PING_URL" ]; then
+            echo "url=$RENDER_PING_URL" >> "$GITHUB_OUTPUT"
+            echo "Usando URL definida en secret."
+          else
+            echo "url=$DEFAULT_RENDER_PING_URL" >> "$GITHUB_OUTPUT"
+            echo "Usando URL por defecto: $DEFAULT_RENDER_PING_URL"
           fi
 
-          curl --fail --silent --show-error \
-            --max-time 30 \
-            --retry 3 \
-            --retry-delay 5 \
-            -X POST \
-            -H "x-cron-secret: $CRON_SECRET" \
-            "$APP_URL/api/mobile/jobs/event-reminders"
+      - name: Trigger reminder job
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -n "$CRON_SECRET" ]; then
+            curl --fail --silent --show-error \
+              --max-time 30 \
+              --retry 3 \
+              --retry-delay 5 \
+              -X POST \
+              -H "x-cron-secret: $CRON_SECRET" \
+              "${{ steps.app-url.outputs.url }}/api/mobile/jobs/event-reminders"
+          else
+            echo "CRON_SECRET no definido en GitHub. Enviando sin cabecera."
+            curl --fail --silent --show-error \
+              --max-time 30 \
+              --retry 3 \
+              --retry-delay 5 \
+              -X POST \
+              "${{ steps.app-url.outputs.url }}/api/mobile/jobs/event-reminders"
+          fi

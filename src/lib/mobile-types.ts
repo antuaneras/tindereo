@@ -81,6 +81,7 @@ export interface MobileStory {
   expiresAt: string;
   viewCount: number;
   hasSeen: boolean;
+  viewers: MobileStoryViewer[];
 }
 
 export interface MobileStoryCluster {
@@ -90,6 +91,14 @@ export interface MobileStoryCluster {
   ownerAvatarUrl: string | null;
   unseenCount: number;
   stories: MobileStory[];
+}
+
+export interface MobileStoryViewer {
+  id: string;
+  handle: string;
+  displayName: string;
+  avatarUrl: string | null;
+  seenAt: string;
 }
 
 export interface MobilePostComment {

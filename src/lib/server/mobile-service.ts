@@ -759,6 +759,19 @@ async function loadActiveStoriesForViewer(viewerId: string) {
   const eventsById = new Map(eventRows.map((row) => [row.id, row]));
 
   const stories = storyRows.map((row): MobileStory => ({
+    viewers: storyViews
+      .filter((view) => view.story_id === row.id)
+      .sort((left, right) => right.seen_at.localeCompare(left.seen_at))
+      .map((view) => {
+        const profile = profilesById.get(view.user_id);
+        return {
+          id: view.user_id,
+          handle: profile?.handle ?? "usuario",
+          displayName: profile?.displayName ?? profile?.handle ?? "Usuario",
+          avatarUrl: profile?.avatarUrl ?? null,
+          seenAt: view.seen_at
+        };
+      }),
     id: row.id,
     ownerType: row.owner_type,
     ownerId: row.owner_id,

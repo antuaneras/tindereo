@@ -84,12 +84,15 @@ function EventTicketPreview({
   onCalendar: () => void;
   onShare: () => Promise<void>;
 }) {
+  const [qrFocusOpen, setQrFocusOpen] = useState(false);
+
   return (
-    <div className="fixed inset-0 z-[70] bg-black/65 px-4 py-[calc(1rem+env(safe-area-inset-top))]" onClick={onClose}>
-      <div
-        className="mx-auto flex h-full w-full max-w-[480px] flex-col overflow-hidden rounded-[2rem] bg-[var(--bg-main)] shadow-2xl"
-        onClick={(eventMouse) => eventMouse.stopPropagation()}
-      >
+    <>
+      <div className="fixed inset-0 z-[70] bg-black/65 px-4 py-[calc(1rem+env(safe-area-inset-top))]" onClick={onClose}>
+        <div
+          className="mx-auto flex h-full w-full max-w-[480px] flex-col overflow-hidden rounded-[2rem] bg-[var(--bg-main)] shadow-2xl"
+          onClick={(eventMouse) => eventMouse.stopPropagation()}
+        >
         <div className="relative min-h-[240px] overflow-hidden bg-[var(--text-main)]">
           {event.coverImage ? (
             // eslint-disable-next-line @next/next/no-img-element
@@ -123,13 +126,18 @@ function EventTicketPreview({
               </div>
             </div>
 
-            <div className="mt-5 rounded-[1.8rem] bg-[var(--bg-soft)] p-4">
+            <button
+              type="button"
+              onClick={() => setQrFocusOpen(true)}
+              className="mt-5 block w-full rounded-[1.8rem] bg-[var(--bg-soft)] p-4"
+            >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={ticket.qrImageUrl} alt="QR de entrada" className="mx-auto h-56 w-56 rounded-[1.5rem] bg-white p-3" />
               <div className="mt-3 text-center text-xs text-[var(--text-soft)]">
                 Valida hasta {formatMobileDateTime(ticket.validUntil)}
               </div>
-            </div>
+              <div className="mt-2 text-center text-xs font-semibold text-[var(--coral)]">Tocar para ampliar QR</div>
+            </button>
           </div>
 
           <div className="mt-4 grid grid-cols-3 gap-3">
@@ -148,7 +156,33 @@ function EventTicketPreview({
           </div>
         </div>
       </div>
-    </div>
+      </div>
+
+      {qrFocusOpen ? (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/92 px-5" onClick={() => setQrFocusOpen(false)}>
+          <div
+            className="w-full max-w-[420px] rounded-[2rem] bg-white p-6 text-center"
+            onClick={(eventMouse) => eventMouse.stopPropagation()}
+          >
+            <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-soft)]">{ticket.roleLabel}</div>
+            <div className="mt-2 text-2xl font-black tracking-[-0.04em]">{event.title}</div>
+            <div className="mt-1 text-sm text-[var(--text-soft)]">{ticket.ticketCode}</div>
+            <div className="mt-5 rounded-[1.8rem] bg-[var(--bg-soft)] p-4">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={ticket.qrImageUrl} alt="QR ampliado de entrada" className="mx-auto h-[78vw] max-h-[320px] w-[78vw] max-w-[320px] rounded-[1.5rem] bg-white p-3" />
+            </div>
+            <div className="mt-4 text-xs text-[var(--text-soft)]">Valida hasta {formatMobileDateTime(ticket.validUntil)}</div>
+            <button
+              type="button"
+              onClick={() => setQrFocusOpen(false)}
+              className="mt-5 rounded-full bg-[var(--text-main)] px-5 py-3 text-sm font-semibold text-white"
+            >
+              Cerrar
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 

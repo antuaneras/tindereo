@@ -65,6 +65,7 @@ export function MobileStoryOverlay({
   const [isHolding, setIsHolding] = useState(false);
   const [dismissOffsetY, setDismissOffsetY] = useState(0);
   const [isVideoMuted, setIsVideoMuted] = useState(true);
+  const [viewersOpen, setViewersOpen] = useState(false);
 
   const progressFrameRef = useRef<number | null>(null);
   const elapsedMsRef = useRef(0);
@@ -82,7 +83,7 @@ export function MobileStoryOverlay({
 
   const activeCluster = normalizedClusters[activeClusterIndex] ?? null;
   const activeStory = activeCluster?.stories[storyIndex] ?? null;
-  const isPaused = isHolding || isReplyFocused || isSendingReply;
+  const isPaused = isHolding || isReplyFocused || isSendingReply || viewersOpen;
   const canReply = Boolean(activeStory && activeStory.authorId !== viewer.id);
   const isActiveStoryVideo = Boolean(activeStory?.media?.mimeType?.startsWith("video/"));
 
@@ -151,6 +152,7 @@ export function MobileStoryOverlay({
     setReplyError(null);
     setIsReplyFocused(false);
     setDismissOffsetY(0);
+    setViewersOpen(false);
     elapsedMsRef.current = 0;
     lastFrameAtRef.current = null;
     if (activeStory) {
@@ -437,9 +439,13 @@ export function MobileStoryOverlay({
               </button>
             ) : null}
             {showOwnStoryStats && activeStory.authorId === viewer.id ? (
-              <div className="rounded-full bg-black/35 px-3 py-2 text-xs font-semibold text-white">
+              <button
+                type="button"
+                onClick={() => setViewersOpen((current) => !current)}
+                className="rounded-full bg-black/35 px-3 py-2 text-xs font-semibold text-white"
+              >
                 {activeStory.viewCount} vista{activeStory.viewCount === 1 ? "" : "s"}
-              </div>
+              </button>
             ) : null}
             <button
               type="button"
@@ -525,6 +531,56 @@ export function MobileStoryOverlay({
               </button>
             </div>
             {replyError ? <p className="mt-2 px-1 text-xs text-[#ffd1c4]">{replyError}</p> : null}
+          </div>
+        ) : null}
+
+        {showOwnStoryStats && activeStory.authorId === viewer.id && viewersOpen ? (
+          <div
+            data-story-ui="true"
+            className="absolute inset-0 z-30 flex items-end bg-black/42"
+            onClick={() => setViewersOpen(false)}
+          >
+            <div
+              className="w-full rounded-t-[2rem] bg-[#120d0a] px-5 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-4 text-white"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="mx-auto h-1.5 w-12 rounded-full bg-white/18" />
+              <div className="mt-4 flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-semibold">Vistas</div>
+                  <div className="text-xs text-white/65">
+                    {activeStory.viewCount} persona{activeStory.viewCount === 1 ? "" : "s"}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setViewersOpen(false)}
+                  className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="mt-4 max-h-[38dvh] space-y-3 overflow-y-auto pb-2">
+                {activeStory.viewers.length ? (
+                  activeStory.viewers.map((storyViewer) => (
+                    <div key={`${storyViewer.id}-${storyViewer.seenAt}`} className="flex items-center gap-3">
+                      <StoryAvatar src={storyViewer.avatarUrl} label={`@${storyViewer.handle}`} />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-semibold">@{storyViewer.handle}</div>
+                        <div className="truncate text-xs text-white/65">
+                          {storyViewer.displayName} · {formatRelativeMobileTime(storyViewer.seenAt)}
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-[1.4rem] border border-white/10 bg-white/5 px-4 py-4 text-sm text-white/68">
+                    Todavia nadie ha visto esta historia.
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         ) : null}
       </div>
