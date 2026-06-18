@@ -70,6 +70,8 @@ export function MobileStoryOverlay({
   const [viewersOpen, setViewersOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [isDeletingStory, setIsDeletingStory] = useState(false);
+  const [viewportHeight, setViewportHeight] = useState<number | null>(null);
+  const [browserBottomInset, setBrowserBottomInset] = useState(0);
 
   const progressFrameRef = useRef<number | null>(null);
   const elapsedMsRef = useRef(0);
@@ -188,6 +190,35 @@ export function MobileStoryOverlay({
       document.documentElement.style.overflow = previousHtmlOverflow;
       document.body.style.overscrollBehavior = previousBodyOverscroll;
       document.documentElement.style.overscrollBehavior = previousHtmlOverscroll;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const updateViewportMetrics = () => {
+      const nextViewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      const layoutHeight = window.innerHeight;
+      const nextBottomInset = Math.max(
+        0,
+        Math.round(layoutHeight - nextViewportHeight - (window.visualViewport?.offsetTop ?? 0))
+      );
+
+      setViewportHeight(Math.round(nextViewportHeight));
+      setBrowserBottomInset(nextBottomInset);
+    };
+
+    updateViewportMetrics();
+    window.visualViewport?.addEventListener("resize", updateViewportMetrics);
+    window.visualViewport?.addEventListener("scroll", updateViewportMetrics);
+    window.addEventListener("resize", updateViewportMetrics);
+
+    return () => {
+      window.visualViewport?.removeEventListener("resize", updateViewportMetrics);
+      window.visualViewport?.removeEventListener("scroll", updateViewportMetrics);
+      window.removeEventListener("resize", updateViewportMetrics);
     };
   }, []);
 
@@ -325,13 +356,13 @@ export function MobileStoryOverlay({
       className="fixed inset-0 z-[120]"
       style={{
         backgroundColor: `rgba(0, 0, 0, ${Math.max(0.22, 1 - dismissProgress * 0.82)})`,
-        overscrollBehavior: "none",
-        touchAction: "none"
+        overscrollBehavior: "none"
       }}
     >
       <div
         className="relative flex h-[100dvh] w-full flex-col overflow-hidden bg-black"
         style={{
+          height: viewportHeight ? `${viewportHeight}px` : "100dvh",
           transform: dismissOffsetY
             ? `translate3d(0, ${dismissOffsetY}px, 0) scale(${1 - dismissProgress * 0.06})`
             : undefined,
@@ -438,8 +469,8 @@ export function MobileStoryOverlay({
           }}
         />
 
-        <div className="absolute inset-x-0 top-0 z-20 flex items-center justify-between px-4 pt-[calc(1rem+env(safe-area-inset-top)+0.75rem)]">
-          <div data-story-ui="true" className="flex items-center gap-3">
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center justify-between px-4 pt-[calc(1rem+env(safe-area-inset-top)+0.75rem)]">
+          <div data-story-ui="true" className="pointer-events-auto flex items-center gap-3">
             <StoryAvatar src={activeCluster.ownerAvatarUrl} label={activeCluster.ownerLabel} />
             <div className="text-white">
               <div className="text-sm font-semibold">{activeCluster.ownerLabel}</div>
@@ -447,12 +478,13 @@ export function MobileStoryOverlay({
             </div>
           </div>
 
-          <div data-story-ui="true" className="flex items-center gap-2">
+          <div data-story-ui="true" className="pointer-events-auto flex items-center gap-2">
             <button
               type="button"
               onClick={() => setMenuOpen((current) => !current)}
               className="flex h-10 w-10 items-center justify-center rounded-full bg-black/35 text-white"
               aria-label="Mas opciones"
+              style={{ touchAction: "manipulation" }}
             >
               <MoreHorizontal className="h-5 w-5" />
             </button>
@@ -461,6 +493,7 @@ export function MobileStoryOverlay({
                 type="button"
                 onClick={() => setIsVideoMuted((current) => !current)}
                 className="flex h-10 w-10 items-center justify-center rounded-full bg-black/35 text-white"
+                style={{ touchAction: "manipulation" }}
               >
                 {isVideoMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
               </button>
@@ -470,6 +503,7 @@ export function MobileStoryOverlay({
                 type="button"
                 onClick={() => setViewersOpen((current) => !current)}
                 className="rounded-full bg-black/35 px-3 py-2 text-xs font-semibold text-white"
+                style={{ touchAction: "manipulation" }}
               >
                 {activeStory.viewCount} vista{activeStory.viewCount === 1 ? "" : "s"}
               </button>
@@ -478,6 +512,7 @@ export function MobileStoryOverlay({
               type="button"
               onClick={onClose}
               className="flex h-10 w-10 items-center justify-center rounded-full bg-black/35 text-white"
+              style={{ touchAction: "manipulation" }}
             >
               <X className="h-5 w-5" />
             </button>
@@ -550,12 +585,23 @@ export function MobileStoryOverlay({
           </div>
         )}
 
-        <div className="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/88 via-black/24 to-transparent px-5 pb-[calc(5.4rem+env(safe-area-inset-bottom))] pt-20 text-white">
+        <div
+          className="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/88 via-black/24 to-transparent px-5 pt-20 text-white"
+          style={{
+            paddingBottom: `calc(env(safe-area-inset-bottom) + ${Math.max(browserBottomInset + 86, 86)}px)`
+          }}
+        >
           {activeStory.caption ? <p className="text-sm leading-6">{activeStory.caption}</p> : null}
         </div>
 
         {canReply ? (
-          <div data-story-ui="true" className="absolute inset-x-0 bottom-0 z-20 px-4 pb-[calc(0.9rem+env(safe-area-inset-bottom))] pt-14">
+          <div
+            data-story-ui="true"
+            className="absolute inset-x-0 bottom-0 z-20 px-4 pt-14"
+            style={{
+              paddingBottom: `calc(env(safe-area-inset-bottom) + ${Math.max(browserBottomInset + 14, 14)}px)`
+            }}
+          >
             <div className="flex items-center gap-3">
               <div className="flex min-w-0 flex-1 items-center rounded-full border border-white/25 bg-black/26 px-4 py-3 backdrop-blur">
                 <input
@@ -599,11 +645,18 @@ export function MobileStoryOverlay({
             {replyError ? <p className="mt-2 px-1 text-xs text-[#ffd1c4]">{replyError}</p> : null}
           </div>
         ) : isOwnStory ? (
-          <div data-story-ui="true" className="absolute inset-x-0 bottom-0 z-20 px-4 pb-[calc(0.9rem+env(safe-area-inset-bottom))] pt-14">
+          <div
+            data-story-ui="true"
+            className="absolute inset-x-0 bottom-0 z-20 px-4 pt-14"
+            style={{
+              paddingBottom: `calc(env(safe-area-inset-bottom) + ${Math.max(browserBottomInset + 14, 14)}px)`
+            }}
+          >
             <button
               type="button"
               onClick={() => setViewersOpen(true)}
               className="flex w-full items-center justify-between rounded-full border border-white/18 bg-black/26 px-4 py-3 text-sm font-semibold text-white/92 backdrop-blur"
+              style={{ touchAction: "manipulation" }}
             >
               <span>Actividad</span>
               <span className="text-xs font-medium text-white/68">
