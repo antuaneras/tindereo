@@ -171,6 +171,13 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
       items: filtered.slice(0, visiblePeopleCount)
     };
   }, [peopleQuery, peopleSheet, profile.followers, profile.following, visiblePeopleCount]);
+  const profileEvents = useMemo(
+    () =>
+      [...profile.createdEvents, ...profile.joinedEvents].filter(
+        (event, index, events) => events.findIndex((candidate) => candidate.id === event.id) === index
+      ),
+    [profile.createdEvents, profile.joinedEvents]
+  );
 
   useEffect(() => {
     const unsubscribe = subscribeToMobileStream((event) => {
@@ -495,33 +502,27 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
         <section className="space-y-3">
           <div className="flex items-center justify-between">
             <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-soft)]">Eventos</div>
-            <div className="text-xs font-semibold text-[var(--text-soft)]">
-              {profile.createdEvents.length + profile.joinedEvents.length}
-            </div>
+            <div className="text-xs font-semibold text-[var(--text-soft)]">{profileEvents.length}</div>
           </div>
-          {profile.canViewContent && (profile.createdEvents.length || profile.joinedEvents.length) ? (
-            <div className="scrollbar-hide -mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
-              {[...profile.createdEvents, ...profile.joinedEvents]
-                .filter((event, index, array) => array.findIndex((candidate) => candidate.id === event.id) === index)
-                .map((event) => (
+          {profileEvents.length ? (
+            <div className="scrollbar-hide -mx-1 flex snap-x snap-mandatory overflow-x-auto px-1 pb-1">
+              {profileEvents.map((event) => (
                   <Link
                     key={event.id}
                     href={`/evento/${event.slug}`}
-                    className="min-w-[240px] rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4 shadow-sm"
+                    className="w-full min-w-full snap-center pr-3 first:pl-0 last:pr-0"
                   >
-                    <div className="text-base font-bold">{event.title}</div>
-                    <div className="mt-1 text-sm text-[var(--text-soft)]">{event.city}</div>
-                    <div className="mt-3 text-xs text-[var(--text-soft)]">{formatMobileDateTime(event.startsAt)}</div>
+                    <div className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4 shadow-sm">
+                      <div className="text-base font-bold">{event.title}</div>
+                      <div className="mt-1 text-sm text-[var(--text-soft)]">{event.city}</div>
+                      <div className="mt-3 text-xs text-[var(--text-soft)]">{formatMobileDateTime(event.startsAt)}</div>
+                    </div>
                   </Link>
                 ))}
             </div>
-          ) : profile.canViewContent ? (
-            <div className="rounded-[1.8rem] border border-dashed border-[var(--line-warm)] bg-white/80 px-5 py-8 text-center text-sm text-[var(--text-soft)]">
-              Aun no hay eventos visibles en este perfil.
-            </div>
           ) : (
             <div className="rounded-[1.8rem] border border-dashed border-[var(--line-warm)] bg-white/80 px-5 py-8 text-center text-sm text-[var(--text-soft)]">
-              Este perfil es privado. Sigue a la persona para ver sus eventos, historias y publicaciones.
+              Aun no hay eventos en este perfil.
             </div>
           )}
         </section>

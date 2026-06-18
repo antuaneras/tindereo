@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { cookies } from "next/headers";
 import type {
+  CreateConversationResult,
   CreateMobileEventInput,
   CreateConversationInput,
   MobileConversationDetail,
@@ -53,6 +54,7 @@ import { sendMobilePushNotifications } from "@/lib/server/mobile-push";
 import { publishMobileRealtimeEvent } from "@/lib/server/mobile-realtime";
 
 const TABLES = {
+  conversationRequests: "conversation_requests",
   conversationMembers: "conversation_members",
   conversations: "conversations",
   eventBans: "event_bans",
@@ -236,6 +238,16 @@ type ConversationMemberRow = {
   pinned_at: string | null;
   role: "owner" | "cohost" | "member";
   user_id: string;
+};
+
+type ConversationRequestRow = {
+  conversation_id: string | null;
+  created_at: string;
+  id: string;
+  requester_id: string;
+  responded_at: string | null;
+  status: "pending" | "accepted" | "rejected" | "cancelled";
+  target_user_id: string;
 };
 
 type MediaAssetRow = {
@@ -457,6 +469,40 @@ function buildProfileRelationship(
     incomingFollowRequestId:
       requests.find((request) => request.requester_id === profileId && request.target_user_id === viewerId && request.status === "pending")?.id ?? null
   };
+}
+
+function canViewerAccessProfileContent(
+  viewerId: string,
+  profileId: string,
+  profilesById: ReadonlyMap<string, Pick<ProfileRow, "id" | "is_private">>,
+  follows: ProfileFollowRow[]
+) {
+  const profile = profilesById.get(profileId);
+  if (!profile) {
+    return false;
+  }
+
+  return viewerId === profileId || !profile.is_private || follows.some((follow) => follow.follower_id === viewerId && follow.followee_id === profileId);
+}
+
+function canViewerAccessEventContent(
+  viewerId: string,
+  eventId: string,
+  eventsById: ReadonlyMap<string, Pick<EventRow, "host_id" | "id" | "visibility">>,
+  memberships: EventMemberRow[],
+  cohosts: EventCohostRow[]
+) {
+  const event = eventsById.get(eventId);
+  if (!event) {
+    return false;
+  }
+
+  return (
+    event.visibility === "public" ||
+    event.host_id === viewerId ||
+    memberships.some((membership) => membership.event_id === eventId && membership.user_id === viewerId) ||
+    cohosts.some((cohost) => cohost.event_id === eventId && cohost.user_id === viewerId)
+  );
 }
 
 function applyViewerRelationshipsToProfiles(
@@ -716,6 +762,13 @@ async function loadPendingProfileFollowRequests() {
   }).catch(async () => [] as ProfileFollowRequestRow[]);
 }
 
+async function loadPendingConversationRequests() {
+  return selectRows<ConversationRequestRow>(TABLES.conversationRequests, {
+    filters: [{ column: "status", op: "eq", value: "pending" }],
+    order: [{ column: "created_at", ascending: false }]
+  }).catch(async () => [] as ConversationRequestRow[]);
+}
+
 async function loadFriendIds(viewerId: string) {
   const follows = await loadProfileFollows();
   const { followersByUserId, followingByUserId } = buildFollowAdjacency(follows);
@@ -946,7 +999,7 @@ export async function listMobileConversationSummaries(viewerId: string) {
 }
 
 async function loadPostsForViewer(viewerId: string) {
-  const [postRows, likeRows, commentRows, postMediaRows, assetRows, profileRows, eventRows] = await Promise.all([
+  const [postRows, likeRows, commentRows, postMediaRows, assetRows, profileRows, eventRows, follows, memberships, cohosts] = await Promise.all([
     selectRows<PostRow>(TABLES.posts, { order: [{ column: "created_at", ascending: false }], limit: 40 }),
     selectRows<PostLikeRow>(TABLES.postLikes),
     selectRows<PostCommentRow>(TABLES.postComments, { order: [{ column: "created_at", ascending: true }] }),
@@ -955,60 +1008,79 @@ async function loadPostsForViewer(viewerId: string) {
     ),
     selectRows<MediaAssetRow>(TABLES.mediaAssets),
     selectRows<ProfileRow>(TABLES.profiles),
-    selectRows<EventRow>(TABLES.events)
+    selectRows<EventRow>(TABLES.events),
+    loadProfileFollows(),
+    selectRows<EventMemberRow>(TABLES.eventMembers),
+    selectRows<EventCohostRow>(TABLES.eventCohosts)
   ]);
   const assetsById = new Map(assetRows.map((row) => [row.id, mapMediaAsset(row)]));
-  const profilesById = new Map(profileRows.map((row) => [row.id, mapProfile(row)]));
+  const profilesById = new Map(profileRows.map((row) => [row.id, row]));
   const eventsById = new Map(eventRows.map((row) => [row.id, row]));
 
-  return postRows.map((row): MobilePost => {
-    const author = profilesById.get(row.author_id);
-    const eventOwner = row.owner_type === "event" ? eventsById.get(row.owner_id) : null;
-    const mappedMediaItems = postMediaRows
-      .filter((item) => item.post_id === row.id)
-      .sort((left, right) => left.sort_order - right.sort_order)
-      .map((item) => assetsById.get(item.media_asset_id) ?? null)
-      .filter((item): item is MobileMediaAsset => Boolean(item));
-    const mediaItems =
-      mappedMediaItems.length > 0
-        ? mappedMediaItems
-        : row.media_asset_id
-          ? [assetsById.get(row.media_asset_id) ?? null].filter((item): item is MobileMediaAsset => Boolean(item))
-          : [];
-    const comments = commentRows
-      .filter((comment) => comment.post_id === row.id)
-      .map((comment) => mapPostComment(comment, profilesById.get(comment.author_id)));
+  return postRows
+    .filter((row) => {
+      if (!canViewerAccessProfileContent(viewerId, row.author_id, profilesById, follows)) {
+        return false;
+      }
 
-    return {
-      id: row.id,
-      ownerType: row.owner_type,
-      ownerId: row.owner_id,
-      authorId: row.author_id,
-      authorHandle: author?.handle ?? "usuario",
-      authorDisplayName: author?.displayName ?? author?.handle ?? "Usuario",
-      authorAvatarUrl: author?.avatarUrl ?? null,
-      ownerLabel:
-        row.owner_type === "event"
-          ? eventOwner?.title ?? "Evento"
-          : author?.handle
-            ? `@${author.handle}`
-            : "Perfil",
-      ownerAvatarUrl:
-        row.owner_type === "event"
-          ? resolveMediaUrl(eventOwner?.cover_image ?? null)
-          : author?.avatarUrl ?? null,
-      eventSlug: eventOwner?.slug ?? null,
-      media: mediaItems[0] ?? null,
-      mediaItems,
-      caption: row.caption,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      likeCount: likeRows.filter((like) => like.post_id === row.id).length,
-      commentCount: comments.length,
-      hasLiked: likeRows.some((like) => like.post_id === row.id && like.user_id === viewerId),
-      comments
-    };
-  });
+      if (row.owner_type === "event") {
+        return canViewerAccessEventContent(viewerId, row.owner_id, eventsById, memberships, cohosts);
+      }
+
+      return true;
+    })
+    .map((row): MobilePost => {
+      const authorRow = profilesById.get(row.author_id);
+      const author = authorRow ? mapProfile(authorRow) : null;
+      const eventOwner = row.owner_type === "event" ? eventsById.get(row.owner_id) : null;
+      const mappedMediaItems = postMediaRows
+        .filter((item) => item.post_id === row.id)
+        .sort((left, right) => left.sort_order - right.sort_order)
+        .map((item) => assetsById.get(item.media_asset_id) ?? null)
+        .filter((item): item is MobileMediaAsset => Boolean(item));
+      const mediaItems =
+        mappedMediaItems.length > 0
+          ? mappedMediaItems
+          : row.media_asset_id
+            ? [assetsById.get(row.media_asset_id) ?? null].filter((item): item is MobileMediaAsset => Boolean(item))
+            : [];
+      const comments = commentRows
+        .filter((comment) => comment.post_id === row.id)
+        .map((comment) => {
+          const commentAuthorRow = profilesById.get(comment.author_id);
+          return mapPostComment(comment, commentAuthorRow ? mapProfile(commentAuthorRow) : undefined);
+        });
+
+      return {
+        id: row.id,
+        ownerType: row.owner_type,
+        ownerId: row.owner_id,
+        authorId: row.author_id,
+        authorHandle: author?.handle ?? "usuario",
+        authorDisplayName: author?.displayName ?? author?.handle ?? "Usuario",
+        authorAvatarUrl: author?.avatarUrl ?? null,
+        ownerLabel:
+          row.owner_type === "event"
+            ? eventOwner?.title ?? "Evento"
+            : author?.handle
+              ? `@${author.handle}`
+              : "Perfil",
+        ownerAvatarUrl:
+          row.owner_type === "event"
+            ? resolveMediaUrl(eventOwner?.cover_image ?? null)
+            : author?.avatarUrl ?? null,
+        eventSlug: eventOwner?.slug ?? null,
+        media: mediaItems[0] ?? null,
+        mediaItems,
+        caption: row.caption,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        likeCount: likeRows.filter((like) => like.post_id === row.id).length,
+        commentCount: comments.length,
+        hasLiked: likeRows.some((like) => like.post_id === row.id && like.user_id === viewerId),
+        comments
+      };
+    });
 }
 
 export async function loadAllEventsPublic() {
@@ -1023,19 +1095,31 @@ export async function loadVisibleEventsForViewer(viewerId: string) {
     selectRows<EventMemberRow>(TABLES.eventMembers),
     selectRows<EventCohostRow>(TABLES.eventCohosts)
   ]);
+  const eventRowsById = new Map(
+    events.map((event) => [
+      event.id,
+      {
+        id: event.id,
+        host_id: event.hostId,
+        visibility: event.visibility
+      }
+    ])
+  );
 
-  return events.filter(
-    (event) =>
-      event.visibility === "public" ||
-      event.hostId === viewerId ||
-      memberships.some((membership) => membership.event_id === event.id && membership.user_id === viewerId) ||
-      cohosts.some((cohost) => cohost.event_id === event.id && cohost.user_id === viewerId)
+  return events.filter((event) =>
+    canViewerAccessEventContent(
+      viewerId,
+      event.id,
+      eventRowsById,
+      memberships,
+      cohosts
+    )
   );
 }
 
 async function loadActiveStoriesForViewer(viewerId: string) {
   const now = new Date().toISOString();
-  const [storyRows, storyViews, assetRows, profileRows, eventRows] = await Promise.all([
+  const [storyRows, storyViews, assetRows, profileRows, eventRows, follows, memberships, cohosts] = await Promise.all([
     selectRows<StoryRow>(TABLES.stories, {
       filters: [{ column: "expires_at", op: "gt", value: now }],
       order: [{ column: "created_at", ascending: false }]
@@ -1043,19 +1127,35 @@ async function loadActiveStoriesForViewer(viewerId: string) {
     selectRows<StoryViewRow>(TABLES.storyViews),
     selectRows<MediaAssetRow>(TABLES.mediaAssets),
     selectRows<ProfileRow>(TABLES.profiles),
-    selectRows<EventRow>(TABLES.events)
+    selectRows<EventRow>(TABLES.events),
+    loadProfileFollows(),
+    selectRows<EventMemberRow>(TABLES.eventMembers),
+    selectRows<EventCohostRow>(TABLES.eventCohosts)
   ]);
 
   const assetsById = new Map(assetRows.map((row) => [row.id, mapMediaAsset(row)]));
-  const profilesById = new Map(profileRows.map((row) => [row.id, mapProfile(row)]));
+  const profilesById = new Map(profileRows.map((row) => [row.id, row]));
   const eventsById = new Map(eventRows.map((row) => [row.id, row]));
 
-  const stories = storyRows.map((row): MobileStory => ({
+  const stories = storyRows
+    .filter((row) => {
+      if (!canViewerAccessProfileContent(viewerId, row.author_id, profilesById, follows)) {
+        return false;
+      }
+
+      if (row.owner_type === "event") {
+        return canViewerAccessEventContent(viewerId, row.owner_id, eventsById, memberships, cohosts);
+      }
+
+      return true;
+    })
+    .map((row): MobileStory => ({
     viewers: storyViews
       .filter((view) => view.story_id === row.id)
       .sort((left, right) => right.seen_at.localeCompare(left.seen_at))
       .map((view) => {
-        const profile = profilesById.get(view.user_id);
+        const profileRow = profilesById.get(view.user_id);
+        const profile = profileRow ? mapProfile(profileRow) : null;
         return {
           id: view.user_id,
           handle: profile?.handle ?? "usuario",
@@ -1080,7 +1180,8 @@ async function loadActiveStoriesForViewer(viewerId: string) {
   const clusterMap = new Map<string, MobileStoryCluster>();
   for (const story of stories) {
     const key = `${story.ownerType}:${story.ownerId}`;
-    const ownerProfile = story.ownerType === "user" ? profilesById.get(story.ownerId) : null;
+    const ownerProfileRow = story.ownerType === "user" ? profilesById.get(story.ownerId) : null;
+    const ownerProfile = ownerProfileRow ? mapProfile(ownerProfileRow) : null;
     const ownerEvent = story.ownerType === "event" ? eventsById.get(story.ownerId) : null;
     const current = clusterMap.get(key);
 
@@ -1875,7 +1976,91 @@ function buildDirectConversationId(a: string, b: string) {
   return `direct-${[a, b].sort().join("-")}`;
 }
 
-export async function createMobileConversation(viewerId: string, input: CreateConversationInput) {
+async function ensureDirectConversation(requesterId: string, targetId: string) {
+  const conversationId = buildDirectConversationId(requesterId, targetId);
+  await createConversationBase({
+    id: conversationId,
+    kind: "direct",
+    ownerId: requesterId,
+    title: null,
+    chatMode: "open"
+  });
+  await ensureConversationMembers(conversationId, requesterId, [targetId]);
+  publishMobileRealtimeEvent({ type: "conversation", conversationId, viewerId: requesterId });
+  publishMobileRealtimeEvent({ type: "conversation", conversationId, viewerId: targetId });
+  return conversationId;
+}
+
+export async function respondToConversationRequest(viewerId: string, requestId: string, accept: boolean) {
+  const requestRows = await selectRows<ConversationRequestRow>(TABLES.conversationRequests, {
+    filters: [{ column: "id", op: "eq", value: requestId }],
+    limit: 1
+  });
+  const request = requestRows[0];
+  if (!request || request.target_user_id !== viewerId || request.status !== "pending") {
+    throw new Error("La solicitud de chat ya no esta disponible.");
+  }
+
+  const now = new Date().toISOString();
+  await patchRows(
+    TABLES.conversationRequests,
+    [{ column: "id", op: "eq", value: requestId }],
+    {
+      status: accept ? "accepted" : "rejected",
+      responded_at: now
+    },
+    { returning: "minimal" }
+  );
+
+  await patchRows(
+    TABLES.notifications,
+    [
+      { column: "user_id", op: "eq", value: viewerId },
+      { column: "kind", op: "eq", value: "chat-request" }
+    ],
+    {
+      read_at: now
+    },
+    { returning: "minimal" }
+  ).catch(async () => []);
+
+  let conversationId: string | null = null;
+  if (accept) {
+    conversationId = await ensureDirectConversation(request.requester_id, viewerId);
+    await patchRows(
+      TABLES.conversationRequests,
+      [{ column: "id", op: "eq", value: requestId }],
+      {
+        conversation_id: conversationId
+      },
+      { returning: "minimal" }
+    );
+
+    const viewerProfile = (await loadProfiles([viewerId]))[0] ?? null;
+    if (viewerProfile) {
+      await notifyUsers([request.requester_id], {
+        kind: "message",
+        title: `@${viewerProfile.handle} acepto tu chat`,
+        body: "Ya podeis hablar por directo.",
+        entityType: "conversation",
+        entityId: conversationId,
+        data: {
+          conversationId
+        }
+      });
+    }
+  }
+
+  publishMobileRealtimeEvent({ type: "notifications", viewerId });
+  publishMobileRealtimeEvent({ type: "notifications", viewerId: request.requester_id });
+
+  return {
+    conversationId,
+    ok: true
+  };
+}
+
+export async function createMobileConversation(viewerId: string, input: CreateConversationInput): Promise<CreateConversationResult> {
   const participantIds = [...new Set(input.participantIds.filter((id) => id && id !== viewerId))];
   if (input.kind === "direct") {
     const targetId = participantIds[0];
@@ -1884,17 +2069,100 @@ export async function createMobileConversation(viewerId: string, input: CreateCo
     }
 
     const conversationId = buildDirectConversationId(viewerId, targetId);
-    await createConversationBase({
-      id: conversationId,
-      kind: "direct",
-      ownerId: viewerId,
-      title: null,
-      chatMode: "open"
-    });
-    await ensureConversationMembers(conversationId, viewerId, [targetId]);
-    publishMobileRealtimeEvent({ type: "conversation", conversationId, viewerId });
-    publishMobileRealtimeEvent({ type: "conversation", conversationId, viewerId: targetId });
-    return conversationId;
+    const [conversationRows, follows, pendingRequests] = await Promise.all([
+      selectRows<ConversationRow>(TABLES.conversations, {
+        filters: [{ column: "id", op: "eq", value: conversationId }],
+        limit: 1
+      }),
+      loadProfileFollows(),
+      loadPendingConversationRequests()
+    ]);
+
+    if (conversationRows[0]) {
+      await ensureConversationMembers(conversationId, viewerId, [targetId]);
+      publishMobileRealtimeEvent({ type: "conversation", conversationId, viewerId });
+      return {
+        mode: "conversation",
+        conversationId,
+        requestId: null
+      };
+    }
+
+    const incomingRequest = pendingRequests.find(
+      (request) => request.requester_id === targetId && request.target_user_id === viewerId
+    );
+    if (incomingRequest) {
+      const accepted = await respondToConversationRequest(viewerId, incomingRequest.id, true);
+      return {
+        mode: "conversation",
+        conversationId: accepted.conversationId ?? conversationId,
+        requestId: incomingRequest.id
+      };
+    }
+
+    const followsProfile = follows.some((follow) => follow.follower_id === viewerId && follow.followee_id === targetId);
+    if (!followsProfile) {
+      const outgoingRequest = pendingRequests.find(
+        (request) => request.requester_id === viewerId && request.target_user_id === targetId
+      );
+      if (outgoingRequest) {
+        return {
+          mode: "request",
+          conversationId: null,
+          requestId: outgoingRequest.id
+        };
+      }
+
+      const conversationProfiles = await loadProfiles([viewerId, targetId]);
+      const profilesById = new Map(conversationProfiles.map((profile) => [profile.id, profile]));
+      const viewerProfile = profilesById.get(viewerId) ?? null;
+      const targetProfile = profilesById.get(targetId) ?? null;
+      if (!viewerProfile || !targetProfile) {
+        throw new Error("No pude encontrar a esa persona.");
+      }
+
+      const created = await insertRow<ConversationRequestRow, ConversationRequestRow>(
+        TABLES.conversationRequests,
+        {
+          id: buildMobileId("chat-request"),
+          requester_id: viewerId,
+          target_user_id: targetId,
+          status: "pending",
+          conversation_id: null,
+          created_at: new Date().toISOString(),
+          responded_at: null
+        },
+        {
+          onConflict: "requester_id,target_user_id,status",
+          returning: "representation"
+        }
+      );
+
+      await notifyUsers([targetId], {
+        kind: "chat-request",
+        title: `@${viewerProfile.handle} quiere hablar contigo`,
+        body: "Tienes una nueva solicitud de chat.",
+        entityType: "profile",
+        entityId: targetId,
+        data: {
+          requestId: created?.id ?? "",
+          requesterHandle: viewerProfile.handle
+        }
+      });
+
+      publishMobileRealtimeEvent({ type: "profile", profileId: targetProfile.id, viewerId });
+      return {
+        mode: "request",
+        conversationId: null,
+        requestId: created?.id ?? null
+      };
+    }
+
+    return {
+      mode: "conversation",
+      conversationId: await ensureDirectConversation(viewerId, targetId),
+      requestId: null
+    };
   }
 
   if (participantIds.length === 0) {
@@ -1914,7 +2182,11 @@ export async function createMobileConversation(viewerId: string, input: CreateCo
   for (const participantId of participantIds) {
     publishMobileRealtimeEvent({ type: "conversation", conversationId, viewerId: participantId });
   }
-  return conversationId;
+  return {
+    mode: "conversation",
+    conversationId,
+    requestId: null
+  };
 }
 
 export async function createMobileEvent(viewerId: string, input: CreateMobileEventInput) {
@@ -3810,7 +4082,14 @@ export async function getMobileProfileDetail(viewerId: string, handle: string): 
   const relationship = buildProfileRelationship(viewerId, profile.id, follows, followRequests);
   const canViewContent = profile.id === viewerId || !profile.isPrivate || relationship.followsProfile;
   const followerIds = follows.filter((follow) => follow.followee_id === profile.id).map((follow) => follow.follower_id);
-  const followingIds = follows.filter((follow) => follow.follower_id === profile.id).map((follow) => follow.followee_id);
+  const acceptedFollowingIds = follows.filter((follow) => follow.follower_id === profile.id).map((follow) => follow.followee_id);
+  const pendingFollowingIds =
+    profile.id === viewerId
+      ? followRequests
+          .filter((request) => request.requester_id === profile.id && request.status === "pending")
+          .map((request) => request.target_user_id)
+      : [];
+  const followingIds = [...new Set([...acceptedFollowingIds, ...pendingFollowingIds])];
   const relatedProfiles = await loadProfiles([...new Set([...followerIds, ...followingIds])]);
   const relatedProfilesById = new Map(relatedProfiles.map((entry) => [entry.id, entry]));
 
@@ -3833,15 +4112,16 @@ export async function getMobileProfileDetail(viewerId: string, handle: string): 
       .map((id) => relatedProfilesById.get(id))
       .filter((entry): entry is MobileProfile => Boolean(entry))
       .map(mapProfileMini),
-    createdEvents: canViewContent ? events.filter((event) => event.hostId === profile.id) : [],
-    joinedEvents: canViewContent ? events.filter((event) =>
+    createdEvents: events.filter((event) => event.hostId === profile.id),
+    joinedEvents: events.filter((event) =>
+      event.hostId !== profile.id &&
       memberships.some(
         (membership) =>
           membership.user_id === profile.id &&
           membership.event_id === event.id &&
           membership.status === "approved"
       )
-    ) : [],
+    ),
     stories: canViewContent
       ? storyClusters.flatMap((cluster) => cluster.stories).filter((story) => story.authorId === profile.id)
       : [],

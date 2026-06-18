@@ -4,7 +4,13 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ArrowLeft, Heart } from "lucide-react";
-import { fetchNotifications, markNotificationsRead, respondToFollowRequest, subscribeToMobileStream } from "@/lib/mobile-api";
+import {
+  fetchNotifications,
+  markNotificationsRead,
+  respondToConversationRequest,
+  respondToFollowRequest,
+  subscribeToMobileStream
+} from "@/lib/mobile-api";
 import { formatRelativeMobileTime } from "@/lib/mobile-shared";
 import type { MobileNotification } from "@/lib/mobile-types";
 
@@ -72,6 +78,7 @@ export function MobileNotificationsScreen({ initialNotifications }: { initialNot
           notifications.map((notification) => {
             const requestId = typeof notification.data.requestId === "string" ? notification.data.requestId : null;
             const isFollowRequest = notification.kind === "follow-request" && requestId;
+            const isChatRequest = notification.kind === "chat-request" && requestId;
 
             return (
               <div key={notification.id} className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4 shadow-sm">
@@ -85,7 +92,7 @@ export function MobileNotificationsScreen({ initialNotifications }: { initialNot
                   </div>
                 </button>
 
-                {isFollowRequest ? (
+                {isFollowRequest || isChatRequest ? (
                   <div className="mt-4 flex gap-2">
                     <button
                       type="button"
@@ -93,6 +100,15 @@ export function MobileNotificationsScreen({ initialNotifications }: { initialNot
                       onClick={async () => {
                         setBusyRequestId(requestId);
                         try {
+                          if (isChatRequest) {
+                            const response = await respondToConversationRequest(requestId, true);
+                            await refresh();
+                            if (response.conversationId) {
+                              router.push(`/chat/${response.conversationId}`);
+                            }
+                            return;
+                          }
+
                           await respondToFollowRequest(requestId, true);
                           await refresh();
                         } finally {
@@ -109,7 +125,11 @@ export function MobileNotificationsScreen({ initialNotifications }: { initialNot
                       onClick={async () => {
                         setBusyRequestId(requestId);
                         try {
-                          await respondToFollowRequest(requestId, false);
+                          if (isChatRequest) {
+                            await respondToConversationRequest(requestId, false);
+                          } else {
+                            await respondToFollowRequest(requestId, false);
+                          }
                           await refresh();
                         } finally {
                           setBusyRequestId(null);

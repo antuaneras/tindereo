@@ -16,7 +16,7 @@ export async function POST(request: Request) {
   try {
     const viewerId = await requireMobileViewerId();
     const body = await request.json();
-    return mobileOk({ conversationId: await createMobileConversation(viewerId, body) }, { status: 201 });
+    return mobileOk(await createMobileConversation(viewerId, body), { status: 201 });
   } catch (error) {
     return mobileError(error);
   }

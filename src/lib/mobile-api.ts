@@ -1,4 +1,5 @@
 import type {
+  CreateConversationResult,
   CreateConversationInput,
   CreateMobileEventInput,
   MobileBootstrapPayload,
@@ -236,7 +237,7 @@ export async function fetchConversations() {
 }
 
 export async function createConversation(input: CreateConversationInput) {
-  return readJson<{ conversationId: string }>(
+  return readJson<CreateConversationResult>(
     await fetch("/api/mobile/conversations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -397,6 +398,16 @@ export async function markNotificationsRead() {
 export async function respondToFollowRequest(requestId: string, accept: boolean) {
   return readJson<{ ok: boolean }>(
     await fetch(`/api/mobile/follow-requests/${requestId}/respond`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accept })
+    })
+  );
+}
+
+export async function respondToConversationRequest(requestId: string, accept: boolean) {
+  return readJson<{ ok: boolean; conversationId: string | null }>(
+    await fetch(`/api/mobile/conversation-requests/${requestId}/respond`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ accept })

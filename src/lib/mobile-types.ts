@@ -14,6 +14,7 @@ export type MobileStoryMessageMode = "reaction" | "comment";
 export type MobileNotificationKind =
   | "follow-request"
   | "follow-accepted"
+  | "chat-request"
   | "event-invite"
   | "event-invite-response"
   | "event-approved"
@@ -84,6 +85,12 @@ export interface MobileConversationSummary {
   chatMode: MobileChatMode;
   eventSlug: string | null;
   eventId: string | null;
+}
+
+export interface CreateConversationResult {
+  mode: "conversation" | "request";
+  conversationId: string | null;
+  requestId: string | null;
 }
 
 export interface MobileMediaAsset {

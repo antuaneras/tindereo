@@ -393,6 +393,12 @@ export function MobileStoryOverlay({
           participantIds: [activeStory.authorId]
         });
 
+        if (created.mode === "request" || !created.conversationId) {
+          setIsReplyFocused(false);
+          setTransientReplyNotice("Solicitud de chat enviada. Cuando la acepten, podras escribir.");
+          return;
+        }
+
         await sendConversationMessage(created.conversationId, {
           body: encodedBody
         });

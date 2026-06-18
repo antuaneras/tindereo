@@ -227,6 +227,23 @@ create table if not exists public.conversations (
 create index if not exists conversations_owner_idx on public.conversations (owner_id);
 create index if not exists conversations_kind_idx on public.conversations (kind);
 
+create table if not exists public.conversation_requests (
+  id text primary key,
+  requester_id text not null references public.profiles(id) on delete cascade,
+  target_user_id text not null references public.profiles(id) on delete cascade,
+  status text not null check (status in ('pending', 'accepted', 'rejected', 'cancelled')),
+  conversation_id text references public.conversations(id) on delete set null,
+  created_at timestamptz not null default timezone('utc', now()),
+  responded_at timestamptz,
+  unique (requester_id, target_user_id, status),
+  check (requester_id <> target_user_id)
+);
+
+create index if not exists conversation_requests_requester_idx
+  on public.conversation_requests (requester_id, status, created_at desc);
+create index if not exists conversation_requests_target_idx
+  on public.conversation_requests (target_user_id, status, created_at desc);
+
 create table if not exists public.conversation_members (
   id text primary key,
   conversation_id text not null references public.conversations(id) on delete cascade,
@@ -475,6 +492,7 @@ begin
     'event_bans',
     'event_reports',
     'conversations',
+    'conversation_requests',
     'conversation_members',
     'media_assets',
     'messages',

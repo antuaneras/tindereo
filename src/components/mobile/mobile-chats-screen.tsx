@@ -62,6 +62,7 @@ export function MobileChatsScreen({ initialChats }: { initialChats?: MobileConve
     people: false
   });
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
+  const [pickerNotice, setPickerNotice] = useState<string | null>(null);
 
   useEffect(() => {
     if (initialChats?.length) {
@@ -191,6 +192,12 @@ export function MobileChatsScreen({ initialChats }: { initialChats?: MobileConve
             <Plus className="h-5 w-5" />
           </button>
         </div>
+
+        {pickerNotice ? (
+          <div className="rounded-[1.6rem] border border-[var(--line-soft)] bg-white/88 px-4 py-3 text-sm text-[var(--text-soft)] shadow-sm">
+            {pickerNotice}
+          </div>
+        ) : null}
 
         <section className="space-y-3">
           <div className="inline-flex rounded-full bg-white/92 p-1 shadow-sm">
@@ -368,7 +375,14 @@ export function MobileChatsScreen({ initialChats }: { initialChats?: MobileConve
                       participantIds: [profile.id]
                     });
                     setPickerOpen(false);
-                    router.push(`/chat/${created.conversationId}`);
+                    setQuery("");
+                    if (created.mode === "conversation" && created.conversationId) {
+                      setPickerNotice(null);
+                      router.push(`/chat/${created.conversationId}`);
+                      return;
+                    }
+
+                    setPickerNotice(`Solicitud de chat enviada a @${profile.handle}.`);
                   }}
                   className="flex w-full items-center gap-3 rounded-[1.6rem] border border-[var(--line-soft)] px-4 py-4 text-left"
                 >
