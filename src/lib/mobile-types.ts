@@ -12,6 +12,8 @@ export type MobileDeliveryStatus = "sending" | "sent" | "delivered" | "read" | "
 export type MobileStoryOwnerType = "user" | "event";
 export type MobileStoryMessageMode = "reaction" | "comment";
 export type MobileNotificationKind =
+  | "follow-request"
+  | "follow-accepted"
   | "event-invite"
   | "event-invite-response"
   | "event-approved"
@@ -40,7 +42,9 @@ export interface MobileProfile {
   bio: string;
   avatarUrl: string | null;
   coverUrl: string | null;
+  isPrivate: boolean;
   createdAt: string;
+  relationship?: MobileProfileRelationship | null;
 }
 
 export interface MobileProfileMini {
@@ -49,6 +53,14 @@ export interface MobileProfileMini {
   displayName: string;
   city: string;
   avatarUrl: string | null;
+  isPrivate?: boolean;
+}
+
+export interface MobileProfileRelationship {
+  followsProfile: boolean;
+  followedByProfile: boolean;
+  outgoingFollowRequestId: string | null;
+  incomingFollowRequestId: string | null;
 }
 
 export interface MobileViewerSummary {
@@ -156,7 +168,9 @@ export interface MobileSuggestedProfile {
   bio: string;
   avatarUrl: string | null;
   coverUrl: string | null;
+  isPrivate: boolean;
   createdAt: string;
+  relationship?: MobileProfileRelationship | null;
   mutualFriendCount: number;
   mutualFriends: Array<Pick<MobileProfile, "id" | "handle" | "avatarUrl">>;
 }
@@ -320,8 +334,12 @@ export interface MobileProfileDetail {
   viewer: MobileProfile;
   profile: MobileProfile;
   isViewer: boolean;
-  isFriend: boolean;
-  friendCount: number;
+  canViewContent: boolean;
+  relationship: MobileProfileRelationship;
+  followerCount: number;
+  followingCount: number;
+  followers: MobileProfileMini[];
+  following: MobileProfileMini[];
   createdEvents: MobileEvent[];
   joinedEvents: MobileEvent[];
   stories: MobileStory[];
@@ -348,6 +366,10 @@ export interface MobileBootstrapPayload {
   joinedEvents: MobileEvent[];
   chatSummaries: MobileConversationSummary[];
   pendingEventInvites: MobileEventInvite[];
+}
+
+export interface MobileNotificationsPayload {
+  notifications: MobileNotification[];
 }
 
 export interface MobileSearchFilters {
@@ -400,6 +422,7 @@ export interface UpdateMobileProfileInput {
   bio: string;
   avatarUrl: string | null;
   coverUrl: string | null;
+  isPrivate?: boolean;
 }
 
 export interface PublishMobileStoryInput {

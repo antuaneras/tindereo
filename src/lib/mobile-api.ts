@@ -7,6 +7,7 @@ import type {
   MobileEventDetail,
   MobileEventTicket,
   MobileEventInvite,
+  MobileNotificationsPayload,
   MobilePostComment,
   MobileProfile,
   MobileProfileDetail,
@@ -336,12 +337,59 @@ export async function fetchProfileDetail(handle: string) {
   );
 }
 
+export async function requestFollow(handle: string) {
+  return readJson<{ ok: boolean }>(
+    await fetch(`/api/mobile/profile/${handle}/follow`, {
+      method: "POST"
+    })
+  );
+}
+
+export async function unfollowProfile(handle: string) {
+  return readJson<{ ok: boolean }>(
+    await fetch(`/api/mobile/profile/${handle}/follow`, {
+      method: "DELETE"
+    })
+  );
+}
+
+export async function cancelFollowRequest(handle: string) {
+  return readJson<{ ok: boolean }>(
+    await fetch(`/api/mobile/profile/${handle}/follow`, {
+      method: "PATCH"
+    })
+  );
+}
+
+export async function fetchNotifications() {
+  return readJson<MobileNotificationsPayload>(
+    await fetch("/api/mobile/notifications", { cache: "no-store" })
+  );
+}
+
+export async function markNotificationsRead() {
+  return readJson<{ ok: boolean }>(
+    await fetch("/api/mobile/notifications/read-all", { method: "POST" })
+  );
+}
+
+export async function respondToFollowRequest(requestId: string, accept: boolean) {
+  return readJson<{ ok: boolean }>(
+    await fetch(`/api/mobile/follow-requests/${requestId}/respond`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accept })
+    })
+  );
+}
+
 export async function updateViewerProfile(input: {
   displayName: string;
   city: string;
   bio: string;
   avatarUrl: string | null;
   coverUrl: string | null;
+  isPrivate?: boolean;
 }) {
   return readJson<MobileProfile>(
     await fetch("/api/mobile/viewer/profile", {

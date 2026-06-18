@@ -7,9 +7,13 @@ create table if not exists public.profiles (
   bio text not null default '',
   avatar_url text,
   cover_url text,
+  is_private boolean not null default false,
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now())
 );
+
+alter table public.profiles
+  add column if not exists is_private boolean not null default false;
 
 create unique index if not exists profiles_handle_lower_idx on public.profiles (handle_lower);
 
@@ -23,6 +27,34 @@ create table if not exists public.friendships (
 
 create unique index if not exists friendships_pair_idx
   on public.friendships (least(user_a_id, user_b_id), greatest(user_a_id, user_b_id));
+
+create table if not exists public.profile_follows (
+  id text primary key,
+  follower_id text not null references public.profiles(id) on delete cascade,
+  followee_id text not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default timezone('utc', now()),
+  unique (follower_id, followee_id),
+  check (follower_id <> followee_id)
+);
+
+create index if not exists profile_follows_follower_idx on public.profile_follows (follower_id, created_at desc);
+create index if not exists profile_follows_followee_idx on public.profile_follows (followee_id, created_at desc);
+
+create table if not exists public.profile_follow_requests (
+  id text primary key,
+  requester_id text not null references public.profiles(id) on delete cascade,
+  target_user_id text not null references public.profiles(id) on delete cascade,
+  status text not null check (status in ('pending', 'accepted', 'rejected', 'cancelled')),
+  created_at timestamptz not null default timezone('utc', now()),
+  responded_at timestamptz,
+  unique (requester_id, target_user_id, status),
+  check (requester_id <> target_user_id)
+);
+
+create index if not exists profile_follow_requests_target_idx
+  on public.profile_follow_requests (target_user_id, status, created_at desc);
+create index if not exists profile_follow_requests_requester_idx
+  on public.profile_follow_requests (requester_id, status, created_at desc);
 
 create table if not exists public.events (
   id text primary key,
@@ -357,6 +389,26 @@ where not exists (
 )
 on conflict (id) do nothing;
 
+insert into public.profile_follows (id, follower_id, followee_id, created_at)
+select
+  'follow-seed-' || friendship.id || '-a',
+  friendship.user_a_id,
+  friendship.user_b_id,
+  coalesce(friendship.created_at, timezone('utc', now()))
+from public.friendships as friendship
+where friendship.user_a_id <> friendship.user_b_id
+on conflict (follower_id, followee_id) do nothing;
+
+insert into public.profile_follows (id, follower_id, followee_id, created_at)
+select
+  'follow-seed-' || friendship.id || '-b',
+  friendship.user_b_id,
+  friendship.user_a_id,
+  coalesce(friendship.created_at, timezone('utc', now()))
+from public.friendships as friendship
+where friendship.user_a_id <> friendship.user_b_id
+on conflict (follower_id, followee_id) do nothing;
+
 create table if not exists public.notifications (
   id text primary key,
   user_id text not null references public.profiles(id) on delete cascade,
@@ -400,6 +452,8 @@ begin
   foreach table_name in array array[
     'profiles',
     'friendships',
+    'profile_follows',
+    'profile_follow_requests',
     'events',
     'event_members',
     'event_waitlist',

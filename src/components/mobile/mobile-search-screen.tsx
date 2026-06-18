@@ -4,6 +4,7 @@ import { type FormEvent, useDeferredValue, useEffect, useMemo, useState } from "
 import { useRouter } from "next/navigation";
 import { Search, Sparkles, X } from "lucide-react";
 import { searchMobile } from "@/lib/mobile-api";
+import { MobileFollowButton } from "@/components/mobile/mobile-follow-button";
 import type {
   MobileEvent,
   MobilePost,
@@ -143,9 +144,9 @@ function SuggestedProfileCard({
 }) {
   const mutualLabel =
     profile.mutualFriendCount > 1
-      ? `${profile.mutualFriendCount} amigos en comun`
+      ? `${profile.mutualFriendCount} seguidos en comun`
       : profile.mutualFriendCount === 1
-        ? "1 amigo en comun"
+        ? "1 seguido en comun"
         : profile.city || "Nuevo por descubrir";
 
   return (
@@ -173,9 +174,20 @@ function SuggestedProfileCard({
           <span className="truncate">{mutualLabel}</span>
         </div>
       </div>
-      <span className="rounded-full bg-[var(--bg-soft)] px-3 py-2 text-xs font-semibold text-[var(--coral)]">
-        Ver
-      </span>
+      {profile.relationship ? (
+        <div onClick={(event) => event.stopPropagation()}>
+          <MobileFollowButton
+            handle={profile.handle}
+            isPrivate={profile.isPrivate}
+            relationship={profile.relationship}
+            compact
+          />
+        </div>
+      ) : (
+        <span className="rounded-full bg-[var(--bg-soft)] px-3 py-2 text-xs font-semibold text-[var(--coral)]">
+          Ver
+        </span>
+      )}
     </button>
   );
 }
@@ -459,20 +471,32 @@ export function MobileSearchScreen() {
       ) : (
         <section className="space-y-3">
           {results.profiles.map((profile) => (
-            <button
+            <div
               key={profile.id}
-              type="button"
-              onClick={() => openProfile(profile)}
-              className="flex w-full items-center gap-3 rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4 text-left"
+              className="flex items-center gap-3 rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4"
             >
-              <Avatar avatarUrl={profile.avatarUrl} fallback={profile.handle} />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-semibold">@{profile.handle}</div>
-                <div className="truncate text-xs text-[var(--text-soft)]">
-                  {profile.displayName || profile.city}
+              <button
+                type="button"
+                onClick={() => openProfile(profile)}
+                className="flex min-w-0 flex-1 items-center gap-3 text-left"
+              >
+                <Avatar avatarUrl={profile.avatarUrl} fallback={profile.handle} />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-semibold">@{profile.handle}</div>
+                  <div className="truncate text-xs text-[var(--text-soft)]">
+                    {profile.displayName || profile.city}
+                  </div>
                 </div>
-              </div>
-            </button>
+              </button>
+              {profile.relationship ? (
+                <MobileFollowButton
+                  handle={profile.handle}
+                  isPrivate={profile.isPrivate}
+                  relationship={profile.relationship}
+                  compact
+                />
+              ) : null}
+            </div>
           ))}
 
           {results.events.map((event) => (

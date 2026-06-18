@@ -1,9 +1,11 @@
 import { MobileChatsScreen } from "@/components/mobile/mobile-chats-screen";
+import { listMobileConversationSummaries } from "@/lib/server/mobile-service";
 import { requireMobileViewerOrRedirect } from "@/lib/server/mobile-session";
 
 export const dynamic = "force-dynamic";
 
 export default async function ChatsPage() {
-  await requireMobileViewerOrRedirect();
-  return <MobileChatsScreen />;
+  const viewerId = await requireMobileViewerOrRedirect();
+  const initialChats = await listMobileConversationSummaries(viewerId);
+  return <MobileChatsScreen initialChats={initialChats} />;
 }

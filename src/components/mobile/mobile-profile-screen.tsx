@@ -9,6 +9,7 @@ import {
   Heart,
   LogOut,
   MessageCircle,
+  Settings,
   Send
 } from "lucide-react";
 import {
@@ -19,9 +20,10 @@ import {
   subscribeToMobileStream,
   updateViewerProfile
 } from "@/lib/mobile-api";
+import { MobileFollowButton } from "@/components/mobile/mobile-follow-button";
 import { MobilePostCarousel } from "@/components/mobile/mobile-post-carousel";
 import { MobileStoryOverlay } from "@/components/mobile/mobile-story-overlay";
-import { formatRelativeMobileTime } from "@/lib/mobile-shared";
+import { formatMobileDateTime, formatRelativeMobileTime } from "@/lib/mobile-shared";
 import { uploadManagedMediaFromClient } from "@/lib/tindereo-api";
 import type { MobilePost, MobilePostComment, MobileProfile, MobileProfileDetail, MobileStoryCluster } from "@/lib/mobile-types";
 
@@ -83,10 +85,26 @@ function EmptyPostTile() {
   );
 }
 
+function ProfileMiniAvatar({ profile }: { profile: { handle: string; avatarUrl: string | null } }) {
+  if (profile.avatarUrl) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img src={profile.avatarUrl} alt={`@${profile.handle}`} className="h-11 w-11 rounded-full object-cover" />
+    );
+  }
+
+  return (
+    <span className="flex h-11 w-11 items-center justify-center rounded-full bg-[var(--bg-soft)] text-xs font-semibold text-[var(--text-main)]">
+      {profile.handle.slice(0, 2).toUpperCase()}
+    </span>
+  );
+}
+
 export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileScreenProps) {
   const router = useRouter();
   const [profile, setProfile] = useState(initialProfile);
   const [pendingAvatar, setPendingAvatar] = useState(false);
+  const [updatingPrivacy, setUpdatingPrivacy] = useState(false);
   const [activeStoryOpen, setActiveStoryOpen] = useState(false);
   const [seenStoryIds, setSeenStoryIds] = useState<string[]>([]);
   const [postViewerOpenId, setPostViewerOpenId] = useState<string | null>(null);
@@ -95,6 +113,11 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
   const [pendingComments, setPendingComments] = useState<Record<string, boolean>>({});
   const [commentError, setCommentError] = useState<string | null>(null);
   const [postViewerVisible, setPostViewerVisible] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [peopleSheet, setPeopleSheet] = useState<"followers" | "following" | null>(null);
+  const [peopleQuery, setPeopleQuery] = useState("");
+  const [visiblePeopleCount, setVisiblePeopleCount] = useState(20);
+  const gestureStartRef = useRef<{ x: number; y: number } | null>(null);
   const postListRef = useRef<HTMLDivElement | null>(null);
   const postCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
@@ -131,6 +154,23 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
     () => Math.max(0, profile.posts.findIndex((post) => post.id === activePostId)),
     [activePostId, profile.posts]
   );
+  const visiblePeople = useMemo(() => {
+    const source = peopleSheet === "followers" ? profile.followers : profile.following;
+    const normalizedQuery = peopleQuery.trim().toLowerCase();
+    const filtered = normalizedQuery
+      ? source.filter(
+          (entry) =>
+            entry.handle.toLowerCase().includes(normalizedQuery) ||
+            entry.displayName.toLowerCase().includes(normalizedQuery) ||
+            entry.city.toLowerCase().includes(normalizedQuery)
+        )
+      : source;
+
+    return {
+      all: filtered,
+      items: filtered.slice(0, visiblePeopleCount)
+    };
+  }, [peopleQuery, peopleSheet, profile.followers, profile.following, visiblePeopleCount]);
 
   useEffect(() => {
     const unsubscribe = subscribeToMobileStream((event) => {
@@ -159,6 +199,11 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
       setPostViewerVisible(true);
     });
   }, [postViewerOpenId]);
+
+  useEffect(() => {
+    setPeopleQuery("");
+    setVisiblePeopleCount(20);
+  }, [peopleSheet]);
 
   function updatePost(postId: string, updater: (post: MobilePost) => MobilePost) {
     setProfile((current) => ({
@@ -233,18 +278,35 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
     }
   }
 
+  async function handleLogout() {
+    await mobileLogout();
+    router.replace("/login");
+    router.refresh();
+  }
+
+  function handleBack() {
+    if (typeof window !== "undefined" && window.history.length > 1) {
+      router.back();
+      return;
+    }
+
+    if (backHref) {
+      router.push(backHref);
+    }
+  }
+
   const headerAction = backHref ? (
-    <Link href={backHref} className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/90 shadow-sm">
+    <button
+      type="button"
+      onClick={handleBack}
+      className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/90 shadow-sm"
+    >
       <ArrowLeft className="h-5 w-5" />
-    </Link>
+    </button>
   ) : (
     <button
       type="button"
-      onClick={async () => {
-        await mobileLogout();
-        router.replace("/login");
-        router.refresh();
-      }}
+      onClick={() => void handleLogout()}
       className="flex h-12 items-center gap-2 rounded-2xl bg-white/90 px-4 text-sm font-semibold shadow-sm"
     >
       <LogOut className="h-4 w-4" />
@@ -254,11 +316,51 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
 
   return (
     <>
-      <div className="space-y-5">
+      <div
+        className="space-y-5"
+        onTouchEnd={(event) => {
+          if (!backHref || !gestureStartRef.current) {
+            gestureStartRef.current = null;
+            return;
+          }
+
+          const touch = event.changedTouches[0];
+          if (!touch) {
+            gestureStartRef.current = null;
+            return;
+          }
+
+          const deltaX = touch.clientX - gestureStartRef.current.x;
+          const deltaY = Math.abs(touch.clientY - gestureStartRef.current.y);
+          gestureStartRef.current = null;
+
+          if (deltaX > 92 && deltaY < 64) {
+            handleBack();
+          }
+        }}
+        onTouchStart={(event) => {
+          const touch = event.touches[0];
+          if (!touch) {
+            return;
+          }
+
+          gestureStartRef.current = { x: touch.clientX, y: touch.clientY };
+        }}
+      >
         <div className="flex items-center justify-between">
-          <div className="rounded-full bg-white/90 px-4 py-3 text-sm font-semibold shadow-sm">
-            {profile.isViewer ? "Perfil" : `@${profile.profile.handle}`}
-          </div>
+          {profile.isViewer ? (
+            <button
+              type="button"
+              onClick={() => setSettingsOpen(true)}
+              className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/90 shadow-sm"
+            >
+              <Settings className="h-5 w-5" />
+            </button>
+          ) : (
+            <div className="rounded-full bg-white/90 px-4 py-3 text-sm font-semibold shadow-sm">
+              @{profile.profile.handle}
+            </div>
+          )}
           {headerAction}
         </div>
 
@@ -303,7 +405,8 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                           city: profile.profile.city,
                           bio: profile.profile.bio,
                           avatarUrl: upload.assetRef,
-                          coverUrl: profile.profile.coverUrl
+                          coverUrl: profile.profile.coverUrl,
+                          isPrivate: profile.profile.isPrivate
                         });
 
                         setProfile((current) => ({
@@ -325,17 +428,56 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
               <div className="text-2xl font-black tracking-[-0.05em]">@{profile.profile.handle}</div>
               <div className="mt-1 text-sm font-semibold">{profile.profile.displayName}</div>
               <div className="mt-1 text-sm text-[var(--text-soft)]">{profile.profile.city}</div>
+              {profile.profile.isPrivate ? (
+                <div className="mt-2 inline-flex rounded-full bg-[var(--bg-soft)] px-3 py-2 text-[11px] font-semibold text-[var(--text-soft)]">
+                  Perfil privado
+                </div>
+              ) : null}
+              {!profile.isViewer ? (
+                <div className="mt-3">
+                  <MobileFollowButton
+                    handle={profile.profile.handle}
+                    isPrivate={profile.profile.isPrivate}
+                    relationship={profile.relationship}
+                    onChange={(relationship) => {
+                      setProfile((current) => ({
+                        ...current,
+                        relationship,
+                        profile: { ...current.profile, relationship },
+                        followerCount:
+                          relationship.followsProfile && !current.relationship.followsProfile
+                            ? current.followerCount + 1
+                            : !relationship.followsProfile && current.relationship.followsProfile
+                              ? Math.max(0, current.followerCount - 1)
+                              : current.followerCount
+                      }));
+                    }}
+                  />
+                </div>
+              ) : null}
 
               <div className="mt-4 grid grid-cols-3 gap-2">
                 {[
                   ["Posts", profile.posts.length],
-                  ["Eventos", profile.createdEvents.length],
-                  ["Amigos", profile.friendCount]
+                  ["Seguidores", profile.followerCount],
+                  ["Seguidos", profile.followingCount]
                 ].map(([label, value]) => (
-                  <div key={label} className="rounded-[1.2rem] bg-[var(--bg-soft)] px-2 py-2 text-center">
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={() => {
+                      if (label === "Seguidores") {
+                        setPeopleSheet("followers");
+                      }
+                      if (label === "Seguidos") {
+                        setPeopleSheet("following");
+                      }
+                    }}
+                    className="rounded-[1.2rem] bg-[var(--bg-soft)] px-2 py-2 text-center"
+                  >
                     <div className="text-lg font-black tracking-[-0.04em]">{value}</div>
                     <div className="mt-1 text-[10px] font-semibold text-[var(--text-soft)]">{label}</div>
-                  </div>
+                  </button>
                 ))}
               </div>
             </div>
@@ -352,11 +494,45 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
 
         <section className="space-y-3">
           <div className="flex items-center justify-between">
+            <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-soft)]">Eventos</div>
+            <div className="text-xs font-semibold text-[var(--text-soft)]">
+              {profile.createdEvents.length + profile.joinedEvents.length}
+            </div>
+          </div>
+          {profile.canViewContent && (profile.createdEvents.length || profile.joinedEvents.length) ? (
+            <div className="scrollbar-hide -mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
+              {[...profile.createdEvents, ...profile.joinedEvents]
+                .filter((event, index, array) => array.findIndex((candidate) => candidate.id === event.id) === index)
+                .map((event) => (
+                  <Link
+                    key={event.id}
+                    href={`/evento/${event.slug}`}
+                    className="min-w-[240px] rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4 shadow-sm"
+                  >
+                    <div className="text-base font-bold">{event.title}</div>
+                    <div className="mt-1 text-sm text-[var(--text-soft)]">{event.city}</div>
+                    <div className="mt-3 text-xs text-[var(--text-soft)]">{formatMobileDateTime(event.startsAt)}</div>
+                  </Link>
+                ))}
+            </div>
+          ) : profile.canViewContent ? (
+            <div className="rounded-[1.8rem] border border-dashed border-[var(--line-warm)] bg-white/80 px-5 py-8 text-center text-sm text-[var(--text-soft)]">
+              Aun no hay eventos visibles en este perfil.
+            </div>
+          ) : (
+            <div className="rounded-[1.8rem] border border-dashed border-[var(--line-warm)] bg-white/80 px-5 py-8 text-center text-sm text-[var(--text-soft)]">
+              Este perfil es privado. Sigue a la persona para ver sus eventos, historias y publicaciones.
+            </div>
+          )}
+        </section>
+
+        <section className="space-y-3">
+          <div className="flex items-center justify-between">
             <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-soft)]">Publicaciones</div>
             <div className="text-xs font-semibold text-[var(--text-soft)]">{profile.posts.length}</div>
           </div>
 
-          {profile.posts.length ? (
+          {profile.canViewContent && profile.posts.length ? (
             <div className="grid grid-cols-3 gap-[2px] overflow-hidden rounded-[1.8rem] bg-[var(--line-soft)]">
               {profile.posts.map((post) => (
                 <button
@@ -382,6 +558,10 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                 </button>
               ))}
             </div>
+          ) : !profile.canViewContent ? (
+            <div className="rounded-[1.8rem] border border-dashed border-[var(--line-warm)] bg-white/80 px-5 py-10 text-center text-sm text-[var(--text-soft)]">
+              Las publicaciones se desbloquean cuando acepten tu seguimiento.
+            </div>
           ) : (
             <div className="rounded-[1.8rem] border border-dashed border-[var(--line-warm)] bg-white/80 px-5 py-10 text-center text-sm text-[var(--text-soft)]">
               Aun no hay publicaciones en este perfil.
@@ -390,8 +570,134 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
         </section>
 
         {pendingAvatar ? <div className="text-sm text-[var(--text-soft)]">Guardando foto de perfil...</div> : null}
+        {updatingPrivacy ? <div className="text-sm text-[var(--text-soft)]">Actualizando privacidad...</div> : null}
         {commentError ? <div className="text-sm text-[#b84031]">{commentError}</div> : null}
       </div>
+
+      {settingsOpen ? (
+        <div className="fixed inset-0 z-50 bg-black/30" onClick={() => setSettingsOpen(false)}>
+          <div
+            className="absolute bottom-0 left-1/2 w-full max-w-[480px] -translate-x-1/2 rounded-t-[2rem] bg-white px-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-4"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <div className="text-lg font-black tracking-[-0.03em]">Centro de operaciones</div>
+                <div className="text-sm text-[var(--text-soft)]">Privacidad y ajustes rapidos del perfil.</div>
+              </div>
+              <button type="button" onClick={() => setSettingsOpen(false)} className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--bg-soft)]">
+                <ArrowLeft className="h-4 w-4 rotate-180" />
+              </button>
+            </div>
+
+            <div className="rounded-[1.6rem] border border-[var(--line-soft)] px-4 py-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold">Perfil privado</div>
+                  <div className="mt-1 text-sm text-[var(--text-soft)]">
+                    Si lo activas, te tendran que enviar solicitud antes de ver tus publicaciones e historias.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={updatingPrivacy}
+                  onClick={async () => {
+                    setUpdatingPrivacy(true);
+                    try {
+                      const next = await updateViewerProfile({
+                        displayName: profile.profile.displayName,
+                        city: profile.profile.city,
+                        bio: profile.profile.bio,
+                        avatarUrl: profile.profile.avatarUrl,
+                        coverUrl: profile.profile.coverUrl,
+                        isPrivate: !profile.profile.isPrivate
+                      });
+                      setProfile((current) => ({
+                        ...current,
+                        viewer: { ...current.viewer, isPrivate: next.isPrivate },
+                        profile: { ...current.profile, isPrivate: next.isPrivate }
+                      }));
+                    } finally {
+                      setUpdatingPrivacy(false);
+                    }
+                  }}
+                  className={cn(
+                    "rounded-full px-4 py-2 text-sm font-semibold",
+                    profile.profile.isPrivate ? "bg-[var(--text-main)] text-white" : "border border-[var(--line-warm)]"
+                  )}
+                >
+                  {profile.profile.isPrivate ? "Activado" : "Activar"}
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => void handleLogout()}
+              className="mt-4 w-full rounded-[1.6rem] border border-[var(--line-soft)] px-4 py-4 text-sm font-semibold"
+            >
+              Cerrar sesion
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {peopleSheet ? (
+        <div className="fixed inset-0 z-50 bg-black/30" onClick={() => setPeopleSheet(null)}>
+          <div
+            className="absolute bottom-0 left-1/2 flex h-[76dvh] w-full max-w-[480px] -translate-x-1/2 flex-col rounded-t-[2rem] bg-white px-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-4"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-4 flex items-center justify-between">
+              <div className="text-lg font-black tracking-[-0.03em]">
+                {peopleSheet === "followers" ? "Seguidores" : "Seguidos"}
+              </div>
+              <button type="button" onClick={() => setPeopleSheet(null)} className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--bg-soft)]">
+                <ArrowLeft className="h-4 w-4 rotate-180" />
+              </button>
+            </div>
+
+            <input
+              value={peopleQuery}
+              onChange={(event) => setPeopleQuery(event.target.value)}
+              placeholder={`Buscar en ${peopleSheet === "followers" ? "seguidores" : "seguidos"}`}
+              className="rounded-[1.4rem] border border-[var(--line-soft)] px-4 py-3 text-sm outline-none"
+            />
+
+            <div className="mt-4 flex-1 space-y-2 overflow-y-auto">
+              {visiblePeople.items.map((person) => (
+                <Link
+                  key={`${peopleSheet}-${person.id}`}
+                  href={`/perfil/${person.handle}`}
+                  onClick={() => setPeopleSheet(null)}
+                  className="flex items-center gap-3 rounded-[1.4rem] border border-[var(--line-soft)] px-3 py-3"
+                >
+                  <ProfileMiniAvatar profile={person} />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-semibold">@{person.handle}</div>
+                    <div className="truncate text-xs text-[var(--text-soft)]">{person.displayName || person.city}</div>
+                  </div>
+                </Link>
+              ))}
+              {!visiblePeople.items.length ? (
+                <div className="rounded-[1.4rem] border border-dashed border-[var(--line-warm)] px-4 py-6 text-center text-sm text-[var(--text-soft)]">
+                  No hay resultados en esta seccion.
+                </div>
+              ) : null}
+            </div>
+
+            {visiblePeople.items.length < visiblePeople.all.length ? (
+              <button
+                type="button"
+                onClick={() => setVisiblePeopleCount((current) => current + 20)}
+                className="mt-4 rounded-full border border-[var(--line-warm)] px-4 py-3 text-sm font-semibold"
+              >
+                Cargar mas
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       {activeStoryOpen && hasStories ? (
         <MobileStoryOverlay
@@ -484,6 +790,7 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                             bio: "",
                             avatarUrl: post.authorAvatarUrl,
                             coverUrl: null,
+                            isPrivate: false,
                             createdAt: post.createdAt
                           }}
                           size="sm"

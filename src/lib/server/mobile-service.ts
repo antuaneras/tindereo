@@ -71,6 +71,8 @@ const TABLES = {
   messageReceipts: "message_receipts",
   messages: "messages",
   notifications: "notifications",
+  profileFollowRequests: "profile_follow_requests",
+  profileFollows: "profile_follows",
   postLikes: "post_likes",
   postComments: "post_comments",
   postMediaItems: "post_media_items",
@@ -92,6 +94,7 @@ type ProfileRow = {
   handle: string;
   handle_lower: string;
   id: string;
+  is_private: boolean;
   updated_at: string;
 };
 
@@ -193,6 +196,22 @@ type FriendshipRow = {
   id?: string;
   user_a_id: string;
   user_b_id: string;
+};
+
+type ProfileFollowRow = {
+  created_at: string;
+  followee_id: string;
+  follower_id: string;
+  id: string;
+};
+
+type ProfileFollowRequestRow = {
+  created_at: string;
+  id: string;
+  requester_id: string;
+  responded_at: string | null;
+  status: "pending" | "accepted" | "rejected" | "cancelled";
+  target_user_id: string;
 };
 
 type ConversationRow = {
@@ -339,7 +358,9 @@ function mapProfile(row: ProfileRow): MobileProfile {
     bio: row.bio,
     avatarUrl: resolveMediaUrl(row.avatar_url),
     coverUrl: resolveMediaUrl(row.cover_url),
-    createdAt: row.created_at
+    isPrivate: Boolean(row.is_private),
+    createdAt: row.created_at,
+    relationship: null
   };
 }
 
@@ -349,7 +370,8 @@ function mapProfileMini(profile: MobileProfile): MobileProfileMini {
     handle: profile.handle,
     displayName: profile.displayName,
     city: profile.city,
-    avatarUrl: profile.avatarUrl
+    avatarUrl: profile.avatarUrl,
+    isPrivate: profile.isPrivate
   };
 }
 
@@ -390,28 +412,84 @@ function buildFriendAdjacency(friendships: FriendshipRow[]) {
   return adjacency;
 }
 
+function buildFollowAdjacency(follows: ProfileFollowRow[]) {
+  const followingByUserId = new Map<string, Set<string>>();
+  const followersByUserId = new Map<string, Set<string>>();
+
+  for (const follow of follows) {
+    if (!followingByUserId.has(follow.follower_id)) {
+      followingByUserId.set(follow.follower_id, new Set<string>());
+    }
+    if (!followersByUserId.has(follow.followee_id)) {
+      followersByUserId.set(follow.followee_id, new Set<string>());
+    }
+
+    followingByUserId.get(follow.follower_id)?.add(follow.followee_id);
+    followersByUserId.get(follow.followee_id)?.add(follow.follower_id);
+  }
+
+  return { followersByUserId, followingByUserId };
+}
+
+function buildProfileRelationship(
+  viewerId: string,
+  profileId: string,
+  follows: ProfileFollowRow[],
+  requests: ProfileFollowRequestRow[]
+) {
+  if (viewerId === profileId) {
+    return {
+      followsProfile: false,
+      followedByProfile: false,
+      outgoingFollowRequestId: null,
+      incomingFollowRequestId: null
+    };
+  }
+
+  return {
+    followsProfile: follows.some((follow) => follow.follower_id === viewerId && follow.followee_id === profileId),
+    followedByProfile: follows.some((follow) => follow.follower_id === profileId && follow.followee_id === viewerId),
+    outgoingFollowRequestId:
+      requests.find((request) => request.requester_id === viewerId && request.target_user_id === profileId && request.status === "pending")?.id ?? null,
+    incomingFollowRequestId:
+      requests.find((request) => request.requester_id === profileId && request.target_user_id === viewerId && request.status === "pending")?.id ?? null
+  };
+}
+
+function applyViewerRelationshipsToProfiles(
+  viewerId: string,
+  profiles: MobileProfile[],
+  follows: ProfileFollowRow[],
+  requests: ProfileFollowRequestRow[]
+) {
+  return profiles.map((profile) => ({
+    ...profile,
+    relationship: buildProfileRelationship(viewerId, profile.id, follows, requests)
+  }));
+}
+
 function buildSuggestedProfilesForViewer(
   viewerId: string,
   profiles: MobileProfile[],
-  friendships: FriendshipRow[]
+  follows: ProfileFollowRow[]
 ) {
-  const adjacency = buildFriendAdjacency(friendships);
+  const { followersByUserId, followingByUserId } = buildFollowAdjacency(follows);
   const profilesById = new Map(profiles.map((profile) => [profile.id, profile]));
-  const viewerFriends = adjacency.get(viewerId) ?? new Set<string>();
+  const viewerFollowing = followingByUserId.get(viewerId) ?? new Set<string>();
 
   const suggestedProfiles = profiles
-    .filter((profile) => profile.id !== viewerId && !viewerFriends.has(profile.id))
+    .filter((profile) => profile.id !== viewerId && !viewerFollowing.has(profile.id))
     .map((profile): MobileSuggestedProfile => {
-      const candidateFriends = adjacency.get(profile.id) ?? new Set<string>();
-      const mutualFriends = [...viewerFriends]
-        .filter((friendId) => candidateFriends.has(friendId))
-        .map((friendId) => profilesById.get(friendId))
-        .filter((friend): friend is MobileProfile => Boolean(friend))
+      const candidateFollowers = followersByUserId.get(profile.id) ?? new Set<string>();
+      const mutualFriends = [...viewerFollowing]
+        .filter((followedId) => candidateFollowers.has(followedId))
+        .map((followedId) => profilesById.get(followedId))
+        .filter((connection): connection is MobileProfile => Boolean(connection))
         .slice(0, 3)
-        .map((friend) => ({
-          id: friend.id,
-          handle: friend.handle,
-          avatarUrl: friend.avatarUrl
+        .map((connection) => ({
+          id: connection.id,
+          handle: connection.handle,
+          avatarUrl: connection.avatarUrl
         }));
 
       return {
@@ -430,7 +508,7 @@ function buildSuggestedProfilesForViewer(
 
   return {
     suggestedProfiles,
-    viewerFriendIds: viewerFriends
+    viewerFriendIds: viewerFollowing
   };
 }
 
@@ -622,10 +700,28 @@ async function loadProfiles(ids?: string[]) {
   return rows.map(mapProfile);
 }
 
+async function loadProfileFollows() {
+  return selectRows<ProfileFollowRow>(TABLES.profileFollows, {
+    order: [{ column: "created_at", ascending: false }]
+  }).catch(async () => [] as ProfileFollowRow[]);
+}
+
+async function loadPendingProfileFollowRequests() {
+  return selectRows<ProfileFollowRequestRow>(TABLES.profileFollowRequests, {
+    filters: [{ column: "status", op: "eq", value: "pending" }],
+    order: [{ column: "created_at", ascending: false }]
+  }).catch(async () => [] as ProfileFollowRequestRow[]);
+}
+
 async function loadFriendIds(viewerId: string) {
-  const friendships = await selectRows<FriendshipRow>(TABLES.friendships);
-  const adjacency = buildFriendAdjacency(friendships);
-  return [...(adjacency.get(viewerId) ?? new Set<string>())];
+  const follows = await loadProfileFollows();
+  const { followersByUserId, followingByUserId } = buildFollowAdjacency(follows);
+  return [
+    ...new Set([
+      ...(followingByUserId.get(viewerId) ?? new Set<string>()),
+      ...(followersByUserId.get(viewerId) ?? new Set<string>())
+    ])
+  ];
 }
 
 async function loadMediaAssets(ids: string[]) {
@@ -1143,16 +1239,17 @@ export async function getMobileSearch(
   const facets = buildSearchFacets(visibleEvents);
 
   if (!normalizedQuery) {
-    const [profileRows, friendships, suggestedPosts] = await Promise.all([
+    const [profileRows, follows, followRequests, suggestedPosts] = await Promise.all([
       selectRows<ProfileRow>(TABLES.profiles, { order: [{ column: "created_at", ascending: false }], limit: 80 }),
-      selectRows<FriendshipRow>(TABLES.friendships),
+      loadProfileFollows(),
+      loadPendingProfileFollowRequests(),
       loadPostsForViewer(viewerId)
     ]);
-    const profiles = profileRows.map(mapProfile);
+    const profiles = applyViewerRelationshipsToProfiles(viewerId, profileRows.map(mapProfile), follows, followRequests);
     const { suggestedProfiles, viewerFriendIds } = buildSuggestedProfilesForViewer(
       viewerId,
       profiles,
-      friendships
+      follows
     );
     const suggestedProfileIds = new Set(suggestedProfiles.map((profile) => profile.id));
 
@@ -1176,10 +1273,14 @@ export async function getMobileSearch(
     order: [{ column: "created_at", ascending: false }],
     limit: 80
   });
+  const [follows, followRequests] = await Promise.all([
+    loadProfileFollows(),
+    loadPendingProfileFollowRequests()
+  ]);
+  const mappedProfiles = applyViewerRelationshipsToProfiles(viewerId, profileRows.map(mapProfile), follows, followRequests);
 
   return {
-    profiles: profileRows
-      .map(mapProfile)
+    profiles: mappedProfiles
       .filter(
         (profile) =>
           profile.handle.toLowerCase().includes(normalizedQuery) ||
@@ -1249,6 +1350,7 @@ export async function registerMobileProfile(
     bio: input.bio.trim(),
     avatar_url: null,
     cover_url: null,
+    is_private: false,
     created_at: now,
     updated_at: now
   });
@@ -1270,6 +1372,7 @@ export async function updateMobileProfile(viewerId: string, input: UpdateMobileP
       bio: input.bio.trim(),
       avatar_url: input.avatarUrl,
       cover_url: input.coverUrl,
+      ...(typeof input.isPrivate === "boolean" ? { is_private: input.isPrivate } : {}),
       updated_at: new Date().toISOString()
     }
   );
@@ -1286,6 +1389,231 @@ export async function updateMobileProfile(viewerId: string, input: UpdateMobileP
   });
 
   return mapProfile(row);
+}
+
+export async function listMobileNotifications(viewerId: string) {
+  await ensureMobileSchema();
+  return listNotificationsForViewer(viewerId);
+}
+
+export async function markAllMobileNotificationsRead(viewerId: string) {
+  await patchRows(
+    TABLES.notifications,
+    [
+      { column: "user_id", op: "eq", value: viewerId },
+      { column: "read_at", op: "is", value: null }
+    ],
+    {
+      read_at: new Date().toISOString()
+    },
+    { returning: "minimal" }
+  );
+
+  publishMobileRealtimeEvent({ type: "notifications", viewerId });
+}
+
+async function resolveProfileByHandle(handle: string) {
+  const rows = await selectRows<ProfileRow>(TABLES.profiles, {
+    filters: [{ column: "handle_lower", op: "eq", value: handle.trim().replace(/^@+/, "").toLowerCase() }],
+    limit: 1
+  });
+
+  return rows[0] ? mapProfile(rows[0]) : null;
+}
+
+export async function requestProfileFollow(viewerId: string, handle: string) {
+  const [viewerProfiles, targetProfile, follows, followRequests] = await Promise.all([
+    loadProfiles([viewerId]),
+    resolveProfileByHandle(handle),
+    loadProfileFollows(),
+    loadPendingProfileFollowRequests()
+  ]);
+  const viewerProfile = viewerProfiles[0];
+  if (!viewerProfile || !targetProfile) {
+    throw new Error("No pude encontrar ese perfil.");
+  }
+  if (viewerId === targetProfile.id) {
+    throw new Error("No puedes seguirte a ti mismo.");
+  }
+
+  const relationship = buildProfileRelationship(viewerId, targetProfile.id, follows, followRequests);
+  if (relationship.followsProfile) {
+    return relationship;
+  }
+
+  if (targetProfile.isPrivate) {
+    if (relationship.outgoingFollowRequestId) {
+      return relationship;
+    }
+
+    const created = await insertRow<ProfileFollowRequestRow, ProfileFollowRequestRow>(TABLES.profileFollowRequests, {
+      id: buildMobileId("follow-request"),
+      requester_id: viewerId,
+      target_user_id: targetProfile.id,
+      status: "pending",
+      created_at: new Date().toISOString(),
+      responded_at: null
+    }, {
+      onConflict: "requester_id,target_user_id,status",
+      returning: "representation"
+    });
+
+    await notifyUsers([targetProfile.id], {
+      kind: "follow-request",
+      title: `@${viewerProfile.handle} quiere seguirte`,
+      body: "Tienes una nueva solicitud de seguimiento.",
+      entityType: "profile",
+      entityId: targetProfile.id,
+      data: {
+        requestId: created?.id ?? "",
+        requesterHandle: viewerProfile.handle
+      }
+    });
+
+    publishMobileRealtimeEvent({ type: "profile", profileId: targetProfile.id, viewerId });
+    publishMobileRealtimeEvent({ type: "profile", profileId: targetProfile.id, viewerId: targetProfile.id });
+
+    return {
+      ...relationship,
+      outgoingFollowRequestId: created?.id ?? relationship.outgoingFollowRequestId
+    };
+  }
+
+  await insertRow<ProfileFollowRow, ProfileFollowRow>(TABLES.profileFollows, {
+    id: buildMobileId("follow"),
+    follower_id: viewerId,
+    followee_id: targetProfile.id,
+    created_at: new Date().toISOString()
+  }, {
+    onConflict: "follower_id,followee_id",
+    returning: "minimal"
+  });
+
+  await notifyUsers([targetProfile.id], {
+    kind: "follow-accepted",
+    title: `@${viewerProfile.handle} te sigue`,
+    body: "Tu perfil publico ha recibido un nuevo seguidor.",
+    entityType: "profile",
+    entityId: targetProfile.id,
+    data: {
+      requesterHandle: viewerProfile.handle
+    }
+  });
+
+  publishMobileRealtimeEvent({ type: "profile", profileId: targetProfile.id, viewerId });
+  publishMobileRealtimeEvent({ type: "profile", profileId: targetProfile.id, viewerId: targetProfile.id });
+
+  return {
+    followsProfile: true,
+    followedByProfile: relationship.followedByProfile,
+    outgoingFollowRequestId: null,
+    incomingFollowRequestId: relationship.incomingFollowRequestId
+  };
+}
+
+export async function unfollowProfile(viewerId: string, handle: string) {
+  const targetProfile = await resolveProfileByHandle(handle);
+  if (!targetProfile) {
+    throw new Error("No pude encontrar ese perfil.");
+  }
+
+  await deleteRows(TABLES.profileFollows, [
+    { column: "follower_id", op: "eq", value: viewerId },
+    { column: "followee_id", op: "eq", value: targetProfile.id }
+  ], { returning: "minimal" });
+
+  publishMobileRealtimeEvent({ type: "profile", profileId: targetProfile.id, viewerId });
+  publishMobileRealtimeEvent({ type: "profile", profileId: targetProfile.id, viewerId: targetProfile.id });
+}
+
+export async function cancelProfileFollowRequest(viewerId: string, handle: string) {
+  const targetProfile = await resolveProfileByHandle(handle);
+  if (!targetProfile) {
+    throw new Error("No pude encontrar ese perfil.");
+  }
+
+  const now = new Date().toISOString();
+  await patchRows(
+    TABLES.profileFollowRequests,
+    [
+      { column: "requester_id", op: "eq", value: viewerId },
+      { column: "target_user_id", op: "eq", value: targetProfile.id },
+      { column: "status", op: "eq", value: "pending" }
+    ],
+    {
+      status: "cancelled",
+      responded_at: now
+    },
+    { returning: "minimal" }
+  );
+
+  publishMobileRealtimeEvent({ type: "profile", profileId: targetProfile.id, viewerId });
+  publishMobileRealtimeEvent({ type: "profile", profileId: targetProfile.id, viewerId: targetProfile.id });
+}
+
+export async function respondToProfileFollowRequest(viewerId: string, requestId: string, accept: boolean) {
+  const requestRows = await selectRows<ProfileFollowRequestRow>(TABLES.profileFollowRequests, {
+    filters: [{ column: "id", op: "eq", value: requestId }],
+    limit: 1
+  });
+  const request = requestRows[0];
+  if (!request || request.target_user_id !== viewerId || request.status !== "pending") {
+    throw new Error("La solicitud ya no esta disponible.");
+  }
+
+  const now = new Date().toISOString();
+  await patchRows(
+    TABLES.profileFollowRequests,
+    [{ column: "id", op: "eq", value: requestId }],
+    {
+      status: accept ? "accepted" : "rejected",
+      responded_at: now
+    },
+    { returning: "minimal" }
+  );
+
+  await patchRows(
+    TABLES.notifications,
+    [
+      { column: "user_id", op: "eq", value: viewerId },
+      { column: "kind", op: "eq", value: "follow-request" }
+    ],
+    {
+      read_at: now
+    },
+    { returning: "minimal" }
+  ).catch(async () => []);
+
+  if (accept) {
+    await insertRow<ProfileFollowRow, ProfileFollowRow>(TABLES.profileFollows, {
+      id: buildMobileId("follow"),
+      follower_id: request.requester_id,
+      followee_id: viewerId,
+      created_at: now
+    }, {
+      onConflict: "follower_id,followee_id",
+      returning: "minimal"
+    });
+
+    const requester = (await loadProfiles([request.requester_id]))[0] ?? null;
+    const viewerProfile = (await loadProfiles([viewerId]))[0] ?? null;
+    if (requester && viewerProfile) {
+      await notifyUsers([request.requester_id], {
+        kind: "follow-accepted",
+        title: `@${viewerProfile.handle} acepto tu solicitud`,
+        body: "Ya puedes ver su perfil completo.",
+        entityType: "profile",
+        entityId: viewerId,
+        data: {
+          targetHandle: viewerProfile.handle
+        }
+      });
+    }
+  }
+
+  publishMobileRealtimeEvent({ type: "notifications", viewerId });
+  publishMobileRealtimeEvent({ type: "profile", profileId: viewerId, viewerId });
+  publishMobileRealtimeEvent({ type: "profile", profileId: viewerId, viewerId: request.requester_id });
 }
 
 export async function updateConversationCover(viewerId: string, conversationId: string, coverImage: string | null) {
@@ -1870,7 +2198,11 @@ async function viewerCanInviteToEvent(viewerId: string, eventId: string) {
 }
 
 async function loadInvitableFriendsForEvent(viewerId: string, eventId: string) {
-  const [friendIds, memberRows, inviteRows, banRows] = await Promise.all([
+  const [eventRows, friendIds, memberRows, inviteRows, banRows] = await Promise.all([
+    selectRows<EventRow>(TABLES.events, {
+      filters: [{ column: "id", op: "eq", value: eventId }],
+      limit: 1
+    }),
     loadFriendIds(viewerId),
     selectRows<EventMemberRow>(TABLES.eventMembers, {
       filters: [{ column: "event_id", op: "eq", value: eventId }]
@@ -1882,9 +2214,11 @@ async function loadInvitableFriendsForEvent(viewerId: string, eventId: string) {
       filters: [{ column: "event_id", op: "eq", value: eventId }]
     })
   ]);
+  const eventRow = eventRows[0] ?? null;
 
   const blockedIds = new Set([
     viewerId,
+    eventRow?.host_id ?? "",
     ...memberRows.map((row) => row.user_id),
     ...inviteRows.filter((row) => row.status === "pending").map((row) => row.to_user_id),
     ...banRows.map((row) => row.user_id)
@@ -3332,19 +3666,15 @@ export async function getMobileEventDetail(viewerId: string, slug: string): Prom
 }
 
 export async function getMobileProfileDetail(viewerId: string, handle: string): Promise<MobileProfileDetail> {
-  const rows = await selectRows<ProfileRow>(TABLES.profiles, {
-    filters: [{ column: "handle_lower", op: "eq", value: handle.trim().replace(/^@+/, "").toLowerCase() }],
-    limit: 1
-  });
-  const row = rows[0];
-  if (!row) {
+  const profile = await resolveProfileByHandle(handle);
+  if (!profile) {
     throw new Error("No se encontro ese perfil.");
   }
-  const profile = mapProfile(row);
-  const [viewerProfiles, events, friendships, posts, storyClusters, memberships] = await Promise.all([
+  const [viewerProfiles, events, follows, followRequests, posts, storyClusters, memberships] = await Promise.all([
     loadProfiles([viewerId]),
     loadAllEvents(),
-    selectRows<{ user_a_id: string; user_b_id: string }>(TABLES.friendships),
+    loadProfileFollows(),
+    loadPendingProfileFollowRequests(),
     loadPostsForViewer(viewerId),
     loadActiveStoriesForViewer(viewerId),
     selectRows<EventMemberRow>(TABLES.eventMembers)
@@ -3353,30 +3683,45 @@ export async function getMobileProfileDetail(viewerId: string, handle: string): 
   if (!viewer) {
     throw new Error("No se ha encontrado tu perfil.");
   }
-  const isFriend = friendships.some(
-    (friendship) =>
-      (friendship.user_a_id === viewerId && friendship.user_b_id === profile.id) ||
-      (friendship.user_b_id === viewerId && friendship.user_a_id === profile.id)
-  );
+  const relationship = buildProfileRelationship(viewerId, profile.id, follows, followRequests);
+  const canViewContent = profile.id === viewerId || !profile.isPrivate || relationship.followsProfile;
+  const followerIds = follows.filter((follow) => follow.followee_id === profile.id).map((follow) => follow.follower_id);
+  const followingIds = follows.filter((follow) => follow.follower_id === profile.id).map((follow) => follow.followee_id);
+  const relatedProfiles = await loadProfiles([...new Set([...followerIds, ...followingIds])]);
+  const relatedProfilesById = new Map(relatedProfiles.map((entry) => [entry.id, entry]));
+
   return {
     viewer,
-    profile,
+    profile: {
+      ...profile,
+      relationship
+    },
     isViewer: profile.id === viewerId,
-    isFriend,
-    friendCount: friendships.filter(
-      (friendship) => friendship.user_a_id === profile.id || friendship.user_b_id === profile.id
-    ).length,
-    createdEvents: events.filter((event) => event.hostId === profile.id),
-    joinedEvents: events.filter((event) =>
+    canViewContent,
+    relationship,
+    followerCount: followerIds.length,
+    followingCount: followingIds.length,
+    followers: followerIds
+      .map((id) => relatedProfilesById.get(id))
+      .filter((entry): entry is MobileProfile => Boolean(entry))
+      .map(mapProfileMini),
+    following: followingIds
+      .map((id) => relatedProfilesById.get(id))
+      .filter((entry): entry is MobileProfile => Boolean(entry))
+      .map(mapProfileMini),
+    createdEvents: canViewContent ? events.filter((event) => event.hostId === profile.id) : [],
+    joinedEvents: canViewContent ? events.filter((event) =>
       memberships.some(
         (membership) =>
           membership.user_id === profile.id &&
           membership.event_id === event.id &&
           membership.status === "approved"
       )
-    ),
-    stories: storyClusters.flatMap((cluster) => cluster.stories).filter((story) => story.authorId === profile.id),
-    posts: posts.filter((post) => post.authorId === profile.id)
+    ) : [],
+    stories: canViewContent
+      ? storyClusters.flatMap((cluster) => cluster.stories).filter((story) => story.authorId === profile.id)
+      : [],
+    posts: canViewContent ? posts.filter((post) => post.authorId === profile.id) : []
   };
 }
 

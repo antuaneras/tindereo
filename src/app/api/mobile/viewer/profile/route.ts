@@ -8,7 +8,7 @@ export async function PATCH(request: Request) {
   try {
     const viewerId = await requireMobileViewerId();
     const body = (await request.json().catch(() => null)) as
-      | { avatarUrl?: string | null; bio?: string; city?: string; coverUrl?: string | null; displayName?: string }
+      | { avatarUrl?: string | null; bio?: string; city?: string; coverUrl?: string | null; displayName?: string; isPrivate?: boolean }
       | null;
     if (
       !body ||
@@ -25,7 +25,8 @@ export async function PATCH(request: Request) {
         city: body.city,
         bio: body.bio,
         avatarUrl: typeof body.avatarUrl === "string" || body.avatarUrl === null ? body.avatarUrl : null,
-        coverUrl: typeof body.coverUrl === "string" || body.coverUrl === null ? body.coverUrl : null
+        coverUrl: typeof body.coverUrl === "string" || body.coverUrl === null ? body.coverUrl : null,
+        isPrivate: typeof body.isPrivate === "boolean" ? body.isPrivate : undefined
       })
     );
   } catch (error) {

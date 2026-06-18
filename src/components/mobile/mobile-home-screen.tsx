@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { CalendarDays, Camera, Search } from "lucide-react";
+import { CalendarDays, Camera, Heart } from "lucide-react";
 import { fetchMobileBootstrap, respondToEventInvite, subscribeToMobileStream } from "@/lib/mobile-api";
 import { formatMobileDateTime } from "@/lib/mobile-shared";
 import { PostCard, StoryStrip } from "@/components/mobile/mobile-feed";
@@ -230,8 +230,13 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
           <div className="rounded-full bg-white/90 px-4 py-3 text-sm font-semibold shadow-sm">
             Inicio
           </div>
-          <Link href="/buscar" className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/90 shadow-sm">
-            <Search className="h-5 w-5" />
+          <Link href="/notificaciones" className="relative flex h-12 w-12 items-center justify-center rounded-2xl bg-white/90 shadow-sm">
+            <Heart className="h-5 w-5" />
+            {data.viewer.unreadNotificationCount > 0 ? (
+              <span className="absolute -right-1 -top-1 inline-flex min-h-5 min-w-5 items-center justify-center rounded-full bg-[var(--coral)] px-1 text-[10px] font-semibold text-white">
+                {data.viewer.unreadNotificationCount}
+              </span>
+            ) : null}
           </Link>
         </div>
 
@@ -322,29 +327,36 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
             <CalendarDays className="h-4 w-4" />
             Tus eventos activos
           </div>
-          <div className="mt-4 space-y-3">
-            {data.joinedEvents.slice(0, 3).map((event) => (
-              <Link
-                key={event.id}
-                href={`/evento/${event.slug}`}
-                className="flex items-center gap-3 rounded-[1.6rem] border border-[var(--line-soft)] bg-[var(--bg-soft)] px-4 py-4"
-              >
-                <div className="flex-1">
-                  <div className="text-base font-bold">{event.title}</div>
-                  <div className="mt-1 text-sm text-[var(--text-soft)]">{formatMobileDateTime(event.startsAt)}</div>
-                </div>
-                <div className="flex flex-col items-end gap-2">
-                  <div className="rounded-full bg-white px-3 py-2 text-xs font-semibold text-[var(--coral)]">
-                    {event.experienceState === "live" ? "En vivo" : "Abrir"}
-                  </div>
-                  {event.visibility === "private" ? (
-                    <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">
-                      Privado
+          <div className="mt-4">
+            {data.joinedEvents.length ? (
+              <div className="scrollbar-hide -mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
+                {data.joinedEvents.map((event) => (
+                  <Link
+                    key={event.id}
+                    href={`/evento/${event.slug}`}
+                    className="min-w-[252px] rounded-[1.6rem] border border-[var(--line-soft)] bg-[var(--bg-soft)] px-4 py-4"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-base font-bold">{event.title}</div>
+                        <div className="mt-1 text-sm text-[var(--text-soft)]">{event.city}</div>
+                        <div className="mt-3 text-sm text-[var(--text-soft)]">{formatMobileDateTime(event.startsAt)}</div>
+                      </div>
+                      <div className="flex flex-col items-end gap-2">
+                        <div className="rounded-full bg-white px-3 py-2 text-xs font-semibold text-[var(--coral)]">
+                          {event.experienceState === "live" ? "En vivo" : "Abrir"}
+                        </div>
+                        {event.visibility === "private" ? (
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">
+                            Privado
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
-                  ) : null}
-                </div>
-              </Link>
-            ))}
+                  </Link>
+                ))}
+              </div>
+            ) : null}
             {!data.joinedEvents.length ? (
               <div className="rounded-[1.6rem] border border-dashed border-[var(--line-warm)] px-4 py-6 text-sm text-[var(--text-soft)]">
                 Todavia no te has unido a ningun evento.
