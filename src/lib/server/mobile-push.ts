@@ -252,16 +252,50 @@ export async function removeMobilePushSubscription(userId: string, endpoint?: st
 }
 
 function buildTargetUrl(notification: MobileNotification) {
+  const eventSlug = typeof notification.data.eventSlug === "string" ? notification.data.eventSlug : null;
+  const targetHandle = typeof notification.data.targetHandle === "string" ? notification.data.targetHandle : null;
+  const requesterHandle =
+    typeof notification.data.requesterHandle === "string" ? notification.data.requesterHandle : null;
+  const conversationId =
+    typeof notification.data.conversationId === "string" ? notification.data.conversationId : null;
+
+  if (notification.kind === "follow-request" || notification.kind === "chat-request") {
+    return "/notificaciones";
+  }
+
   if (notification.entityType === "conversation" && notification.entityId) {
     return `/chat/${notification.entityId}`;
   }
+
+  if (conversationId) {
+    return `/chat/${conversationId}`;
+  }
+
   if (notification.entityType === "event") {
-    const slug = typeof notification.data.eventSlug === "string" ? notification.data.eventSlug : null;
-    if (slug) {
-      return `/evento/${slug}`;
+    if (eventSlug) {
+      return `/evento/${eventSlug}`;
     }
     return "/eventos";
   }
+
+  if (targetHandle) {
+    return `/perfil/${targetHandle}`;
+  }
+
+  if (requesterHandle) {
+    return `/perfil/${requesterHandle}`;
+  }
+
+  if (
+    notification.entityType === "post" ||
+    notification.kind === "post-like" ||
+    notification.kind === "mention" ||
+    notification.kind === "story-reaction" ||
+    notification.kind === "story-reply"
+  ) {
+    return "/perfil";
+  }
+
   return "/";
 }
 

@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
-  CalendarDays,
   Camera,
   CornerUpLeft,
   Heart,
@@ -127,7 +126,7 @@ function ProfileAvatar({
   size?: "sm" | "md" | "lg";
 }) {
   const dimensions =
-    size === "sm" ? "h-8 w-8 text-[11px]" : size === "md" ? "h-11 w-11 text-sm" : "h-24 w-24 text-2xl";
+    size === "sm" ? "h-8 w-8 text-[11px]" : size === "md" ? "h-11 w-11 text-sm" : "h-20 w-20 text-xl";
 
   const content = profile.avatarUrl ? (
     // eslint-disable-next-line @next/next/no-img-element
@@ -269,33 +268,6 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
     [profile.createdEvents, profile.joinedEvents]
   );
   const canOpenPrivateSections = profile.isViewer || !profile.profile.isPrivate;
-  const featuredEvent = useMemo(
-    () =>
-      [...profileEvents]
-        .sort((left, right) => {
-          if (left.experienceState === "live" && right.experienceState !== "live") {
-            return -1;
-          }
-          if (right.experienceState === "live" && left.experienceState !== "live") {
-            return 1;
-          }
-          return left.startsAt.localeCompare(right.startsAt);
-        })[0] ?? null,
-    [profileEvents]
-  );
-  const featuredPost = useMemo(
-    () =>
-      [...profile.posts].sort((left, right) => {
-        if (right.likeCount !== left.likeCount) {
-          return right.likeCount - left.likeCount;
-        }
-        if (right.commentCount !== left.commentCount) {
-          return right.commentCount - left.commentCount;
-        }
-        return right.createdAt.localeCompare(left.createdAt);
-      })[0] ?? null,
-    [profile.posts]
-  );
   const sharedFollowersLabel = useMemo(() => {
     if (!profile.sharedFollowerCount) {
       return null;
@@ -629,8 +601,8 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
           {headerAction}
         </div>
 
-        <section className="rounded-[2rem] border border-[var(--line-soft)] bg-white/94 p-5 shadow-[0_18px_40px_rgba(29,22,15,0.06)]">
-          <div className="flex items-start gap-4">
+        <section className="rounded-[1.9rem] border border-[var(--line-soft)] bg-white/94 px-4 py-4 shadow-[0_18px_40px_rgba(29,22,15,0.06)]">
+          <div className="flex items-start gap-3.5">
             <div className="relative shrink-0">
               <button
                 type="button"
@@ -651,7 +623,7 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
               </button>
 
               {profile.isViewer ? (
-                <label className="absolute bottom-0 right-0 flex h-10 w-10 cursor-pointer items-center justify-center rounded-full bg-[var(--text-main)] text-white shadow-lg">
+                <label className="absolute bottom-0 right-0 flex h-9 w-9 cursor-pointer items-center justify-center rounded-full bg-[var(--text-main)] text-white shadow-lg">
                   <Camera className="h-4 w-4" />
                   <input
                     type="file"
@@ -691,21 +663,63 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
             </div>
 
             <div className="min-w-0 flex-1">
-              <div className="text-2xl font-black tracking-[-0.05em]">@{profile.profile.handle}</div>
-              <div className="mt-1 text-sm font-semibold">{profile.profile.displayName}</div>
-              <div className="mt-1 text-sm text-[var(--text-soft)]">{profile.profile.city}</div>
+              <div className="text-[1.85rem] font-black tracking-[-0.05em] leading-8">@{profile.profile.handle}</div>
+              <div className="mt-0.5 text-sm font-semibold leading-5">{profile.profile.displayName}</div>
+              <div className="text-sm text-[var(--text-soft)]">{profile.profile.city}</div>
+
+              <div className="mt-3 flex items-stretch gap-2">
+                {[
+                  ["Posts", profile.posts.length],
+                  ["Seguidores", profile.followerCount],
+                  ["Seguidos", profile.followingCount]
+                ].map(([label, value]) => (
+                  <button
+                    key={label}
+                    type="button"
+                    disabled={!canOpenPrivateSections && label !== "Posts"}
+                    onClick={() => {
+                      if (!canOpenPrivateSections) {
+                        return;
+                      }
+                      if (label === "Seguidores") {
+                        setPeopleSheet("followers");
+                      }
+                      if (label === "Seguidos") {
+                        setPeopleSheet("following");
+                      }
+                    }}
+                    className={cn(
+                      "min-w-0 flex-1 rounded-[1rem] bg-[var(--bg-soft)] px-2 py-2 text-center",
+                      !canOpenPrivateSections && label !== "Posts" && "opacity-70"
+                    )}
+                  >
+                    <div className="text-base font-black leading-5 tracking-[-0.04em]">{value}</div>
+                    <div className="mt-0.5 text-[10px] font-semibold text-[var(--text-soft)]">{label}</div>
+                  </button>
+                ))}
+              </div>
+
               {profile.profile.isPrivate ? (
-                <div className="mt-2 space-y-2">
-                  <div className="inline-flex rounded-full bg-[var(--bg-soft)] px-3 py-2 text-[11px] font-semibold text-[var(--text-soft)]">
+                <div className="mt-3 space-y-1.5">
+                  <div className="inline-flex rounded-full bg-[var(--bg-soft)] px-3 py-1.5 text-[11px] font-semibold text-[var(--text-soft)]">
                     Perfil privado
                   </div>
                   {sharedFollowersLabel && !profile.isViewer ? (
-                    <div className="max-w-[240px] text-xs leading-5 text-[var(--text-soft)]">
+                    <div className="max-w-[250px] text-xs leading-5 text-[var(--text-soft)]">
                       {sharedFollowersLabel}
                     </div>
                   ) : null}
                 </div>
               ) : null}
+
+              <div className="mt-3">
+                {profile.profile.bio ? (
+                  <p className="text-sm leading-5 text-[var(--text-main)]">{profile.profile.bio}</p>
+                ) : (
+                  <p className="text-sm text-[var(--text-soft)]">Sin bio todavia.</p>
+                )}
+              </div>
+
               {!profile.isViewer ? (
                 <div className="mt-3 flex flex-wrap gap-2">
                   <MobileFollowButton
@@ -729,7 +743,7 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                   <button
                     type="button"
                     onClick={() => void handleOpenMessage()}
-                    className="inline-flex items-center gap-2 rounded-full border border-[var(--line-warm)] bg-white px-4 py-3 text-sm font-semibold"
+                    className="inline-flex items-center gap-2 rounded-full border border-[var(--line-warm)] bg-white px-4 py-2.5 text-sm font-semibold"
                   >
                     <MessageCircle className="h-4 w-4" />
                     Mensaje
@@ -737,7 +751,7 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                   <button
                     type="button"
                     onClick={() => void handleShareProfile()}
-                    className="inline-flex items-center gap-2 rounded-full border border-[var(--line-warm)] bg-white px-4 py-3 text-sm font-semibold"
+                    className="inline-flex items-center gap-2 rounded-full border border-[var(--line-warm)] bg-white px-4 py-2.5 text-sm font-semibold"
                   >
                     <Share2 className="h-4 w-4" />
                     Compartir
@@ -748,7 +762,7 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                   <button
                     type="button"
                     onClick={() => void handleShareProfile()}
-                    className="inline-flex items-center gap-2 rounded-full border border-[var(--line-warm)] bg-white px-4 py-3 text-sm font-semibold"
+                    className="inline-flex items-center gap-2 rounded-full border border-[var(--line-warm)] bg-white px-4 py-2.5 text-sm font-semibold"
                   >
                     <Share2 className="h-4 w-4" />
                     Compartir perfil
@@ -758,155 +772,8 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
               {!profile.isViewer && messageNotice ? (
                 <div className="mt-3 text-xs text-[var(--text-soft)]">{messageNotice}</div>
               ) : null}
-
-              <div className="mt-4 grid grid-cols-3 gap-2">
-                {[
-                  ["Posts", profile.posts.length],
-                  ["Seguidores", profile.followerCount],
-                  ["Seguidos", profile.followingCount]
-                ].map(([label, value]) => (
-                  <button
-                    key={label}
-                    type="button"
-                    disabled={!canOpenPrivateSections && label !== "Posts"}
-                    onClick={() => {
-                      if (!canOpenPrivateSections) {
-                        return;
-                      }
-                      if (label === "Seguidores") {
-                        setPeopleSheet("followers");
-                      }
-                      if (label === "Seguidos") {
-                        setPeopleSheet("following");
-                      }
-                    }}
-                    className={cn(
-                      "rounded-[1.2rem] bg-[var(--bg-soft)] px-2 py-2 text-center",
-                      !canOpenPrivateSections && label !== "Posts" && "opacity-70"
-                    )}
-                  >
-                    <div className="text-lg font-black tracking-[-0.04em]">{value}</div>
-                    <div className="mt-1 text-[10px] font-semibold text-[var(--text-soft)]">{label}</div>
-                  </button>
-                ))}
-              </div>
             </div>
           </div>
-
-          <div className="mt-4">
-            {profile.profile.bio ? (
-              <p className="text-sm leading-6 text-[var(--text-main)]">{profile.profile.bio}</p>
-            ) : (
-              <p className="text-sm text-[var(--text-soft)]">Sin bio todavia.</p>
-            )}
-          </div>
-        </section>
-
-        <section className="space-y-3">
-          {profile.canViewContent && activeStories.length ? (
-            <section className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-soft)]">Destacados</div>
-                <div className="text-xs font-semibold text-[var(--text-soft)]">{activeStories.length}</div>
-              </div>
-              <div className="scrollbar-hide -mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
-                {activeStories.map((story, index) => (
-                  <button
-                    key={story.id}
-                    type="button"
-                    onClick={() => {
-                      setStoryStartIndex(index);
-                      setActiveStoryOpen(true);
-                    }}
-                    className="w-[152px] shrink-0 overflow-hidden rounded-[1.7rem] border border-[var(--line-soft)] bg-white text-left shadow-sm"
-                  >
-                    {story.media?.previewUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={story.media.previewUrl}
-                        alt={story.caption || `Historia ${index + 1}`}
-                        className="h-28 w-full object-cover"
-                        loading="lazy"
-                        decoding="async"
-                      />
-                    ) : (
-                      <div className="flex h-28 items-center justify-center bg-[var(--bg-soft)] text-xs font-semibold text-[var(--text-soft)]">
-                        Historia
-                      </div>
-                    )}
-                    <div className="space-y-1 px-3 py-3">
-                      <div className="text-xs font-semibold text-[var(--text-soft)]">{formatRelativeMobileTime(story.createdAt)}</div>
-                      <div className="line-clamp-2 text-sm font-semibold">{story.caption || "Historia activa"}</div>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </section>
-          ) : null}
-
-          {profile.canViewContent && featuredEvent ? (
-            <section className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-soft)]">Evento destacado</div>
-                <div className="rounded-full bg-[var(--bg-soft)] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--coral)]">
-                  {featuredEvent.experienceState === "live" ? "En vivo" : "Proximo"}
-                </div>
-              </div>
-              <Link
-                href={`/evento/${featuredEvent.slug}`}
-                className="block rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4 shadow-sm"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-base font-bold">{featuredEvent.title}</div>
-                    <div className="mt-1 text-sm text-[var(--text-soft)]">{featuredEvent.city}</div>
-                    <div className="mt-3 inline-flex items-center gap-2 text-xs font-semibold text-[var(--text-soft)]">
-                      <CalendarDays className="h-4 w-4" />
-                      {formatMobileDateTime(featuredEvent.startsAt)}
-                    </div>
-                  </div>
-                </div>
-              </Link>
-            </section>
-          ) : null}
-
-          {profile.canViewContent && featuredPost ? (
-            <section className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-soft)]">Post destacado</div>
-                <div className="rounded-full bg-[var(--bg-soft)] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--coral)]">
-                  {featuredPost.likeCount} likes
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setPostViewerVisible(false);
-                  setPostViewerOpenId(featuredPost.id);
-                  setActivePostId(featuredPost.id);
-                }}
-                className="w-full overflow-hidden rounded-[1.8rem] border border-[var(--line-soft)] bg-white text-left shadow-sm"
-              >
-                {featuredPost.mediaItems[0]?.previewUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={featuredPost.mediaItems[0].previewUrl}
-                    alt={featuredPost.caption || `Post de @${featuredPost.authorHandle}`}
-                    className="aspect-[4/3] w-full object-cover"
-                    loading="lazy"
-                    decoding="async"
-                  />
-                ) : (
-                  <EmptyPostTile />
-                )}
-                <div className="space-y-2 px-4 py-4">
-                  <div className="text-sm font-semibold">@{featuredPost.authorHandle}</div>
-                  {featuredPost.caption ? <div className="line-clamp-2 text-sm text-[var(--text-soft)]">{featuredPost.caption}</div> : null}
-                </div>
-              </button>
-            </section>
-          ) : null}
-
         </section>
 
         <section className="space-y-3">

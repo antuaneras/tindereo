@@ -38,16 +38,18 @@ function writeSavedPostIds(postIds: string[]) {
   window.localStorage.setItem(SAVED_POSTS_KEY, JSON.stringify(postIds));
 }
 
-function Avatar({ src, label }: { src: string | null; label: string }) {
+function Avatar({ src, label, size = "md" }: { src: string | null; label: string; size?: "md" | "lg" }) {
+  const sizeClass = size === "lg" ? "h-14 w-14 text-base" : "h-12 w-12 text-sm";
+
   if (src) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
-      <img src={src} alt={label} className="h-12 w-12 rounded-full object-cover" loading="lazy" decoding="async" />
+      <img src={src} alt={label} className={cn(sizeClass, "rounded-full object-cover")} loading="lazy" decoding="async" />
     );
   }
 
   return (
-    <span className="flex h-12 w-12 items-center justify-center rounded-full bg-white text-sm font-semibold text-[var(--text-main)]">
+    <span className={cn("flex items-center justify-center rounded-full bg-white font-semibold text-[var(--text-main)]", sizeClass)}>
       {label.slice(0, 2).toUpperCase()}
     </span>
   );
@@ -74,7 +76,25 @@ export function StoryStrip({
     [clusters]
   );
 
-  const activeCluster = activeClusterIndex === null ? null : normalizedClusters[activeClusterIndex] ?? null;
+  const ownCluster = useMemo(
+    () =>
+      normalizedClusters.find(
+        (cluster) => cluster.ownerType === "user" && cluster.ownerId === viewer.id
+      ) ?? null,
+    [normalizedClusters, viewer.id]
+  );
+  const feedClusters = useMemo(
+    () =>
+      normalizedClusters.filter(
+        (cluster) => !(cluster.ownerType === "user" && cluster.ownerId === viewer.id)
+      ),
+    [normalizedClusters, viewer.id]
+  );
+  const overlayClusters = useMemo(
+    () => (ownCluster ? [ownCluster, ...feedClusters] : feedClusters),
+    [feedClusters, ownCluster]
+  );
+  const activeCluster = activeClusterIndex === null ? null : overlayClusters[activeClusterIndex] ?? null;
   const isStorySeen = (story: MobileStoryCluster["stories"][number]) => story.hasSeen || sessionSeenIds.includes(story.id);
 
   const getStartIndexForCluster = (cluster: MobileStoryCluster) => {
@@ -83,6 +103,7 @@ export function StoryStrip({
   };
 
   const getPendingCount = (cluster: MobileStoryCluster) => cluster.stories.filter((story) => !isStorySeen(story)).length;
+  const ownPendingCount = ownCluster ? getPendingCount(ownCluster) : 0;
 
   const closeViewer = () => {
     setActiveClusterIndex(null);
@@ -92,25 +113,52 @@ export function StoryStrip({
   return (
     <>
       <div className="scrollbar-hide -mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
-        <button
-          type="button"
-          onClick={() => router.push("/crear")}
-          className="flex shrink-0 flex-col items-center gap-2"
-        >
-          <span className="relative block">
-            <span className="block rounded-full bg-white/85 p-[2px] shadow-sm">
-              <Avatar src={viewer.avatarUrl} label={`@${viewer.handle}`} />
-            </span>
-            <span className="absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full bg-[var(--coral)] text-white ring-4 ring-[var(--bg-main)]">
-              <Plus className="h-3.5 w-3.5" />
-            </span>
-          </span>
-          <span className="max-w-[74px] truncate text-[11px] font-medium text-[var(--text-soft)]">
-            Tu historia
-          </span>
-        </button>
+        <div className="relative flex shrink-0 flex-col items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              if (ownCluster) {
+                setActiveClusterIndex(0);
+                setStoryIndex(getStartIndexForCluster(ownCluster));
+                return;
+              }
 
-        {clusters.map((cluster, index) => {
+              router.push("/crear");
+            }}
+            className="flex flex-col items-center gap-2"
+          >
+            <span
+              className={cn(
+                "block rounded-full p-[2px] shadow-sm",
+                ownPendingCount > 0
+                  ? "bg-gradient-to-br from-[var(--coral)] to-[var(--orange)]"
+                  : "bg-white/90"
+              )}
+            >
+              <span className="block rounded-full bg-[var(--bg-main)] p-[2px]">
+                <Avatar src={viewer.avatarUrl} label={`@${viewer.handle}`} size="lg" />
+              </span>
+            </span>
+            <span className="max-w-[84px] truncate text-[11px] font-medium text-[var(--text-soft)]">
+              Tu historia
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => router.push("/crear")}
+            aria-label="Crear historia o publicacion"
+            className="absolute right-[2px] top-[40px] flex h-7 w-7 items-center justify-center rounded-full bg-[var(--coral)] text-white ring-4 ring-[var(--bg-main)]"
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+          {ownPendingCount > 0 ? (
+            <span className="-mt-1 rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-[var(--coral)] shadow-sm">
+              {ownPendingCount}
+            </span>
+          ) : null}
+        </div>
+
+        {feedClusters.map((cluster, index) => {
           const pendingCount = getPendingCount(cluster);
 
           return (
@@ -118,8 +166,8 @@ export function StoryStrip({
               key={`${cluster.ownerType}:${cluster.ownerId}`}
               type="button"
               onClick={() => {
-                const nextCluster = normalizedClusters[index] ?? cluster;
-                setActiveClusterIndex(index);
+                const nextCluster = feedClusters[index] ?? cluster;
+                setActiveClusterIndex(index + (ownCluster ? 1 : 0));
                 setStoryIndex(getStartIndexForCluster(nextCluster));
               }}
               className="flex shrink-0 flex-col items-center gap-2"
@@ -151,7 +199,7 @@ export function StoryStrip({
 
       {activeCluster && activeClusterIndex !== null ? (
         <MobileStoryOverlay
-          clusters={normalizedClusters}
+          clusters={overlayClusters}
           initialClusterIndex={activeClusterIndex}
           initialStoryIndex={storyIndex}
           onClose={closeViewer}

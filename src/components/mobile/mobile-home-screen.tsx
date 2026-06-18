@@ -3,13 +3,27 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { CalendarDays, Camera, Heart } from "lucide-react";
+import { CalendarDays, Camera, Heart, RefreshCw } from "lucide-react";
 import { fetchMobileBootstrap, respondToEventInvite, subscribeToMobileStream } from "@/lib/mobile-api";
 import { formatMobileDateTime } from "@/lib/mobile-shared";
 import { PostCard, StoryStrip } from "@/components/mobile/mobile-feed";
 import type { MobileBootstrapPayload, MobileEventInvite } from "@/lib/mobile-types";
 
 const HOME_CACHE_KEY = "mobile-cache:home";
+const HOME_PULL_REFRESH_TRIGGER = 88;
+
+function getScrollTop() {
+  if (typeof window === "undefined") {
+    return 0;
+  }
+
+  const scrollingElement = document.scrollingElement ?? document.documentElement;
+  return Math.max(window.scrollY, scrollingElement?.scrollTop ?? 0);
+}
+
+function clampPullDistance(distance: number) {
+  return Math.max(0, Math.min(112, distance * 0.42));
+}
 
 function readHomeCache() {
   if (typeof window === "undefined") {
@@ -37,10 +51,14 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
   const [data, setData] = useState<MobileBootstrapPayload | null>(() => initialData ?? null);
   const [inviteActionId, setInviteActionId] = useState<string | null>(null);
   const [joinedEventIndex, setJoinedEventIndex] = useState(0);
-  const [gestureStart, setGestureStart] = useState<{ x: number; y: number; ignore: boolean } | null>(null);
   const [dragOffsetX, setDragOffsetX] = useState(0);
+  const [pullOffsetY, setPullOffsetY] = useState(0);
   const [isGestureActive, setIsGestureActive] = useState(false);
+  const [isRefreshingFeed, setIsRefreshingFeed] = useState(false);
   const createNavigationTimeoutRef = useRef<number | null>(null);
+  const gestureSessionRef = useRef<{ x: number; y: number; ignore: boolean; mode: "pending" | "horizontal" | "vertical" } | null>(null);
+  const refreshRequestRef = useRef<Promise<MobileBootstrapPayload> | null>(null);
+  const dataRef = useRef<MobileBootstrapPayload | null>(initialData ?? null);
 
   useEffect(() => {
     return () => {
@@ -69,6 +87,10 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
   }, [data]);
 
   useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
+
+  useEffect(() => {
     const total = data?.joinedEvents.length ?? 0;
     setJoinedEventIndex((current) => Math.min(current, Math.max(0, total - 1)));
   }, [data?.joinedEvents.length]);
@@ -78,7 +100,7 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
       return;
     }
 
-    void fetchMobileBootstrap().then(setData).catch(() => undefined);
+    void refreshHome().catch(() => undefined);
   }, [data]);
 
   useEffect(() => {
@@ -89,11 +111,45 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
         event.type === "bootstrap" ||
         event.type === "notifications"
       ) {
-        void fetchMobileBootstrap().then(setData).catch(() => undefined);
+        void refreshHome().catch(() => undefined);
       }
     });
     return unsubscribe;
   }, []);
+
+  async function refreshHome() {
+    if (refreshRequestRef.current) {
+      return refreshRequestRef.current;
+    }
+
+    const request = fetchMobileBootstrap()
+      .then((nextData) => {
+        setData(nextData);
+        return nextData;
+      })
+      .finally(() => {
+        refreshRequestRef.current = null;
+      });
+
+    refreshRequestRef.current = request;
+    return request;
+  }
+
+  async function handlePullRefresh() {
+    if (isRefreshingFeed) {
+      return;
+    }
+
+    setIsRefreshingFeed(true);
+    setPullOffsetY(68);
+
+    try {
+      await refreshHome();
+    } finally {
+      setIsRefreshingFeed(false);
+      setPullOffsetY(0);
+    }
+  }
 
   if (!data) {
     return (
@@ -126,6 +182,25 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
   return (
     <div className="relative overflow-hidden">
       <div
+        className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center"
+        style={{
+          opacity: pullOffsetY > 0 || isRefreshingFeed ? 1 : 0,
+          transform: `translateY(${Math.max(10, pullOffsetY * 0.45)}px)`
+        }}
+      >
+        <div className="flex items-center gap-2 rounded-full bg-white/94 px-4 py-2 text-xs font-semibold text-[var(--text-soft)] shadow-[0_14px_32px_rgba(29,22,15,0.12)] backdrop-blur">
+          <RefreshCw className={isRefreshingFeed ? "h-4 w-4 animate-spin text-[var(--coral)]" : "h-4 w-4 text-[var(--coral)]"} />
+          <span>
+            {isRefreshingFeed
+              ? "Buscando publicaciones nuevas..."
+              : pullOffsetY >= HOME_PULL_REFRESH_TRIGGER
+                ? "Suelta para actualizar"
+                : "Desliza hacia abajo para actualizar"}
+          </span>
+        </div>
+      </div>
+
+      <div
         className="pointer-events-none absolute inset-0"
         style={{ opacity: Math.min(1, dragOffsetX / 132) }}
       >
@@ -157,44 +232,70 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
       <div
         className="relative space-y-5 overflow-hidden bg-[var(--bg-main)] will-change-transform"
         onTouchCancel={() => {
-          setGestureStart(null);
+          gestureSessionRef.current = null;
           setIsGestureActive(false);
           setDragOffsetX(0);
+          if (!isRefreshingFeed) {
+            setPullOffsetY(0);
+          }
         }}
         onTouchEnd={(event) => {
-          if (!gestureStart || gestureStart.ignore) {
-            setGestureStart(null);
+          const gestureSession = gestureSessionRef.current;
+
+          if (!gestureSession || gestureSession.ignore) {
+            gestureSessionRef.current = null;
             setIsGestureActive(false);
             setDragOffsetX(0);
+            if (!isRefreshingFeed) {
+              setPullOffsetY(0);
+            }
             return;
           }
 
           const touch = event.changedTouches[0];
           if (!touch) {
-            setGestureStart(null);
+            gestureSessionRef.current = null;
             setIsGestureActive(false);
             setDragOffsetX(0);
+            if (!isRefreshingFeed) {
+              setPullOffsetY(0);
+            }
             return;
           }
 
-          const deltaX = touch.clientX - gestureStart.x;
-          const deltaY = touch.clientY - gestureStart.y;
+          const deltaX = touch.clientX - gestureSession.x;
+          const deltaY = touch.clientY - gestureSession.y;
+
+          if (gestureSession.mode === "vertical") {
+            setDragOffsetX(0);
+            setIsGestureActive(false);
+            if (pullOffsetY >= HOME_PULL_REFRESH_TRIGGER) {
+              void handlePullRefresh();
+            } else {
+              setPullOffsetY(0);
+            }
+            gestureSessionRef.current = null;
+            return;
+          }
 
           if (deltaX > 96 && Math.abs(deltaY) < 72) {
             setDragOffsetX(148);
+            setPullOffsetY(0);
             setIsGestureActive(false);
             createNavigationTimeoutRef.current = window.setTimeout(() => {
               router.push("/crear");
             }, 110);
           } else {
             setDragOffsetX(0);
+            setPullOffsetY(0);
             setIsGestureActive(false);
           }
 
-          setGestureStart(null);
+          gestureSessionRef.current = null;
         }}
         onTouchMove={(event) => {
-          if (!gestureStart || gestureStart.ignore) {
+          const gestureSession = gestureSessionRef.current;
+          if (!gestureSession || gestureSession.ignore) {
             return;
           }
 
@@ -203,8 +304,35 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
             return;
           }
 
-          const deltaX = touch.clientX - gestureStart.x;
-          const deltaY = touch.clientY - gestureStart.y;
+          const deltaX = touch.clientX - gestureSession.x;
+          const deltaY = touch.clientY - gestureSession.y;
+          const atTop = getScrollTop() <= 0;
+
+          if (gestureSession.mode === "pending") {
+            if (deltaY > 10 && Math.abs(deltaY) > Math.abs(deltaX) && atTop) {
+              gestureSession.mode = "vertical";
+            } else if (deltaX > 10 && Math.abs(deltaX) > Math.abs(deltaY)) {
+              gestureSession.mode = "horizontal";
+            } else if (Math.abs(deltaY) > 12 && Math.abs(deltaY) > Math.abs(deltaX) && !atTop) {
+              gestureSession.ignore = true;
+              setIsGestureActive(false);
+              return;
+            } else {
+              return;
+            }
+          }
+
+          if (gestureSession.mode === "vertical") {
+            if (!atTop || deltaY <= 0) {
+              setPullOffsetY(0);
+              return;
+            }
+
+            event.preventDefault();
+            setDragOffsetX(0);
+            setPullOffsetY(clampPullDistance(deltaY));
+            return;
+          }
 
           if (Math.abs(deltaY) > 72) {
             setDragOffsetX(0);
@@ -217,19 +345,25 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
           const touch = event.touches[0];
           const target = event.target as HTMLElement | null;
           const ignore = Boolean(target?.closest("[data-story-strip='true'],a,button,input,textarea,select"));
-          setGestureStart({
+          gestureSessionRef.current = {
             x: touch?.clientX ?? 0,
             y: touch?.clientY ?? 0,
-            ignore
-          });
+            ignore,
+            mode: "pending"
+          };
           setIsGestureActive(!ignore);
         }}
         style={{
-          transform: dragOffsetX > 0 ? `translateX(${dragOffsetX}px)` : undefined,
+          transform:
+            dragOffsetX > 0 || pullOffsetY > 0
+              ? `translate3d(${dragOffsetX}px, ${pullOffsetY}px, 0)`
+              : undefined,
           transition: isGestureActive ? "none" : "transform 180ms ease-out, border-radius 180ms ease-out, box-shadow 180ms ease-out",
-          borderRadius: dragOffsetX > 0 ? "2rem" : "0rem",
+          borderRadius: dragOffsetX > 0 || pullOffsetY > 0 ? "2rem" : "0rem",
           boxShadow:
-            dragOffsetX > 0 ? "0 22px 60px rgba(0,0,0,0.28)" : "0 0 0 rgba(0,0,0,0)"
+            dragOffsetX > 0 || pullOffsetY > 0
+              ? "0 22px 60px rgba(0,0,0,0.18)"
+              : "0 0 0 rgba(0,0,0,0)"
         }}
       >
         <div className="flex items-center justify-between">
