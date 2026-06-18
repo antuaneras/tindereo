@@ -87,13 +87,13 @@ export function MobileNotificationsScreen({ initialNotifications }: { initialNot
                     <div className="min-w-0 flex-1">
                       <div className="text-sm font-semibold">{notification.title}</div>
                       <div className="mt-1 text-sm leading-6 text-[var(--text-soft)]">{notification.body}</div>
+                      <div className="mt-3 text-xs text-[var(--text-soft)]">{formatRelativeMobileTime(notification.createdAt)}</div>
                     </div>
-                    <div className="shrink-0 text-xs text-[var(--text-soft)]">{formatRelativeMobileTime(notification.createdAt)}</div>
                   </div>
                 </button>
 
                 {isFollowRequest || isChatRequest ? (
-                  <div className="mt-4 flex gap-2">
+                  <div className="mt-4 flex flex-wrap gap-2">
                     <button
                       type="button"
                       disabled={busyRequestId === requestId}
@@ -139,6 +139,24 @@ export function MobileNotificationsScreen({ initialNotifications }: { initialNot
                     >
                       Rechazar
                     </button>
+                    {isChatRequest ? (
+                      <button
+                        type="button"
+                        disabled={busyRequestId === requestId}
+                        onClick={async () => {
+                          setBusyRequestId(requestId);
+                          try {
+                            await respondToConversationRequest(requestId, false, { block: true });
+                            await refresh();
+                          } finally {
+                            setBusyRequestId(null);
+                          }
+                        }}
+                        className="rounded-full border border-[var(--line-warm)] px-4 py-2 text-sm font-semibold text-[var(--coral)] disabled:opacity-60"
+                      >
+                        Bloquear
+                      </button>
+                    ) : null}
                   </div>
                 ) : null}
               </div>

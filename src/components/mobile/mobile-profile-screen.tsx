@@ -13,11 +13,13 @@ import {
   Send
 } from "lucide-react";
 import {
+  createConversation,
   createPostComment,
   fetchProfileDetail,
   likePost,
   mobileLogout,
   subscribeToMobileStream,
+  unblockProfile,
   updateViewerProfile
 } from "@/lib/mobile-api";
 import { MobileFollowButton } from "@/components/mobile/mobile-follow-button";
@@ -117,6 +119,11 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
   const [peopleSheet, setPeopleSheet] = useState<"followers" | "following" | null>(null);
   const [peopleQuery, setPeopleQuery] = useState("");
   const [visiblePeopleCount, setVisiblePeopleCount] = useState(20);
+  const [messageComposerOpen, setMessageComposerOpen] = useState(false);
+  const [messageDraft, setMessageDraft] = useState("");
+  const [messageBusy, setMessageBusy] = useState(false);
+  const [messageNotice, setMessageNotice] = useState<string | null>(null);
+  const [blockBusyHandle, setBlockBusyHandle] = useState<string | null>(null);
   const gestureStartRef = useRef<{ x: number; y: number } | null>(null);
   const postListRef = useRef<HTMLDivElement | null>(null);
   const postCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -178,6 +185,28 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
       ),
     [profile.createdEvents, profile.joinedEvents]
   );
+  const canOpenPrivateSections = profile.isViewer || !profile.profile.isPrivate;
+  const sharedFollowersLabel = useMemo(() => {
+    if (!profile.sharedFollowerCount) {
+      return null;
+    }
+
+    const [first, second] = profile.sharedFollowers;
+    const firstLabel = first ? `@${first.handle}` : null;
+    const secondLabel = second ? `@${second.handle}` : null;
+
+    if (profile.sharedFollowerCount === 1 && firstLabel) {
+      return `${firstLabel} sigue a este usuario`;
+    }
+    if (profile.sharedFollowerCount === 2 && firstLabel && secondLabel) {
+      return `${firstLabel} y ${secondLabel} siguen a este usuario`;
+    }
+    if (firstLabel) {
+      return `${firstLabel} y ${profile.sharedFollowerCount - 1} personas mas siguen a este usuario`;
+    }
+
+    return `${profile.sharedFollowerCount} personas siguen a este usuario`;
+  }, [profile.sharedFollowerCount, profile.sharedFollowers]);
 
   useEffect(() => {
     const unsubscribe = subscribeToMobileStream((event) => {
@@ -289,6 +318,60 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
     await mobileLogout();
     router.replace("/login");
     router.refresh();
+  }
+
+  async function handleOpenMessage() {
+    setMessageNotice(null);
+
+    try {
+      if (profile.relationship.followedByProfile) {
+        const created = await createConversation({
+          kind: "direct",
+          title: null,
+          participantIds: [profile.profile.id]
+        });
+        if (created.conversationId) {
+          router.push(`/chat/${created.conversationId}`);
+        }
+        return;
+      }
+
+      setMessageComposerOpen(true);
+    } catch (error) {
+      setMessageNotice(error instanceof Error ? error.message : "No pude abrir este chat.");
+    }
+  }
+
+  async function handleSendMessageRequest() {
+    const trimmedDraft = messageDraft.trim();
+    if (!trimmedDraft || messageBusy) {
+      return;
+    }
+
+    setMessageBusy(true);
+    setMessageNotice(null);
+    try {
+      const created = await createConversation({
+        kind: "direct",
+        title: null,
+        participantIds: [profile.profile.id],
+        initialBody: trimmedDraft
+      });
+      if (created.mode === "conversation" && created.conversationId) {
+        setMessageComposerOpen(false);
+        setMessageDraft("");
+        router.push(`/chat/${created.conversationId}`);
+        return;
+      }
+
+      setMessageComposerOpen(false);
+      setMessageDraft("");
+      setMessageNotice("Solicitud de chat enviada.");
+    } catch (error) {
+      setMessageNotice(error instanceof Error ? error.message : "No pude abrir este chat.");
+    } finally {
+      setMessageBusy(false);
+    }
   }
 
   function handleBack() {
@@ -436,12 +519,19 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
               <div className="mt-1 text-sm font-semibold">{profile.profile.displayName}</div>
               <div className="mt-1 text-sm text-[var(--text-soft)]">{profile.profile.city}</div>
               {profile.profile.isPrivate ? (
-                <div className="mt-2 inline-flex rounded-full bg-[var(--bg-soft)] px-3 py-2 text-[11px] font-semibold text-[var(--text-soft)]">
-                  Perfil privado
+                <div className="mt-2 space-y-2">
+                  <div className="inline-flex rounded-full bg-[var(--bg-soft)] px-3 py-2 text-[11px] font-semibold text-[var(--text-soft)]">
+                    Perfil privado
+                  </div>
+                  {sharedFollowersLabel && !profile.isViewer ? (
+                    <div className="max-w-[240px] text-xs leading-5 text-[var(--text-soft)]">
+                      {sharedFollowersLabel}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
               {!profile.isViewer ? (
-                <div className="mt-3">
+                <div className="mt-3 flex flex-wrap gap-2">
                   <MobileFollowButton
                     handle={profile.profile.handle}
                     isPrivate={profile.profile.isPrivate}
@@ -456,11 +546,22 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                             ? current.followerCount + 1
                             : !relationship.followsProfile && current.relationship.followsProfile
                               ? Math.max(0, current.followerCount - 1)
-                              : current.followerCount
+                          : current.followerCount
                       }));
                     }}
                   />
+                  <button
+                    type="button"
+                    onClick={() => void handleOpenMessage()}
+                    className="inline-flex items-center gap-2 rounded-full border border-[var(--line-warm)] bg-white px-4 py-3 text-sm font-semibold"
+                  >
+                    <MessageCircle className="h-4 w-4" />
+                    Mensaje
+                  </button>
                 </div>
+              ) : null}
+              {!profile.isViewer && messageNotice ? (
+                <div className="mt-3 text-xs text-[var(--text-soft)]">{messageNotice}</div>
               ) : null}
 
               <div className="mt-4 grid grid-cols-3 gap-2">
@@ -472,7 +573,11 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                   <button
                     key={label}
                     type="button"
+                    disabled={!canOpenPrivateSections && label !== "Posts"}
                     onClick={() => {
+                      if (!canOpenPrivateSections) {
+                        return;
+                      }
                       if (label === "Seguidores") {
                         setPeopleSheet("followers");
                       }
@@ -480,7 +585,10 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                         setPeopleSheet("following");
                       }
                     }}
-                    className="rounded-[1.2rem] bg-[var(--bg-soft)] px-2 py-2 text-center"
+                    className={cn(
+                      "rounded-[1.2rem] bg-[var(--bg-soft)] px-2 py-2 text-center",
+                      !canOpenPrivateSections && label !== "Posts" && "opacity-70"
+                    )}
                   >
                     <div className="text-lg font-black tracking-[-0.04em]">{value}</div>
                     <div className="mt-1 text-[10px] font-semibold text-[var(--text-soft)]">{label}</div>
@@ -504,20 +612,22 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
             <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-soft)]">Eventos</div>
             <div className="text-xs font-semibold text-[var(--text-soft)]">{profileEvents.length}</div>
           </div>
-          {profileEvents.length ? (
+          {profile.profile.isPrivate && !profile.isViewer ? (
+            <div className="rounded-[1.8rem] border border-dashed border-[var(--line-warm)] bg-white/80 px-5 py-8 text-center text-sm text-[var(--text-soft)]">
+              El perfil es privado. Puedes ver el numero de eventos, pero no abrirlos.
+            </div>
+          ) : profileEvents.length ? (
             <div className="scrollbar-hide -mx-1 flex snap-x snap-mandatory overflow-x-auto px-1 pb-1">
               {profileEvents.map((event) => (
-                  <Link
-                    key={event.id}
-                    href={`/evento/${event.slug}`}
-                    className="w-full min-w-full snap-center pr-3 first:pl-0 last:pr-0"
-                  >
+                  <div key={event.id} className="w-full min-w-full snap-center pr-3 first:pl-0 last:pr-0">
                     <div className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4 shadow-sm">
-                      <div className="text-base font-bold">{event.title}</div>
-                      <div className="mt-1 text-sm text-[var(--text-soft)]">{event.city}</div>
-                      <div className="mt-3 text-xs text-[var(--text-soft)]">{formatMobileDateTime(event.startsAt)}</div>
+                      <Link href={`/evento/${event.slug}`} className="block">
+                        <div className="text-base font-bold">{event.title}</div>
+                        <div className="mt-1 text-sm text-[var(--text-soft)]">{event.city}</div>
+                        <div className="mt-3 text-xs text-[var(--text-soft)]">{formatMobileDateTime(event.startsAt)}</div>
+                      </Link>
                     </div>
-                  </Link>
+                  </div>
                 ))}
             </div>
           ) : (
@@ -632,12 +742,100 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
               </div>
             </div>
 
+            <div className="mt-4 rounded-[1.6rem] border border-[var(--line-soft)] px-4 py-4">
+              <div className="text-sm font-semibold">Perfiles bloqueados</div>
+              <div className="mt-1 text-sm text-[var(--text-soft)]">
+                Puedes revisar a quien has bloqueado y desbloquearlo cuando quieras.
+              </div>
+
+              <div className="mt-4 space-y-3">
+                {profile.blockedProfiles.length ? (
+                  profile.blockedProfiles.map((blockedProfile) => (
+                    <div key={blockedProfile.id} className="flex items-center gap-3 rounded-[1.4rem] border border-[var(--line-soft)] px-3 py-3">
+                      <ProfileMiniAvatar profile={blockedProfile} />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-semibold">@{blockedProfile.handle}</div>
+                        <div className="truncate text-xs text-[var(--text-soft)]">
+                          {blockedProfile.displayName || blockedProfile.city}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={blockBusyHandle === blockedProfile.handle}
+                        onClick={async () => {
+                          setBlockBusyHandle(blockedProfile.handle);
+                          try {
+                            await unblockProfile(blockedProfile.handle);
+                            setProfile((current) => ({
+                              ...current,
+                              blockedProfiles: current.blockedProfiles.filter((entry) => entry.id !== blockedProfile.id)
+                            }));
+                          } finally {
+                            setBlockBusyHandle(null);
+                          }
+                        }}
+                        className="rounded-full border border-[var(--line-warm)] px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                      >
+                        Desbloquear
+                      </button>
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-[1.4rem] border border-dashed border-[var(--line-warm)] px-4 py-4 text-sm text-[var(--text-soft)]">
+                    No tienes perfiles bloqueados ahora mismo.
+                  </div>
+                )}
+              </div>
+            </div>
+
             <button
               type="button"
               onClick={() => void handleLogout()}
               className="mt-4 w-full rounded-[1.6rem] border border-[var(--line-soft)] px-4 py-4 text-sm font-semibold"
             >
               Cerrar sesion
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {messageComposerOpen ? (
+        <div className="fixed inset-0 z-50 bg-black/30" onClick={() => setMessageComposerOpen(false)}>
+          <div
+            className="absolute bottom-0 left-1/2 w-full max-w-[480px] -translate-x-1/2 rounded-t-[2rem] bg-white px-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-4"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <div className="text-lg font-black tracking-[-0.03em]">Enviar primer mensaje</div>
+                <div className="text-sm text-[var(--text-soft)]">
+                  Si no te sigue de vuelta, le llegara como solicitud de chat.
+                </div>
+              </div>
+              <button type="button" onClick={() => setMessageComposerOpen(false)} className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--bg-soft)]">
+                <ArrowLeft className="h-4 w-4 rotate-180" />
+              </button>
+            </div>
+
+            <textarea
+              value={messageDraft}
+              onChange={(event) => setMessageDraft(event.target.value)}
+              placeholder="Escribe tu mensaje..."
+              rows={4}
+              className="w-full rounded-[1.6rem] border border-[var(--line-soft)] px-4 py-4 text-sm outline-none"
+            />
+
+            {messageNotice ? (
+              <div className="mt-3 text-sm text-[var(--text-soft)]">{messageNotice}</div>
+            ) : null}
+
+            <button
+              type="button"
+              disabled={!messageDraft.trim() || messageBusy}
+              onClick={() => void handleSendMessageRequest()}
+              className="mt-4 w-full rounded-[1.4rem] bg-[var(--text-main)] px-4 py-4 text-sm font-semibold text-white disabled:opacity-60"
+            >
+              {messageBusy ? "Enviando..." : "Enviar mensaje"}
             </button>
           </div>
         </div>

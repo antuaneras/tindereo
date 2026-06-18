@@ -56,6 +56,18 @@ create index if not exists profile_follow_requests_target_idx
 create index if not exists profile_follow_requests_requester_idx
   on public.profile_follow_requests (requester_id, status, created_at desc);
 
+create table if not exists public.profile_blocks (
+  id text primary key,
+  blocker_id text not null references public.profiles(id) on delete cascade,
+  blocked_user_id text not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default timezone('utc', now()),
+  unique (blocker_id, blocked_user_id),
+  check (blocker_id <> blocked_user_id)
+);
+
+create index if not exists profile_blocks_blocker_idx on public.profile_blocks (blocker_id, created_at desc);
+create index if not exists profile_blocks_blocked_idx on public.profile_blocks (blocked_user_id, created_at desc);
+
 create table if not exists public.events (
   id text primary key,
   slug text not null unique,
@@ -233,11 +245,15 @@ create table if not exists public.conversation_requests (
   target_user_id text not null references public.profiles(id) on delete cascade,
   status text not null check (status in ('pending', 'accepted', 'rejected', 'cancelled')),
   conversation_id text references public.conversations(id) on delete set null,
+  initial_body text not null default '',
   created_at timestamptz not null default timezone('utc', now()),
   responded_at timestamptz,
   unique (requester_id, target_user_id, status),
   check (requester_id <> target_user_id)
 );
+
+alter table public.conversation_requests
+  add column if not exists initial_body text not null default '';
 
 create index if not exists conversation_requests_requester_idx
   on public.conversation_requests (requester_id, status, created_at desc);
@@ -480,6 +496,7 @@ begin
     'friendships',
     'profile_follows',
     'profile_follow_requests',
+    'profile_blocks',
     'events',
     'event_members',
     'event_waitlist',

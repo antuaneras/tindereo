@@ -73,6 +73,7 @@ const TABLES = {
   messageReceipts: "message_receipts",
   messages: "messages",
   notifications: "notifications",
+  profileBlocks: "profile_blocks",
   profileFollowRequests: "profile_follow_requests",
   profileFollows: "profile_follows",
   postLikes: "post_likes",
@@ -216,6 +217,13 @@ type ProfileFollowRequestRow = {
   target_user_id: string;
 };
 
+type ProfileBlockRow = {
+  blocked_user_id: string;
+  blocker_id: string;
+  created_at: string;
+  id: string;
+};
+
 type ConversationRow = {
   chat_mode: "open" | "announcements";
   cover_image: string | null;
@@ -244,6 +252,7 @@ type ConversationRequestRow = {
   conversation_id: string | null;
   created_at: string;
   id: string;
+  initial_body: string;
   requester_id: string;
   responded_at: string | null;
   status: "pending" | "accepted" | "rejected" | "cancelled";
@@ -471,14 +480,45 @@ function buildProfileRelationship(
   };
 }
 
+function isBlockedBetweenProfiles(viewerId: string, profileId: string, blocks: ProfileBlockRow[]) {
+  if (!viewerId || !profileId || viewerId === profileId) {
+    return false;
+  }
+
+  return blocks.some(
+    (block) =>
+      (block.blocker_id === viewerId && block.blocked_user_id === profileId) ||
+      (block.blocker_id === profileId && block.blocked_user_id === viewerId)
+  );
+}
+
+function getBlockedUserIdsForViewer(viewerId: string, blocks: ProfileBlockRow[]) {
+  return new Set(
+    blocks.flatMap((block) => {
+      if (block.blocker_id === viewerId) {
+        return [block.blocked_user_id];
+      }
+      if (block.blocked_user_id === viewerId) {
+        return [block.blocker_id];
+      }
+      return [];
+    })
+  );
+}
+
 function canViewerAccessProfileContent(
   viewerId: string,
   profileId: string,
   profilesById: ReadonlyMap<string, Pick<ProfileRow, "id" | "is_private">>,
-  follows: ProfileFollowRow[]
+  follows: ProfileFollowRow[],
+  blocks: ProfileBlockRow[]
 ) {
   const profile = profilesById.get(profileId);
   if (!profile) {
+    return false;
+  }
+
+  if (isBlockedBetweenProfiles(viewerId, profileId, blocks)) {
     return false;
   }
 
@@ -509,9 +549,12 @@ function applyViewerRelationshipsToProfiles(
   viewerId: string,
   profiles: MobileProfile[],
   follows: ProfileFollowRow[],
-  requests: ProfileFollowRequestRow[]
+  requests: ProfileFollowRequestRow[],
+  blocks: ProfileBlockRow[]
 ) {
-  return profiles.map((profile) => ({
+  return profiles
+    .filter((profile) => !isBlockedBetweenProfiles(viewerId, profile.id, blocks))
+    .map((profile) => ({
     ...profile,
     relationship: buildProfileRelationship(viewerId, profile.id, follows, requests)
   }));
@@ -520,18 +563,22 @@ function applyViewerRelationshipsToProfiles(
 function buildSuggestedProfilesForViewer(
   viewerId: string,
   profiles: MobileProfile[],
-  follows: ProfileFollowRow[]
+  follows: ProfileFollowRow[],
+  blocks: ProfileBlockRow[]
 ) {
   const { followersByUserId, followingByUserId } = buildFollowAdjacency(follows);
   const profilesById = new Map(profiles.map((profile) => [profile.id, profile]));
-  const viewerFollowing = followingByUserId.get(viewerId) ?? new Set<string>();
+  const blockedUserIds = getBlockedUserIdsForViewer(viewerId, blocks);
+  const viewerFollowing = new Set(
+    [...(followingByUserId.get(viewerId) ?? new Set<string>())].filter((followedId) => !blockedUserIds.has(followedId))
+  );
 
   const suggestedProfiles = profiles
-    .filter((profile) => profile.id !== viewerId && !viewerFollowing.has(profile.id))
+    .filter((profile) => profile.id !== viewerId && !viewerFollowing.has(profile.id) && !blockedUserIds.has(profile.id))
     .map((profile): MobileSuggestedProfile => {
       const candidateFollowers = followersByUserId.get(profile.id) ?? new Set<string>();
       const mutualFriends = [...viewerFollowing]
-        .filter((followedId) => candidateFollowers.has(followedId))
+        .filter((followedId) => candidateFollowers.has(followedId) && !blockedUserIds.has(followedId))
         .map((followedId) => profilesById.get(followedId))
         .filter((connection): connection is MobileProfile => Boolean(connection))
         .slice(0, 3)
@@ -762,6 +809,12 @@ async function loadPendingProfileFollowRequests() {
   }).catch(async () => [] as ProfileFollowRequestRow[]);
 }
 
+async function loadProfileBlocks() {
+  return selectRows<ProfileBlockRow>(TABLES.profileBlocks, {
+    order: [{ column: "created_at", ascending: false }]
+  }).catch(async () => [] as ProfileBlockRow[]);
+}
+
 async function loadPendingConversationRequests() {
   return selectRows<ConversationRequestRow>(TABLES.conversationRequests, {
     filters: [{ column: "status", op: "eq", value: "pending" }],
@@ -770,14 +823,15 @@ async function loadPendingConversationRequests() {
 }
 
 async function loadFriendIds(viewerId: string) {
-  const follows = await loadProfileFollows();
+  const [follows, blocks] = await Promise.all([loadProfileFollows(), loadProfileBlocks()]);
   const { followersByUserId, followingByUserId } = buildFollowAdjacency(follows);
+  const blockedUserIds = getBlockedUserIdsForViewer(viewerId, blocks);
   return [
     ...new Set([
       ...(followingByUserId.get(viewerId) ?? new Set<string>()),
       ...(followersByUserId.get(viewerId) ?? new Set<string>())
     ])
-  ];
+  ].filter((profileId) => !blockedUserIds.has(profileId));
 }
 
 async function loadMediaAssets(ids: string[]) {
@@ -901,12 +955,13 @@ async function loadConversationRowsForUser(viewerId: string) {
 }
 
 async function listConversationSummariesForUser(viewerId: string) {
-  const { conversationRows, memberRows, messageRows, profileRows, eventRows } =
-    await loadConversationRowsForUser(viewerId);
+  const [{ conversationRows, memberRows, messageRows, profileRows, eventRows }, blocks] =
+    await Promise.all([loadConversationRowsForUser(viewerId), loadProfileBlocks()]);
   const profilesById = new Map(profileRows.map((row) => [row.id, mapProfile(row)]));
   const eventsById = new Map(eventRows.map((row) => [row.id, row]));
+  const blockedUserIds = getBlockedUserIdsForViewer(viewerId, blocks);
 
-  const summaries = conversationRows.map((conversation): MobileConversationSummary => {
+  const summaries = conversationRows.flatMap((conversation): MobileConversationSummary[] => {
     const members = memberRows.filter((member) => member.conversation_id === conversation.id);
     const lastMessage = messageRows
       .filter((message) => message.conversation_id === conversation.id)
@@ -920,6 +975,12 @@ async function listConversationSummariesForUser(viewerId: string) {
             (!viewerMember?.last_read_at || message.created_at > viewerMember.last_read_at)
         ).length
       : 0;
+    const otherParticipantIds = members
+      .filter((member) => member.user_id !== viewerId)
+      .map((member) => member.user_id);
+    if (conversation.kind === "direct" && otherParticipantIds.some((participantId) => blockedUserIds.has(participantId))) {
+      return [];
+    }
     const participantProfiles = members
       .filter((member) => member.user_id !== viewerId)
       .map((member) => profilesById.get(member.user_id))
@@ -927,7 +988,7 @@ async function listConversationSummariesForUser(viewerId: string) {
     const eventRow = conversation.event_id ? eventsById.get(conversation.event_id) : null;
 
     if (conversation.kind === "event" && eventRow) {
-      return {
+      return [{
         id: conversation.id,
         kind: conversation.kind,
         title: eventRow.title,
@@ -941,12 +1002,12 @@ async function listConversationSummariesForUser(viewerId: string) {
         chatMode: conversation.chat_mode,
         eventSlug: eventRow.slug,
         eventId: eventRow.id
-      };
+      }];
     }
 
     if (conversation.kind === "direct") {
       const other = participantProfiles[0] ?? null;
-      return {
+      return [{
         id: conversation.id,
         kind: conversation.kind,
         title: other?.handle ? `@${other.handle}` : "Chat",
@@ -960,14 +1021,14 @@ async function listConversationSummariesForUser(viewerId: string) {
         chatMode: "open",
         eventSlug: null,
         eventId: null
-      };
+      }];
     }
 
-    return {
+    return [{
       id: conversation.id,
       kind: conversation.kind,
       title: conversation.title ?? "Grupo",
-      subtitle: `${members.length} personas`,
+      subtitle: `${otherParticipantIds.length + (viewerMember ? 1 : 0)} personas`,
       avatarUrl: resolveMediaUrl(conversation.cover_image),
       lastMessagePreview: getConversationPreview(lastMessage?.body ?? ""),
       lastMessageAt: lastMessage?.created_at ?? conversation.updated_at,
@@ -977,7 +1038,7 @@ async function listConversationSummariesForUser(viewerId: string) {
       chatMode: conversation.chat_mode,
       eventSlug: null,
       eventId: null
-    };
+    }];
   });
 
   return summaries.sort((left, right) => {
@@ -999,7 +1060,7 @@ export async function listMobileConversationSummaries(viewerId: string) {
 }
 
 async function loadPostsForViewer(viewerId: string) {
-  const [postRows, likeRows, commentRows, postMediaRows, assetRows, profileRows, eventRows, follows, memberships, cohosts] = await Promise.all([
+  const [postRows, likeRows, commentRows, postMediaRows, assetRows, profileRows, eventRows, follows, memberships, cohosts, blocks] = await Promise.all([
     selectRows<PostRow>(TABLES.posts, { order: [{ column: "created_at", ascending: false }], limit: 40 }),
     selectRows<PostLikeRow>(TABLES.postLikes),
     selectRows<PostCommentRow>(TABLES.postComments, { order: [{ column: "created_at", ascending: true }] }),
@@ -1011,7 +1072,8 @@ async function loadPostsForViewer(viewerId: string) {
     selectRows<EventRow>(TABLES.events),
     loadProfileFollows(),
     selectRows<EventMemberRow>(TABLES.eventMembers),
-    selectRows<EventCohostRow>(TABLES.eventCohosts)
+    selectRows<EventCohostRow>(TABLES.eventCohosts),
+    loadProfileBlocks()
   ]);
   const assetsById = new Map(assetRows.map((row) => [row.id, mapMediaAsset(row)]));
   const profilesById = new Map(profileRows.map((row) => [row.id, row]));
@@ -1019,12 +1081,20 @@ async function loadPostsForViewer(viewerId: string) {
 
   return postRows
     .filter((row) => {
-      if (!canViewerAccessProfileContent(viewerId, row.author_id, profilesById, follows)) {
+      if (!canViewerAccessProfileContent(viewerId, row.author_id, profilesById, follows, blocks)) {
         return false;
       }
 
       if (row.owner_type === "event") {
-        return canViewerAccessEventContent(viewerId, row.owner_id, eventsById, memberships, cohosts);
+        const ownerEvent = eventsById.get(row.owner_id);
+        if (!ownerEvent) {
+          return false;
+        }
+
+        return (
+          !isBlockedBetweenProfiles(viewerId, ownerEvent.host_id, blocks) &&
+          canViewerAccessEventContent(viewerId, row.owner_id, eventsById, memberships, cohosts)
+        );
       }
 
       return true;
@@ -1090,10 +1160,11 @@ export async function loadAllEventsPublic() {
 
 export async function loadVisibleEventsForViewer(viewerId: string) {
   await ensureMobileSchema();
-  const [events, memberships, cohosts] = await Promise.all([
+  const [events, memberships, cohosts, blocks] = await Promise.all([
     loadAllEvents(),
     selectRows<EventMemberRow>(TABLES.eventMembers),
-    selectRows<EventCohostRow>(TABLES.eventCohosts)
+    selectRows<EventCohostRow>(TABLES.eventCohosts),
+    loadProfileBlocks()
   ]);
   const eventRowsById = new Map(
     events.map((event) => [
@@ -1106,20 +1177,16 @@ export async function loadVisibleEventsForViewer(viewerId: string) {
     ])
   );
 
-  return events.filter((event) =>
-    canViewerAccessEventContent(
-      viewerId,
-      event.id,
-      eventRowsById,
-      memberships,
-      cohosts
-    )
+  return events.filter(
+    (event) =>
+      !isBlockedBetweenProfiles(viewerId, event.hostId, blocks) &&
+      canViewerAccessEventContent(viewerId, event.id, eventRowsById, memberships, cohosts)
   );
 }
 
 async function loadActiveStoriesForViewer(viewerId: string) {
   const now = new Date().toISOString();
-  const [storyRows, storyViews, assetRows, profileRows, eventRows, follows, memberships, cohosts] = await Promise.all([
+  const [storyRows, storyViews, assetRows, profileRows, eventRows, follows, memberships, cohosts, blocks] = await Promise.all([
     selectRows<StoryRow>(TABLES.stories, {
       filters: [{ column: "expires_at", op: "gt", value: now }],
       order: [{ column: "created_at", ascending: false }]
@@ -1130,7 +1197,8 @@ async function loadActiveStoriesForViewer(viewerId: string) {
     selectRows<EventRow>(TABLES.events),
     loadProfileFollows(),
     selectRows<EventMemberRow>(TABLES.eventMembers),
-    selectRows<EventCohostRow>(TABLES.eventCohosts)
+    selectRows<EventCohostRow>(TABLES.eventCohosts),
+    loadProfileBlocks()
   ]);
 
   const assetsById = new Map(assetRows.map((row) => [row.id, mapMediaAsset(row)]));
@@ -1139,19 +1207,27 @@ async function loadActiveStoriesForViewer(viewerId: string) {
 
   const stories = storyRows
     .filter((row) => {
-      if (!canViewerAccessProfileContent(viewerId, row.author_id, profilesById, follows)) {
+      if (!canViewerAccessProfileContent(viewerId, row.author_id, profilesById, follows, blocks)) {
         return false;
       }
 
       if (row.owner_type === "event") {
-        return canViewerAccessEventContent(viewerId, row.owner_id, eventsById, memberships, cohosts);
+        const ownerEvent = eventsById.get(row.owner_id);
+        if (!ownerEvent) {
+          return false;
+        }
+
+        return (
+          !isBlockedBetweenProfiles(viewerId, ownerEvent.host_id, blocks) &&
+          canViewerAccessEventContent(viewerId, row.owner_id, eventsById, memberships, cohosts)
+        );
       }
 
       return true;
     })
     .map((row): MobileStory => ({
     viewers: storyViews
-      .filter((view) => view.story_id === row.id)
+      .filter((view) => view.story_id === row.id && !isBlockedBetweenProfiles(viewerId, view.user_id, blocks))
       .sort((left, right) => right.seen_at.localeCompare(left.seen_at))
       .map((view) => {
         const profileRow = profilesById.get(view.user_id);
@@ -1173,7 +1249,7 @@ async function loadActiveStoriesForViewer(viewerId: string) {
     durationMs: Number(row.duration_ms ?? 5000),
     createdAt: row.created_at,
     expiresAt: row.expires_at,
-    viewCount: storyViews.filter((view) => view.story_id === row.id).length,
+    viewCount: storyViews.filter((view) => view.story_id === row.id && !isBlockedBetweenProfiles(viewerId, view.user_id, blocks)).length,
     hasSeen: storyViews.some((view) => view.story_id === row.id && view.user_id === viewerId)
   }));
 
@@ -1270,13 +1346,33 @@ async function loadStoryMessageContexts(storyIds: string[]) {
 }
 
 async function listNotificationsForViewer(viewerId: string) {
-  const rows = await selectRows<NotificationRow>(TABLES.notifications, {
-    filters: [{ column: "user_id", op: "eq", value: viewerId }],
-    order: [{ column: "created_at", ascending: false }],
-    limit: 30
-  });
+  const [rows, followRequests, conversationRequests] = await Promise.all([
+    selectRows<NotificationRow>(TABLES.notifications, {
+      filters: [{ column: "user_id", op: "eq", value: viewerId }],
+      order: [{ column: "created_at", ascending: false }],
+      limit: 30
+    }),
+    selectRows<ProfileFollowRequestRow>(TABLES.profileFollowRequests).catch(async () => [] as ProfileFollowRequestRow[]),
+    selectRows<ConversationRequestRow>(TABLES.conversationRequests).catch(async () => [] as ConversationRequestRow[])
+  ]);
 
-  return rows.map(mapNotification);
+  const followRequestsById = new Map(followRequests.map((request) => [request.id, request]));
+  const conversationRequestsById = new Map(conversationRequests.map((request) => [request.id, request]));
+
+  return rows
+    .map(mapNotification)
+    .filter((notification) => {
+      const requestId = typeof notification.data.requestId === "string" ? notification.data.requestId : null;
+      if (notification.kind === "follow-request") {
+        const request = requestId ? followRequestsById.get(requestId) : null;
+        return Boolean(request && request.target_user_id === viewerId && request.status === "pending");
+      }
+      if (notification.kind === "chat-request") {
+        const request = requestId ? conversationRequestsById.get(requestId) : null;
+        return Boolean(request && request.target_user_id === viewerId && request.status === "pending");
+      }
+      return true;
+    });
 }
 
 export async function getMobileViewerSummary(viewerId: string): Promise<MobileViewerSummary> {
@@ -1300,13 +1396,14 @@ export async function getMobileViewerSummary(viewerId: string): Promise<MobileVi
 }
 
 export async function getMobileBootstrap(viewerId: string) {
-  const [viewer, storyClusters, feedPosts, events, chatSummaries, pendingEventInvites] = await Promise.all([
+  const [viewer, storyClusters, feedPosts, events, chatSummaries, pendingEventInvites, blocks] = await Promise.all([
     getMobileViewerSummary(viewerId),
     loadActiveStoriesForViewer(viewerId),
     loadPostsForViewer(viewerId),
     loadAllEvents(),
     listConversationSummariesForUser(viewerId),
-    listEventInvitesForViewer(viewerId, { pendingOnly: true })
+    listEventInvitesForViewer(viewerId, { pendingOnly: true }),
+    loadProfileBlocks()
   ]);
 
   const joinedEventIds = new Set(
@@ -1321,7 +1418,11 @@ export async function getMobileBootstrap(viewerId: string) {
     viewer,
     storyClusters,
     feedPosts,
-    joinedEvents: events.filter((event) => joinedEventIds.has(event.id) || event.hostId === viewerId),
+    joinedEvents: events.filter(
+      (event) =>
+        !isBlockedBetweenProfiles(viewerId, event.hostId, blocks) &&
+        (joinedEventIds.has(event.id) || event.hostId === viewerId)
+    ),
     chatSummaries,
     pendingEventInvites
   };
@@ -1362,17 +1463,19 @@ export async function getMobileSearch(
   const facets = buildSearchFacets(visibleEvents);
 
   if (!normalizedQuery) {
-    const [profileRows, follows, followRequests, suggestedPosts] = await Promise.all([
+    const [profileRows, follows, followRequests, suggestedPosts, blocks] = await Promise.all([
       selectRows<ProfileRow>(TABLES.profiles, { order: [{ column: "created_at", ascending: false }], limit: 80 }),
       loadProfileFollows(),
       loadPendingProfileFollowRequests(),
-      loadPostsForViewer(viewerId)
+      loadPostsForViewer(viewerId),
+      loadProfileBlocks()
     ]);
-    const profiles = applyViewerRelationshipsToProfiles(viewerId, profileRows.map(mapProfile), follows, followRequests);
+    const profiles = applyViewerRelationshipsToProfiles(viewerId, profileRows.map(mapProfile), follows, followRequests, blocks);
     const { suggestedProfiles, viewerFriendIds } = buildSuggestedProfilesForViewer(
       viewerId,
       profiles,
-      follows
+      follows,
+      blocks
     );
     const suggestedProfileIds = new Set(suggestedProfiles.map((profile) => profile.id));
 
@@ -1396,11 +1499,12 @@ export async function getMobileSearch(
     order: [{ column: "created_at", ascending: false }],
     limit: 80
   });
-  const [follows, followRequests] = await Promise.all([
+  const [follows, followRequests, blocks] = await Promise.all([
     loadProfileFollows(),
-    loadPendingProfileFollowRequests()
+    loadPendingProfileFollowRequests(),
+    loadProfileBlocks()
   ]);
-  const mappedProfiles = applyViewerRelationshipsToProfiles(viewerId, profileRows.map(mapProfile), follows, followRequests);
+  const mappedProfiles = applyViewerRelationshipsToProfiles(viewerId, profileRows.map(mapProfile), follows, followRequests, blocks);
 
   return {
     profiles: mappedProfiles
@@ -1544,12 +1648,152 @@ async function resolveProfileByHandle(handle: string) {
   return rows[0] ? mapProfile(rows[0]) : null;
 }
 
+async function resolveVisibleProfileByHandle(viewerId: string, handle: string) {
+  const [profile, blocks] = await Promise.all([resolveProfileByHandle(handle), loadProfileBlocks()]);
+  if (!profile || isBlockedBetweenProfiles(viewerId, profile.id, blocks)) {
+    return null;
+  }
+
+  return profile;
+}
+
+async function blockProfileById(viewerId: string, targetUserId: string) {
+  if (viewerId === targetUserId) {
+    throw new Error("No puedes bloquearte a ti.");
+  }
+
+  const now = new Date().toISOString();
+  await insertRow<ProfileBlockRow, ProfileBlockRow>(
+    TABLES.profileBlocks,
+    {
+      id: buildMobileId("block"),
+      blocker_id: viewerId,
+      blocked_user_id: targetUserId,
+      created_at: now
+    },
+    {
+      onConflict: "blocker_id,blocked_user_id",
+      returning: "minimal"
+    }
+  );
+
+  await deleteRows(TABLES.profileFollows, [
+    { column: "follower_id", op: "eq", value: viewerId },
+    { column: "followee_id", op: "eq", value: targetUserId }
+  ], { returning: "minimal" }).catch(async () => undefined);
+  await deleteRows(TABLES.profileFollows, [
+    { column: "follower_id", op: "eq", value: targetUserId },
+    { column: "followee_id", op: "eq", value: viewerId }
+  ], { returning: "minimal" }).catch(async () => undefined);
+
+  await patchRows(
+    TABLES.profileFollowRequests,
+    [
+      { column: "requester_id", op: "eq", value: viewerId },
+      { column: "target_user_id", op: "eq", value: targetUserId },
+      { column: "status", op: "eq", value: "pending" }
+    ],
+    {
+      status: "cancelled",
+      responded_at: now
+    },
+    { returning: "minimal" }
+  ).catch(async () => []);
+  await patchRows(
+    TABLES.profileFollowRequests,
+    [
+      { column: "requester_id", op: "eq", value: targetUserId },
+      { column: "target_user_id", op: "eq", value: viewerId },
+      { column: "status", op: "eq", value: "pending" }
+    ],
+    {
+      status: "cancelled",
+      responded_at: now
+    },
+    { returning: "minimal" }
+  ).catch(async () => []);
+
+  await patchRows(
+    TABLES.conversationRequests,
+    [
+      { column: "requester_id", op: "eq", value: viewerId },
+      { column: "target_user_id", op: "eq", value: targetUserId },
+      { column: "status", op: "eq", value: "pending" }
+    ],
+    {
+      status: "cancelled",
+      responded_at: now
+    },
+    { returning: "minimal" }
+  ).catch(async () => []);
+  await patchRows(
+    TABLES.conversationRequests,
+    [
+      { column: "requester_id", op: "eq", value: targetUserId },
+      { column: "target_user_id", op: "eq", value: viewerId },
+      { column: "status", op: "eq", value: "pending" }
+    ],
+    {
+      status: "cancelled",
+      responded_at: now
+    },
+    { returning: "minimal" }
+  ).catch(async () => []);
+
+  await patchRows(
+    TABLES.conversationMembers,
+    [{ column: "conversation_id", op: "eq", value: buildDirectConversationId(viewerId, targetUserId) }],
+    {
+      hidden_at: now,
+      archived_at: null,
+      pinned_at: null
+    },
+    { returning: "minimal" }
+  ).catch(async () => []);
+
+  publishMobileRealtimeEvent({ type: "profile", profileId: viewerId, viewerId });
+  publishMobileRealtimeEvent({ type: "profile", profileId: targetUserId, viewerId });
+  publishMobileRealtimeEvent({ type: "profile", profileId: viewerId, viewerId: targetUserId });
+  publishMobileRealtimeEvent({ type: "conversation", conversationId: buildDirectConversationId(viewerId, targetUserId), viewerId });
+  publishMobileRealtimeEvent({ type: "conversation", conversationId: buildDirectConversationId(viewerId, targetUserId), viewerId: targetUserId });
+  publishMobileRealtimeEvent({ type: "notifications", viewerId });
+  publishMobileRealtimeEvent({ type: "notifications", viewerId: targetUserId });
+}
+
+export async function blockProfile(viewerId: string, handle: string) {
+  const targetProfile = await resolveProfileByHandle(handle);
+  if (!targetProfile) {
+    throw new Error("No pude encontrar ese perfil.");
+  }
+
+  await blockProfileById(viewerId, targetProfile.id);
+}
+
+export async function unblockProfile(viewerId: string, handle: string) {
+  const targetProfile = await resolveProfileByHandle(handle);
+  if (!targetProfile) {
+    throw new Error("No pude encontrar ese perfil.");
+  }
+
+  await deleteRows(
+    TABLES.profileBlocks,
+    [
+      { column: "blocker_id", op: "eq", value: viewerId },
+      { column: "blocked_user_id", op: "eq", value: targetProfile.id }
+    ],
+    { returning: "minimal" }
+  );
+
+  publishMobileRealtimeEvent({ type: "profile", profileId: viewerId, viewerId });
+}
+
 export async function requestProfileFollow(viewerId: string, handle: string) {
-  const [viewerProfiles, targetProfile, follows, followRequests] = await Promise.all([
+  const [viewerProfiles, targetProfile, follows, followRequests, blocks] = await Promise.all([
     loadProfiles([viewerId]),
-    resolveProfileByHandle(handle),
+    resolveVisibleProfileByHandle(viewerId, handle),
     loadProfileFollows(),
-    loadPendingProfileFollowRequests()
+    loadPendingProfileFollowRequests(),
+    loadProfileBlocks()
   ]);
   const viewerProfile = viewerProfiles[0];
   if (!viewerProfile || !targetProfile) {
@@ -1557,6 +1801,9 @@ export async function requestProfileFollow(viewerId: string, handle: string) {
   }
   if (viewerId === targetProfile.id) {
     throw new Error("No puedes seguirte a ti mismo.");
+  }
+  if (isBlockedBetweenProfiles(viewerId, targetProfile.id, blocks)) {
+    throw new Error("Ese perfil ya no esta disponible.");
   }
 
   const relationship = buildProfileRelationship(viewerId, targetProfile.id, follows, followRequests);
@@ -1635,7 +1882,7 @@ export async function requestProfileFollow(viewerId: string, handle: string) {
 }
 
 export async function unfollowProfile(viewerId: string, handle: string) {
-  const targetProfile = await resolveProfileByHandle(handle);
+  const targetProfile = await resolveVisibleProfileByHandle(viewerId, handle);
   if (!targetProfile) {
     throw new Error("No pude encontrar ese perfil.");
   }
@@ -1650,7 +1897,7 @@ export async function unfollowProfile(viewerId: string, handle: string) {
 }
 
 export async function cancelProfileFollowRequest(viewerId: string, handle: string) {
-  const targetProfile = await resolveProfileByHandle(handle);
+  const targetProfile = await resolveVisibleProfileByHandle(viewerId, handle);
   if (!targetProfile) {
     throw new Error("No pude encontrar ese perfil.");
   }
@@ -1725,6 +1972,20 @@ export async function respondToProfileFollowRequest(viewerId: string, requestId:
         kind: "follow-accepted",
         title: `@${viewerProfile.handle} acepto tu solicitud`,
         body: "Ya puedes ver su perfil completo.",
+        entityType: "profile",
+        entityId: viewerId,
+        data: {
+          targetHandle: viewerProfile.handle
+        }
+      });
+    }
+  } else {
+    const viewerProfile = (await loadProfiles([viewerId]))[0] ?? null;
+    if (viewerProfile) {
+      await notifyUsers([request.requester_id], {
+        kind: "follow-rejected",
+        title: `@${viewerProfile.handle} rechazo tu solicitud`,
+        body: "Esa persona ha preferido mantener su perfil cerrado.",
         entityType: "profile",
         entityId: viewerId,
         data: {
@@ -1991,7 +2252,12 @@ async function ensureDirectConversation(requesterId: string, targetId: string) {
   return conversationId;
 }
 
-export async function respondToConversationRequest(viewerId: string, requestId: string, accept: boolean) {
+export async function respondToConversationRequest(
+  viewerId: string,
+  requestId: string,
+  accept: boolean,
+  options?: { block?: boolean }
+) {
   const requestRows = await selectRows<ConversationRequestRow>(TABLES.conversationRequests, {
     filters: [{ column: "id", op: "eq", value: requestId }],
     limit: 1
@@ -2039,7 +2305,7 @@ export async function respondToConversationRequest(viewerId: string, requestId: 
     const viewerProfile = (await loadProfiles([viewerId]))[0] ?? null;
     if (viewerProfile) {
       await notifyUsers([request.requester_id], {
-        kind: "message",
+        kind: "chat-accepted",
         title: `@${viewerProfile.handle} acepto tu chat`,
         body: "Ya podeis hablar por directo.",
         entityType: "conversation",
@@ -2048,6 +2314,29 @@ export async function respondToConversationRequest(viewerId: string, requestId: 
           conversationId
         }
       });
+    }
+    if (request.initial_body.trim()) {
+      await sendMobileMessage(request.requester_id, {
+        conversationId,
+        body: request.initial_body
+      });
+    }
+  } else {
+    const viewerProfile = (await loadProfiles([viewerId]))[0] ?? null;
+    if (viewerProfile) {
+      await notifyUsers([request.requester_id], {
+        kind: "chat-rejected",
+        title: `@${viewerProfile.handle} rechazo tu chat`,
+        body: "La solicitud de chat no ha sido aceptada.",
+        entityType: "profile",
+        entityId: viewerId,
+        data: {
+          targetHandle: viewerProfile.handle
+        }
+      });
+    }
+    if (options?.block) {
+      await blockProfileById(viewerId, request.requester_id);
     }
   }
 
@@ -2069,14 +2358,19 @@ export async function createMobileConversation(viewerId: string, input: CreateCo
     }
 
     const conversationId = buildDirectConversationId(viewerId, targetId);
-    const [conversationRows, follows, pendingRequests] = await Promise.all([
+    const [conversationRows, follows, pendingRequests, blocks] = await Promise.all([
       selectRows<ConversationRow>(TABLES.conversations, {
         filters: [{ column: "id", op: "eq", value: conversationId }],
         limit: 1
       }),
       loadProfileFollows(),
-      loadPendingConversationRequests()
+      loadPendingConversationRequests(),
+      loadProfileBlocks()
     ]);
+
+    if (isBlockedBetweenProfiles(viewerId, targetId, blocks)) {
+      throw new Error("Ese perfil ya no esta disponible.");
+    }
 
     if (conversationRows[0]) {
       await ensureConversationMembers(conversationId, viewerId, [targetId]);
@@ -2100,12 +2394,20 @@ export async function createMobileConversation(viewerId: string, input: CreateCo
       };
     }
 
-    const followsProfile = follows.some((follow) => follow.follower_id === viewerId && follow.followee_id === targetId);
-    if (!followsProfile) {
+    const followedByProfile = follows.some((follow) => follow.follower_id === targetId && follow.followee_id === viewerId);
+    if (!followedByProfile) {
       const outgoingRequest = pendingRequests.find(
         (request) => request.requester_id === viewerId && request.target_user_id === targetId
       );
       if (outgoingRequest) {
+        if (!outgoingRequest.initial_body.trim() && input.initialBody?.trim()) {
+          await patchRows(
+            TABLES.conversationRequests,
+            [{ column: "id", op: "eq", value: outgoingRequest.id }],
+            { initial_body: input.initialBody.trim() },
+            { returning: "minimal" }
+          ).catch(async () => []);
+        }
         return {
           mode: "request",
           conversationId: null,
@@ -2129,6 +2431,7 @@ export async function createMobileConversation(viewerId: string, input: CreateCo
           target_user_id: targetId,
           status: "pending",
           conversation_id: null,
+          initial_body: input.initialBody?.trim() ?? "",
           created_at: new Date().toISOString(),
           responded_at: null
         },
@@ -2141,7 +2444,7 @@ export async function createMobileConversation(viewerId: string, input: CreateCo
       await notifyUsers([targetId], {
         kind: "chat-request",
         title: `@${viewerProfile.handle} quiere hablar contigo`,
-        body: "Tienes una nueva solicitud de chat.",
+        body: input.initialBody?.trim() || "Tienes una nueva solicitud de chat.",
         entityType: "profile",
         entityId: targetId,
         data: {
@@ -3411,13 +3714,25 @@ async function canViewerWriteConversation(viewerId: string, conversation: Conver
 }
 
 export async function sendMobileMessage(viewerId: string, input: SendMobileMessageInput) {
-  const conversationRows = await selectRows<ConversationRow>(TABLES.conversations, {
-    filters: [{ column: "id", op: "eq", value: input.conversationId }],
-    limit: 1
-  });
+  const [conversationRows, memberRows, blocks] = await Promise.all([
+    selectRows<ConversationRow>(TABLES.conversations, {
+      filters: [{ column: "id", op: "eq", value: input.conversationId }],
+      limit: 1
+    }),
+    selectRows<ConversationMemberRow>(TABLES.conversationMembers, {
+      filters: [{ column: "conversation_id", op: "eq", value: input.conversationId }]
+    }),
+    loadProfileBlocks()
+  ]);
   const conversation = conversationRows[0];
   if (!conversation) {
     throw new Error("La conversacion no existe.");
+  }
+  if (
+    conversation.kind === "direct" &&
+    memberRows.some((member) => member.user_id !== viewerId && isBlockedBetweenProfiles(viewerId, member.user_id, blocks))
+  ) {
+    throw new Error("Ese chat ya no esta disponible.");
   }
 
   const canWrite = await canViewerWriteConversation(viewerId, conversation);
@@ -3475,9 +3790,6 @@ export async function sendMobileMessage(viewerId: string, input: SendMobileMessa
     { returning: "minimal" }
   );
 
-  const memberRows = await selectRows<ConversationMemberRow>(TABLES.conversationMembers, {
-    filters: [{ column: "conversation_id", op: "eq", value: input.conversationId }]
-  });
   const otherUserIds = memberRows.map((row) => row.user_id).filter((userId) => userId !== viewerId);
 
   await insertRows<MessageReceiptRow, MessageReceiptRow>(
@@ -3585,7 +3897,7 @@ export async function markConversationRead(viewerId: string, conversationId: str
 }
 
 export async function getMobileConversationDetail(viewerId: string, conversationId: string): Promise<MobileConversationDetail> {
-  const [conversationRows, memberRows, messageRows, receiptRows] = await Promise.all([
+  const [conversationRows, memberRows, messageRows, receiptRows, blocks] = await Promise.all([
     selectRows<ConversationRow>(TABLES.conversations, {
       filters: [{ column: "id", op: "eq", value: conversationId }],
       limit: 1
@@ -3599,7 +3911,8 @@ export async function getMobileConversationDetail(viewerId: string, conversation
     }),
     selectRows<MessageReceiptRow>(TABLES.messageReceipts, {
       order: [{ column: "message_id", ascending: true }]
-    })
+    }),
+    loadProfileBlocks()
   ]);
   const conversation = conversationRows[0];
   if (!conversation) {
@@ -3609,6 +3922,12 @@ export async function getMobileConversationDetail(viewerId: string, conversation
   const viewerMembership = memberRows.find((row) => row.user_id === viewerId);
   if (!viewerMembership) {
     throw new Error("No tienes acceso a este chat.");
+  }
+  if (
+    conversation.kind === "direct" &&
+    memberRows.some((member) => member.user_id !== viewerId && isBlockedBetweenProfiles(viewerId, member.user_id, blocks))
+  ) {
+    throw new Error("Ese chat ya no esta disponible.");
   }
 
   if (viewerMembership.hidden_at) {
@@ -4062,18 +4381,19 @@ export async function getMobileEventDetail(viewerId: string, slug: string): Prom
 }
 
 export async function getMobileProfileDetail(viewerId: string, handle: string): Promise<MobileProfileDetail> {
-  const profile = await resolveProfileByHandle(handle);
+  const profile = await resolveVisibleProfileByHandle(viewerId, handle);
   if (!profile) {
     throw new Error("No se encontro ese perfil.");
   }
-  const [viewerProfiles, events, follows, followRequests, posts, storyClusters, memberships] = await Promise.all([
+  const [viewerProfiles, events, follows, followRequests, posts, storyClusters, memberships, blocks] = await Promise.all([
     loadProfiles([viewerId]),
     loadAllEvents(),
     loadProfileFollows(),
     loadPendingProfileFollowRequests(),
     loadPostsForViewer(viewerId),
     loadActiveStoriesForViewer(viewerId),
-    selectRows<EventMemberRow>(TABLES.eventMembers)
+    selectRows<EventMemberRow>(TABLES.eventMembers),
+    loadProfileBlocks()
   ]);
   const viewer = viewerProfiles[0];
   if (!viewer) {
@@ -4081,7 +4401,11 @@ export async function getMobileProfileDetail(viewerId: string, handle: string): 
   }
   const relationship = buildProfileRelationship(viewerId, profile.id, follows, followRequests);
   const canViewContent = profile.id === viewerId || !profile.isPrivate || relationship.followsProfile;
-  const followerIds = follows.filter((follow) => follow.followee_id === profile.id).map((follow) => follow.follower_id);
+  const blockedUserIds = getBlockedUserIdsForViewer(viewerId, blocks);
+  const followerIds = follows
+    .filter((follow) => follow.followee_id === profile.id)
+    .map((follow) => follow.follower_id)
+    .filter((id) => !blockedUserIds.has(id));
   const acceptedFollowingIds = follows.filter((follow) => follow.follower_id === profile.id).map((follow) => follow.followee_id);
   const pendingFollowingIds =
     profile.id === viewerId
@@ -4089,9 +4413,20 @@ export async function getMobileProfileDetail(viewerId: string, handle: string): 
           .filter((request) => request.requester_id === profile.id && request.status === "pending")
           .map((request) => request.target_user_id)
       : [];
-  const followingIds = [...new Set([...acceptedFollowingIds, ...pendingFollowingIds])];
-  const relatedProfiles = await loadProfiles([...new Set([...followerIds, ...followingIds])]);
+  const followingIds = [...new Set([...acceptedFollowingIds, ...pendingFollowingIds])].filter((id) => !blockedUserIds.has(id));
+  const viewerFollowingIds = follows
+    .filter((follow) => follow.follower_id === viewerId)
+    .map((follow) => follow.followee_id)
+    .filter((id) => !blockedUserIds.has(id));
+  const sharedFollowerIds = profile.id === viewerId
+    ? []
+    : followerIds.filter((id) => viewerFollowingIds.includes(id));
+  const blockedProfileIds = profile.id === viewerId
+    ? blocks.filter((block) => block.blocker_id === viewerId).map((block) => block.blocked_user_id)
+    : [];
+  const relatedProfiles = await loadProfiles([...new Set([...followerIds, ...followingIds, ...sharedFollowerIds, ...blockedProfileIds])]);
   const relatedProfilesById = new Map(relatedProfiles.map((entry) => [entry.id, entry]));
+  const visibleEvents = events.filter((event) => !isBlockedBetweenProfiles(viewerId, event.hostId, blocks));
 
   return {
     viewer,
@@ -4112,8 +4447,18 @@ export async function getMobileProfileDetail(viewerId: string, handle: string): 
       .map((id) => relatedProfilesById.get(id))
       .filter((entry): entry is MobileProfile => Boolean(entry))
       .map(mapProfileMini),
-    createdEvents: events.filter((event) => event.hostId === profile.id),
-    joinedEvents: events.filter((event) =>
+    sharedFollowers: sharedFollowerIds
+      .map((id) => relatedProfilesById.get(id))
+      .filter((entry): entry is MobileProfile => Boolean(entry))
+      .slice(0, 2)
+      .map(mapProfileMini),
+    sharedFollowerCount: sharedFollowerIds.length,
+    blockedProfiles: blockedProfileIds
+      .map((id) => relatedProfilesById.get(id))
+      .filter((entry): entry is MobileProfile => Boolean(entry))
+      .map(mapProfileMini),
+    createdEvents: visibleEvents.filter((event) => event.hostId === profile.id),
+    joinedEvents: visibleEvents.filter((event) =>
       event.hostId !== profile.id &&
       memberships.some(
         (membership) =>

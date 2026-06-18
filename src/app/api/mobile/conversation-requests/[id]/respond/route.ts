@@ -11,12 +11,12 @@ export async function POST(
   try {
     const viewerId = await requireMobileViewerId();
     const { id } = await context.params;
-    const body = (await request.json().catch(() => null)) as { accept?: boolean } | null;
+    const body = (await request.json().catch(() => null)) as { accept?: boolean; block?: boolean } | null;
     if (!body || typeof body.accept !== "boolean") {
       throw new Error("Falta indicar si aceptas o rechazas.");
     }
 
-    return mobileOk(await respondToConversationRequest(viewerId, id, body.accept));
+    return mobileOk(await respondToConversationRequest(viewerId, id, body.accept, { block: body.block === true }));
   } catch (error) {
     return mobileError(error);
   }

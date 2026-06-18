@@ -14,7 +14,10 @@ export type MobileStoryMessageMode = "reaction" | "comment";
 export type MobileNotificationKind =
   | "follow-request"
   | "follow-accepted"
+  | "follow-rejected"
   | "chat-request"
+  | "chat-accepted"
+  | "chat-rejected"
   | "event-invite"
   | "event-invite-response"
   | "event-approved"
@@ -349,6 +352,9 @@ export interface MobileProfileDetail {
   followingCount: number;
   followers: MobileProfileMini[];
   following: MobileProfileMini[];
+  sharedFollowers: MobileProfileMini[];
+  sharedFollowerCount: number;
+  blockedProfiles: MobileProfileMini[];
   createdEvents: MobileEvent[];
   joinedEvents: MobileEvent[];
   stories: MobileStory[];
@@ -477,6 +483,7 @@ export interface CreateConversationInput {
   kind: "direct" | "group";
   title: string | null;
   participantIds: string[];
+  initialBody?: string | null;
 }
 
 export interface JoinEventResult {

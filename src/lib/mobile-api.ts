@@ -359,6 +359,22 @@ export async function fetchProfileDetail(handle: string) {
   );
 }
 
+export async function blockProfile(handle: string) {
+  return readJson<{ ok: boolean }>(
+    await fetch(`/api/mobile/profile/${handle}/block`, {
+      method: "POST"
+    })
+  );
+}
+
+export async function unblockProfile(handle: string) {
+  return readJson<{ ok: boolean }>(
+    await fetch(`/api/mobile/profile/${handle}/block`, {
+      method: "DELETE"
+    })
+  );
+}
+
 export async function requestFollow(handle: string) {
   return readJson<{ ok: boolean }>(
     await fetch(`/api/mobile/profile/${handle}/follow`, {
@@ -405,12 +421,16 @@ export async function respondToFollowRequest(requestId: string, accept: boolean)
   );
 }
 
-export async function respondToConversationRequest(requestId: string, accept: boolean) {
+export async function respondToConversationRequest(
+  requestId: string,
+  accept: boolean,
+  options?: { block?: boolean }
+) {
   return readJson<{ ok: boolean; conversationId: string | null }>(
     await fetch(`/api/mobile/conversation-requests/${requestId}/respond`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ accept })
+      body: JSON.stringify({ accept, block: options?.block ?? false })
     })
   );
 }

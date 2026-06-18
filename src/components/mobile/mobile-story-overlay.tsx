@@ -792,7 +792,16 @@ export function MobileStoryOverlay({
               <div className="mt-4 max-h-[38dvh] space-y-3 overflow-y-auto pb-2">
                 {activeStory.viewers.length ? (
                   activeStory.viewers.map((storyViewer) => (
-                    <div key={`${storyViewer.id}-${storyViewer.seenAt}`} className="flex items-center gap-3">
+                    <button
+                      key={`${storyViewer.id}-${storyViewer.seenAt}`}
+                      type="button"
+                      onClick={() => {
+                        setViewersOpen(false);
+                        onClose();
+                        router.push(`/perfil/${storyViewer.handle}`);
+                      }}
+                      className="flex w-full items-center gap-3 rounded-[1.2rem] px-1 py-1 text-left"
+                    >
                       <StoryAvatar src={storyViewer.avatarUrl} label={`@${storyViewer.handle}`} />
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-sm font-semibold">@{storyViewer.handle}</div>
@@ -800,7 +809,7 @@ export function MobileStoryOverlay({
                           {storyViewer.displayName} · {formatRelativeMobileTime(storyViewer.seenAt)}
                         </div>
                       </div>
-                    </div>
+                    </button>
                   ))
                 ) : (
                   <div className="rounded-[1.4rem] border border-white/10 bg-white/5 px-4 py-4 text-sm text-white/68">
