@@ -1,6 +1,7 @@
 export type MobileEventVisibility = "public" | "private";
 export type MobileEventStatus = "upcoming" | "live" | "afterglow";
 export type MobileEventMemberStatus = "pending" | "approved" | "rejected" | "waitlisted";
+export type MobileEventInviteStatus = "pending" | "accepted" | "rejected" | "cancelled";
 export type MobileArrivalStatus = "none" | "going" | "eta20" | "inside";
 export type MobileConversationKind = "event" | "direct" | "group";
 export type MobileConversationRole = "owner" | "cohost" | "member";
@@ -9,8 +10,11 @@ export type MobileMessageKind = "text" | "system" | "media";
 export type MobileDeliveryStatus = "sending" | "sent" | "delivered" | "read" | "failed";
 export type MobileStoryOwnerType = "user" | "event";
 export type MobileNotificationKind =
+  | "event-invite"
+  | "event-invite-response"
   | "event-approved"
   | "event-waitlist"
+  | "event-report"
   | "event-reminder-24h"
   | "event-reminder-2h"
   | "event-live"
@@ -35,6 +39,14 @@ export interface MobileProfile {
   avatarUrl: string | null;
   coverUrl: string | null;
   createdAt: string;
+}
+
+export interface MobileProfileMini {
+  id: string;
+  handle: string;
+  displayName: string;
+  city: string;
+  avatarUrl: string | null;
 }
 
 export interface MobileViewerSummary {
@@ -166,6 +178,26 @@ export interface MobileEventCohost {
   createdAt: string;
 }
 
+export interface MobileEventParticipant {
+  profile: MobileProfile;
+  membership: MobileEventMember;
+  isCohost: boolean;
+}
+
+export interface MobileEventInvite {
+  id: string;
+  eventId: string;
+  eventSlug: string;
+  eventTitle: string;
+  eventSummary: string;
+  eventCity: string;
+  status: MobileEventInviteStatus;
+  createdAt: string;
+  respondedAt: string | null;
+  fromProfile: MobileProfileMini;
+  toProfile: MobileProfileMini;
+}
+
 export interface MobileEvent {
   id: string;
   slug: string;
@@ -199,6 +231,7 @@ export interface MobileEvent {
   waitlistCount: number;
   insideCount: number;
   pendingCount: number;
+  recapEndsAt: string;
 }
 
 export interface MobileMessageReceipt {
@@ -236,9 +269,16 @@ export interface MobileEventDetail {
   host: MobileProfile;
   myMembership: MobileEventMember | null;
   myConversationId: string | null;
+  myInvite: MobileEventInvite | null;
   cohosts: MobileProfile[];
   members: MobileProfile[];
   memberRecords: MobileEventMember[];
+  participants: MobileEventParticipant[];
+  invites: MobileEventInvite[];
+  inviteCandidates: MobileProfile[];
+  canInviteFriends: boolean;
+  mutedUserIds: string[];
+  bannedUserIds: string[];
   stories: MobileStory[];
   posts: MobilePost[];
 }
@@ -284,6 +324,19 @@ export interface MobileBootstrapPayload {
   feedPosts: MobilePost[];
   joinedEvents: MobileEvent[];
   chatSummaries: MobileConversationSummary[];
+  pendingEventInvites: MobileEventInvite[];
+}
+
+export interface MobileSearchFilters {
+  city: string;
+  when: "all" | "live" | "today" | "week" | "month";
+  visibility: "all" | MobileEventVisibility;
+  category: string;
+}
+
+export interface MobileSearchFacets {
+  cities: string[];
+  categories: string[];
 }
 
 export interface MobileSearchPayload {
@@ -291,6 +344,7 @@ export interface MobileSearchPayload {
   events: MobileEvent[];
   suggestedProfiles: MobileSuggestedProfile[];
   suggestedPosts: MobilePost[];
+  facets: MobileSearchFacets;
 }
 
 export interface CreateMobileEventInput {

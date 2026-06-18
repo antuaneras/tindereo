@@ -81,6 +81,21 @@ create table if not exists public.event_waitlist (
   unique (event_id, user_id)
 );
 
+create table if not exists public.event_invites (
+  id text primary key,
+  event_id text not null references public.events(id) on delete cascade,
+  from_user_id text not null references public.profiles(id) on delete cascade,
+  to_user_id text not null references public.profiles(id) on delete cascade,
+  status text not null default 'pending' check (status in ('pending', 'accepted', 'rejected', 'cancelled')),
+  created_at timestamptz not null default timezone('utc', now()),
+  responded_at timestamptz,
+  check (from_user_id <> to_user_id)
+);
+
+create index if not exists event_invites_event_idx on public.event_invites (event_id, created_at desc);
+create index if not exists event_invites_to_user_idx on public.event_invites (to_user_id, status, created_at desc);
+create index if not exists event_invites_from_user_idx on public.event_invites (from_user_id, created_at desc);
+
 create table if not exists public.event_cohosts (
   id text primary key,
   event_id text not null references public.events(id) on delete cascade,
@@ -356,6 +371,7 @@ begin
     'events',
     'event_members',
     'event_waitlist',
+    'event_invites',
     'event_cohosts',
     'event_presence',
     'event_mutes',

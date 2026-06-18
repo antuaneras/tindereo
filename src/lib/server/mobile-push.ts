@@ -255,8 +255,12 @@ function buildTargetUrl(notification: MobileNotification) {
   if (notification.entityType === "conversation" && notification.entityId) {
     return `/chat/${notification.entityId}`;
   }
-  if (notification.entityType === "event" && notification.entityId) {
-    return `/evento/${notification.entityId}`;
+  if (notification.entityType === "event") {
+    const slug = typeof notification.data.eventSlug === "string" ? notification.data.eventSlug : null;
+    if (slug) {
+      return `/evento/${slug}`;
+    }
+    return "/eventos";
   }
   return "/";
 }

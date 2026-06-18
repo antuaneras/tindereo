@@ -4,10 +4,10 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { CalendarDays, Camera, Search } from "lucide-react";
-import { fetchMobileBootstrap, subscribeToMobileStream } from "@/lib/mobile-api";
+import { fetchMobileBootstrap, respondToEventInvite, subscribeToMobileStream } from "@/lib/mobile-api";
 import { formatMobileDateTime } from "@/lib/mobile-shared";
 import { PostCard, StoryStrip } from "@/components/mobile/mobile-feed";
-import type { MobileBootstrapPayload } from "@/lib/mobile-types";
+import type { MobileBootstrapPayload, MobileEventInvite } from "@/lib/mobile-types";
 
 const HOME_CACHE_KEY = "mobile-cache:home";
 
@@ -35,6 +35,7 @@ function writeHomeCache(data: MobileBootstrapPayload) {
 export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstrapPayload | null }) {
   const router = useRouter();
   const [data, setData] = useState<MobileBootstrapPayload | null>(() => initialData ?? null);
+  const [inviteActionId, setInviteActionId] = useState<string | null>(null);
   const [gestureStart, setGestureStart] = useState<{ x: number; y: number; ignore: boolean } | null>(null);
   const [dragOffsetX, setDragOffsetX] = useState(0);
   const [isGestureActive, setIsGestureActive] = useState(false);
@@ -100,6 +101,20 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
         <div className="h-[420px] rounded-[2rem] bg-white/80 shadow-sm" />
       </div>
     );
+  }
+
+  async function handleInviteResponse(invite: MobileEventInvite, accept: boolean) {
+    setInviteActionId(invite.id);
+    try {
+      await respondToEventInvite(invite.id, accept);
+      const nextData = await fetchMobileBootstrap();
+      setData(nextData);
+      if (accept) {
+        router.push(`/evento/${invite.eventSlug}`);
+      }
+    } finally {
+      setInviteActionId(null);
+    }
   }
 
   return (
@@ -231,6 +246,77 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
           ) : null}
         </section>
 
+        {data.pendingEventInvites.length ? (
+          <section className="rounded-[2rem] border border-[rgba(255,107,87,0.16)] bg-white/92 px-5 py-5 shadow-[0_18px_40px_rgba(29,22,15,0.06)]">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">
+                  Invitaciones directas
+                </div>
+                <div className="mt-2 text-2xl font-black tracking-[-0.04em]">
+                  {data.pendingEventInvites.length} pendiente{data.pendingEventInvites.length === 1 ? "" : "s"}
+                </div>
+              </div>
+              <span className="rounded-full bg-[rgba(255,107,87,0.1)] px-3 py-2 text-xs font-semibold text-[var(--coral)]">
+                Un toque
+              </span>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              {data.pendingEventInvites.map((invite) => {
+                const isBusy = inviteActionId === invite.id;
+                return (
+                  <div
+                    key={invite.id}
+                    className="rounded-[1.6rem] border border-[var(--line-soft)] bg-[var(--bg-soft)] px-4 py-4"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">
+                          Invitacion directa
+                        </div>
+                        <div className="mt-2 text-xl font-black tracking-[-0.04em]">{invite.eventTitle}</div>
+                        <div className="mt-1 text-sm text-[var(--text-soft)]">
+                          @{invite.fromProfile.handle} te ha invitado personalmente a este evento.
+                        </div>
+                        <div className="mt-2 text-xs text-[var(--text-soft)]">
+                          {formatMobileDateTime(invite.createdAt)} · {invite.eventCity}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => router.push(`/evento/${invite.eventSlug}`)}
+                        className="rounded-full border border-[var(--line-warm)] px-3 py-2 text-xs font-semibold"
+                      >
+                        Ver evento
+                      </button>
+                    </div>
+
+                    <div className="mt-4 flex gap-2">
+                      <button
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => void handleInviteResponse(invite, true)}
+                        className="rounded-full bg-[var(--text-main)] px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
+                      >
+                        {isBusy ? "Entrando..." : "Aceptar en un toque"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => void handleInviteResponse(invite, false)}
+                        className="rounded-full border border-[var(--line-warm)] px-4 py-3 text-sm font-semibold disabled:opacity-60"
+                      >
+                        Rechazar
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        ) : null}
+
         <section className="rounded-[2rem] border border-[var(--line-soft)] bg-white/88 px-5 py-5 shadow-[0_18px_40px_rgba(29,22,15,0.06)]">
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">
             <CalendarDays className="h-4 w-4" />
@@ -247,8 +333,15 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
                   <div className="text-base font-bold">{event.title}</div>
                   <div className="mt-1 text-sm text-[var(--text-soft)]">{formatMobileDateTime(event.startsAt)}</div>
                 </div>
-                <div className="rounded-full bg-white px-3 py-2 text-xs font-semibold text-[var(--coral)]">
-                  {event.experienceState === "live" ? "En vivo" : "Abrir"}
+                <div className="flex flex-col items-end gap-2">
+                  <div className="rounded-full bg-white px-3 py-2 text-xs font-semibold text-[var(--coral)]">
+                    {event.experienceState === "live" ? "En vivo" : "Abrir"}
+                  </div>
+                  {event.visibility === "private" ? (
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">
+                      Privado
+                    </div>
+                  ) : null}
                 </div>
               </Link>
             ))}

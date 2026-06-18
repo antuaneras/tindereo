@@ -9,7 +9,9 @@ import type {
   MobileEvent,
   MobileEventCohost,
   MobileEventDetail,
+  MobileEventInvite,
   MobileEventMember,
+  MobileEventParticipant,
   MobileEventTicket,
   MobileFaqItem,
   MobileMediaAsset,
@@ -20,7 +22,9 @@ import type {
   MobilePost,
   MobilePostComment,
   MobileProfile,
+  MobileProfileMini,
   MobileProfileDetail,
+  MobileSearchFilters,
   MobileSearchPayload,
   MobileSuggestedProfile,
   MobileStory,
@@ -51,6 +55,7 @@ const TABLES = {
   conversations: "conversations",
   eventBans: "event_bans",
   eventCohosts: "event_cohosts",
+  eventInvites: "event_invites",
   eventMembers: "event_members",
   eventMutes: "event_mutes",
   eventPresence: "event_presence",
@@ -142,6 +147,16 @@ type EventCohostRow = {
   event_id: string;
   id: string;
   user_id: string;
+};
+
+type EventInviteRow = {
+  created_at: string;
+  event_id: string;
+  from_user_id: string;
+  id: string;
+  responded_at: string | null;
+  status: MobileEventInvite["status"];
+  to_user_id: string;
 };
 
 type FriendshipRow = {
@@ -299,6 +314,22 @@ function mapProfile(row: ProfileRow): MobileProfile {
   };
 }
 
+function mapProfileMini(profile: MobileProfile): MobileProfileMini {
+  return {
+    id: profile.id,
+    handle: profile.handle,
+    displayName: profile.displayName,
+    city: profile.city,
+    avatarUrl: profile.avatarUrl
+  };
+}
+
+function buildRecapEndsAt(endsAt: string) {
+  const endsAtMs = new Date(endsAt).getTime();
+  const fallbackMs = Date.now() + 48 * 60 * 60 * 1000;
+  return new Date((Number.isFinite(endsAtMs) ? endsAtMs : fallbackMs) + 48 * 60 * 60 * 1000).toISOString();
+}
+
 function mapMediaAsset(row: MediaAssetRow): MobileMediaAsset {
   return {
     id: row.id,
@@ -374,6 +405,57 @@ function buildSuggestedProfilesForViewer(
   };
 }
 
+function normalizeSearchFilters(filters?: Partial<MobileSearchFilters>): MobileSearchFilters {
+  return {
+    city: filters?.city?.trim() ?? "",
+    when: filters?.when ?? "all",
+    visibility: filters?.visibility ?? "all",
+    category: filters?.category?.trim() ?? ""
+  };
+}
+
+function eventMatchesWhenFilter(event: MobileEvent, when: MobileSearchFilters["when"]) {
+  if (when === "all") {
+    return true;
+  }
+
+  const now = new Date();
+  const startsAt = new Date(event.startsAt);
+  if (Number.isNaN(startsAt.getTime())) {
+    return when === "live" ? event.experienceState === "live" : true;
+  }
+
+  if (when === "live") {
+    return event.experienceState === "live";
+  }
+
+  if (when === "today") {
+    return startsAt.toDateString() === now.toDateString();
+  }
+
+  if (when === "week") {
+    const diffMs = startsAt.getTime() - now.getTime();
+    return diffMs >= 0 && diffMs <= 7 * 24 * 60 * 60 * 1000;
+  }
+
+  if (when === "month") {
+    return startsAt.getMonth() === now.getMonth() && startsAt.getFullYear() === now.getFullYear();
+  }
+
+  return true;
+}
+
+function buildSearchFacets(events: MobileEvent[]) {
+  return {
+    cities: [...new Set(events.map((event) => event.city.trim()).filter(Boolean))].sort((left, right) =>
+      left.localeCompare(right, "es")
+    ),
+    categories: [...new Set(events.map((event) => event.category.trim()).filter(Boolean))].sort((left, right) =>
+      left.localeCompare(right, "es")
+    )
+  };
+}
+
 function mapMember(row: EventMemberRow, presence: EventPresenceRow | undefined): MobileEventMember {
   return {
     id: row.id,
@@ -433,7 +515,8 @@ function mapEvent(
     approvedCount,
     waitlistCount,
     insideCount,
-    pendingCount
+    pendingCount,
+    recapEndsAt: buildRecapEndsAt(row.ends_at)
   };
 }
 
@@ -510,6 +593,12 @@ async function loadProfiles(ids?: string[]) {
   return rows.map(mapProfile);
 }
 
+async function loadFriendIds(viewerId: string) {
+  const friendships = await selectRows<FriendshipRow>(TABLES.friendships);
+  const adjacency = buildFriendAdjacency(friendships);
+  return [...(adjacency.get(viewerId) ?? new Set<string>())];
+}
+
 async function loadMediaAssets(ids: string[]) {
   if (ids.length === 0) {
     return [] as MobileMediaAsset[];
@@ -535,6 +624,62 @@ async function loadAllEvents() {
       presenceRows.filter((presence) => presence.event_id === row.id)
     )
   );
+}
+
+function mapEventInvite(
+  row: EventInviteRow,
+  eventRow: EventRow,
+  fromProfile: MobileProfile,
+  toProfile: MobileProfile
+): MobileEventInvite {
+  return {
+    id: row.id,
+    eventId: row.event_id,
+    eventSlug: eventRow.slug,
+    eventTitle: eventRow.title,
+    eventSummary: eventRow.summary,
+    eventCity: eventRow.city,
+    status: row.status,
+    createdAt: row.created_at,
+    respondedAt: row.responded_at,
+    fromProfile: mapProfileMini(fromProfile),
+    toProfile: mapProfileMini(toProfile)
+  };
+}
+
+async function listEventInvitesForViewer(viewerId: string, options?: { pendingOnly?: boolean }) {
+  const inviteRows = await selectRows<EventInviteRow>(TABLES.eventInvites, {
+    filters: [
+      { column: "to_user_id", op: "eq", value: viewerId },
+      ...(options?.pendingOnly ? [{ column: "status", op: "eq" as const, value: "pending" }] : [])
+    ],
+    order: [{ column: "created_at", ascending: false }]
+  }).catch(async () => [] as EventInviteRow[]);
+
+  if (inviteRows.length === 0) {
+    return [] as MobileEventInvite[];
+  }
+
+  const eventIds = [...new Set(inviteRows.map((row) => row.event_id))];
+  const profileIds = [...new Set(inviteRows.flatMap((row) => [row.from_user_id, row.to_user_id]))];
+  const [eventRows, profiles] = await Promise.all([
+    selectRows<EventRow>(TABLES.events, { filters: [{ column: "id", op: "in", value: eventIds }] }),
+    loadProfiles(profileIds)
+  ]);
+  const eventsById = new Map(eventRows.map((row) => [row.id, row]));
+  const profilesById = new Map(profiles.map((profile) => [profile.id, profile]));
+
+  return inviteRows
+    .map((row) => {
+      const eventRow = eventsById.get(row.event_id);
+      const fromProfile = profilesById.get(row.from_user_id);
+      const toProfile = profilesById.get(row.to_user_id);
+      if (!eventRow || !fromProfile || !toProfile) {
+        return null;
+      }
+      return mapEventInvite(row, eventRow, fromProfile, toProfile);
+    })
+    .filter((invite): invite is MobileEventInvite => Boolean(invite));
 }
 
 async function loadConversationRowsForUser(viewerId: string) {
@@ -848,12 +993,13 @@ export async function getMobileViewerSummary(viewerId: string): Promise<MobileVi
 }
 
 export async function getMobileBootstrap(viewerId: string) {
-  const [viewer, storyClusters, feedPosts, events, chatSummaries] = await Promise.all([
+  const [viewer, storyClusters, feedPosts, events, chatSummaries, pendingEventInvites] = await Promise.all([
     getMobileViewerSummary(viewerId),
     loadActiveStoriesForViewer(viewerId),
     loadPostsForViewer(viewerId),
     loadAllEvents(),
-    listConversationSummariesForUser(viewerId)
+    listConversationSummariesForUser(viewerId),
+    listEventInvitesForViewer(viewerId, { pendingOnly: true })
   ]);
 
   const joinedEventIds = new Set(
@@ -869,12 +1015,45 @@ export async function getMobileBootstrap(viewerId: string) {
     storyClusters,
     feedPosts,
     joinedEvents: events.filter((event) => joinedEventIds.has(event.id) || event.hostId === viewerId),
-    chatSummaries
+    chatSummaries,
+    pendingEventInvites
   };
 }
 
-export async function getMobileSearch(viewerId: string, query: string): Promise<MobileSearchPayload> {
+export async function getMobileSearch(
+  viewerId: string,
+  query: string,
+  filters?: Partial<MobileSearchFilters>
+): Promise<MobileSearchPayload> {
   const normalizedQuery = query.trim().toLowerCase();
+  const normalizedFilters = normalizeSearchFilters(filters);
+  const visibleEvents = await loadVisibleEventsForViewer(viewerId);
+  const filteredEvents = visibleEvents.filter((event) => {
+    if (
+      normalizedFilters.city &&
+      event.city.toLowerCase() !== normalizedFilters.city.toLowerCase()
+    ) {
+      return false;
+    }
+    if (
+      normalizedFilters.visibility !== "all" &&
+      event.visibility !== normalizedFilters.visibility
+    ) {
+      return false;
+    }
+    if (
+      normalizedFilters.category &&
+      event.category.toLowerCase() !== normalizedFilters.category.toLowerCase()
+    ) {
+      return false;
+    }
+    if (!eventMatchesWhenFilter(event, normalizedFilters.when)) {
+      return false;
+    }
+    return true;
+  });
+  const facets = buildSearchFacets(visibleEvents);
+
   if (!normalizedQuery) {
     const [profileRows, friendships, suggestedPosts] = await Promise.all([
       selectRows<ProfileRow>(TABLES.profiles, { order: [{ column: "created_at", ascending: false }], limit: 80 }),
@@ -891,7 +1070,7 @@ export async function getMobileSearch(viewerId: string, query: string): Promise<
 
     return {
       profiles: [],
-      events: [],
+      events: filteredEvents.slice(0, 12),
       suggestedProfiles: suggestedProfiles.slice(0, 8),
       suggestedPosts: suggestedPosts
         .filter(
@@ -900,17 +1079,15 @@ export async function getMobileSearch(viewerId: string, query: string): Promise<
             post.authorId !== viewerId &&
             (suggestedProfileIds.has(post.authorId) || !viewerFriendIds.has(post.authorId))
         )
-        .slice(0, 18)
+        .slice(0, 18),
+      facets
     };
   }
 
-  const [profileRows, events] = await Promise.all([
-    selectRows<ProfileRow>(TABLES.profiles, {
-      order: [{ column: "created_at", ascending: false }],
-      limit: 80
-    }),
-    loadVisibleEventsForViewer(viewerId)
-  ]);
+  const profileRows = await selectRows<ProfileRow>(TABLES.profiles, {
+    order: [{ column: "created_at", ascending: false }],
+    limit: 80
+  });
 
   return {
     profiles: profileRows
@@ -922,14 +1099,16 @@ export async function getMobileSearch(viewerId: string, query: string): Promise<
           profile.city.toLowerCase().includes(normalizedQuery)
       )
       .slice(0, 12),
-    events: events.filter(
+    events: filteredEvents.filter(
       (event) =>
         event.title.toLowerCase().includes(normalizedQuery) ||
+        event.category.toLowerCase().includes(normalizedQuery) ||
         event.city.toLowerCase().includes(normalizedQuery) ||
         event.summary.toLowerCase().includes(normalizedQuery)
     ),
     suggestedProfiles: [],
-    suggestedPosts: []
+    suggestedPosts: [],
+    facets
   };
 }
 
@@ -1329,7 +1508,8 @@ async function fillEventWaitlistIfPossible(eventId: string) {
         title: "Hay hueco libre",
         body: "Tu evento privado tiene gente en lista de espera pendiente de aprobar.",
         entityType: "event",
-        entityId: eventId
+        entityId: eventId,
+        data: { eventSlug: eventRow.slug }
       }
     );
     return;
@@ -1361,13 +1541,21 @@ async function fillEventWaitlistIfPossible(eventId: string) {
         title: "Ya estas dentro",
         body: `Has pasado de la lista de espera a ${eventRow.title}.`,
         entityType: "event",
-        entityId: eventId
+        entityId: eventId,
+        data: { eventSlug: eventRow.slug }
       }
     );
   }
 }
 
-export async function joinMobileEvent(viewerId: string, eventId: string) {
+export async function joinMobileEvent(
+  viewerId: string,
+  eventId: string,
+  options?: {
+    forceApproved?: boolean;
+    invitedByUserId?: string | null;
+  }
+) {
   const [eventRows, existingMembers, existingBans] = await Promise.all([
     selectRows<EventRow>(TABLES.events, { filters: [{ column: "id", op: "eq", value: eventId }], limit: 1 }),
     selectRows<EventMemberRow>(TABLES.eventMembers, {
@@ -1416,9 +1604,11 @@ export async function joinMobileEvent(viewerId: string, eventId: string) {
   const now = new Date().toISOString();
   const status =
     approvedCount < Number(eventRow.capacity ?? 0)
-      ? eventRow.visibility === "private"
-        ? "pending"
-        : "approved"
+      ? options?.forceApproved
+        ? "approved"
+        : eventRow.visibility === "private"
+          ? "pending"
+          : "approved"
       : "waitlisted";
 
   const memberRow = await insertRow<EventMemberRow, EventMemberRow>(TABLES.eventMembers, {
@@ -1459,13 +1649,24 @@ export async function joinMobileEvent(viewerId: string, eventId: string) {
     [eventRow.host_id],
     {
       kind: status === "approved" ? "event-approved" : "event-waitlist",
-      title: status === "approved" ? "Nueva persona dentro" : "Nueva persona en cola",
+      title:
+        status === "approved"
+          ? options?.invitedByUserId
+            ? "Entrada desde invitacion directa"
+            : "Nueva persona dentro"
+          : "Nueva persona en cola",
       body:
         status === "approved"
-          ? "Se ha unido una persona nueva al evento."
+          ? options?.invitedByUserId
+            ? "Una persona ha aceptado una invitacion directa y ya esta dentro."
+            : "Se ha unido una persona nueva al evento."
           : "Se ha añadido alguien a la lista de espera del evento.",
       entityType: "event",
-      entityId: eventId
+      entityId: eventId,
+      data: {
+        eventSlug: eventRow.slug,
+        ...(options?.invitedByUserId ? { invitedByUserId: options.invitedByUserId } : {})
+      }
     }
   );
 
@@ -1502,6 +1703,276 @@ async function viewerCanManageEvent(viewerId: string, eventId: string) {
   ]);
 
   return Boolean(eventRow[0] && (eventRow[0].host_id === viewerId || cohostRow[0]));
+}
+
+async function viewerCanInviteToEvent(viewerId: string, eventId: string) {
+  const [eventRows, cohostRows, membershipRows] = await Promise.all([
+    selectRows<EventRow>(TABLES.events, {
+      filters: [{ column: "id", op: "eq", value: eventId }],
+      limit: 1
+    }),
+    selectRows<EventCohostRow>(TABLES.eventCohosts, {
+      filters: [
+        { column: "event_id", op: "eq", value: eventId },
+        { column: "user_id", op: "eq", value: viewerId }
+      ],
+      limit: 1
+    }),
+    selectRows<EventMemberRow>(TABLES.eventMembers, {
+      filters: [
+        { column: "event_id", op: "eq", value: eventId },
+        { column: "user_id", op: "eq", value: viewerId }
+      ],
+      limit: 1
+    })
+  ]);
+  const eventRow = eventRows[0];
+  if (!eventRow) {
+    return false;
+  }
+
+  return Boolean(
+    eventRow.host_id === viewerId ||
+      cohostRows[0] ||
+      membershipRows[0]?.status === "approved"
+  );
+}
+
+async function loadInvitableFriendsForEvent(viewerId: string, eventId: string) {
+  const [friendIds, memberRows, inviteRows, banRows] = await Promise.all([
+    loadFriendIds(viewerId),
+    selectRows<EventMemberRow>(TABLES.eventMembers, {
+      filters: [{ column: "event_id", op: "eq", value: eventId }]
+    }),
+    selectRows<EventInviteRow>(TABLES.eventInvites, {
+      filters: [{ column: "event_id", op: "eq", value: eventId }]
+    }).catch(async () => [] as EventInviteRow[]),
+    selectRows<{ user_id: string }>(TABLES.eventBans, {
+      filters: [{ column: "event_id", op: "eq", value: eventId }]
+    })
+  ]);
+
+  const blockedIds = new Set([
+    viewerId,
+    ...memberRows.map((row) => row.user_id),
+    ...inviteRows.filter((row) => row.status === "pending").map((row) => row.to_user_id),
+    ...banRows.map((row) => row.user_id)
+  ]);
+  const candidateIds = friendIds.filter((friendId) => !blockedIds.has(friendId));
+  return loadProfiles(candidateIds);
+}
+
+export async function createMobileEventInvite(viewerId: string, eventId: string, targetUserId: string) {
+  if (viewerId === targetUserId) {
+    throw new Error("No tiene sentido invitarte a ti.");
+  }
+
+  const canInvite = await viewerCanInviteToEvent(viewerId, eventId);
+  if (!canInvite) {
+    throw new Error("Solo puede invitar quien ya esta dentro del evento.");
+  }
+
+  const [eventRows, existingInviteRows, existingMembers, friendIds, targetProfiles] = await Promise.all([
+    selectRows<EventRow>(TABLES.events, { filters: [{ column: "id", op: "eq", value: eventId }], limit: 1 }),
+    selectRows<EventInviteRow>(TABLES.eventInvites, {
+      filters: [
+        { column: "event_id", op: "eq", value: eventId },
+        { column: "to_user_id", op: "eq", value: targetUserId }
+      ],
+      order: [{ column: "created_at", ascending: false }],
+      limit: 1
+    }).catch(async () => [] as EventInviteRow[]),
+    selectRows<EventMemberRow>(TABLES.eventMembers, {
+      filters: [
+        { column: "event_id", op: "eq", value: eventId },
+        { column: "user_id", op: "eq", value: targetUserId }
+      ],
+      limit: 1
+    }),
+    loadFriendIds(viewerId),
+    loadProfiles([viewerId, targetUserId])
+  ]);
+  const eventRow = eventRows[0];
+  if (!eventRow) {
+    throw new Error("Ese evento ya no existe.");
+  }
+  if (!friendIds.includes(targetUserId)) {
+    throw new Error("Solo puedes mandar invitaciones directas a amistades tuyas.");
+  }
+  if (existingMembers[0]) {
+    throw new Error("Esa persona ya tiene un estado activo en el evento.");
+  }
+  if (existingInviteRows[0]?.status === "pending") {
+    throw new Error("Esa persona ya tiene una invitacion pendiente.");
+  }
+
+  const now = new Date().toISOString();
+  const created = await insertRow<EventInviteRow, EventInviteRow>(TABLES.eventInvites, {
+    id: buildMobileId("invite"),
+    event_id: eventId,
+    from_user_id: viewerId,
+    to_user_id: targetUserId,
+    status: "pending",
+    created_at: now,
+    responded_at: null
+  });
+  if (!created) {
+    throw new Error("No pude crear la invitacion directa.");
+  }
+
+  const profilesById = new Map(targetProfiles.map((profile) => [profile.id, profile]));
+  const fromProfile = profilesById.get(viewerId);
+  const toProfile = profilesById.get(targetUserId);
+  if (!fromProfile || !toProfile) {
+    throw new Error("Faltan perfiles para completar la invitacion.");
+  }
+
+  await notifyUsers([targetUserId], {
+    kind: "event-invite",
+    title: `@${fromProfile.handle} te ha invitado`,
+    body: `Puedes entrar a ${eventRow.title} en un toque.`,
+    entityType: "event",
+    entityId: eventId,
+    data: {
+      inviteId: created.id,
+      eventSlug: eventRow.slug,
+      invitedByUserId: viewerId
+    }
+  });
+
+  publishMobileRealtimeEvent({ type: "event", eventId, viewerId });
+  publishMobileRealtimeEvent({ type: "event", eventId, viewerId: targetUserId });
+
+  return mapEventInvite(created, eventRow, fromProfile, toProfile);
+}
+
+export async function respondToMobileEventInvite(viewerId: string, inviteId: string, accept: boolean) {
+  const inviteRows = await selectRows<EventInviteRow>(TABLES.eventInvites, {
+    filters: [{ column: "id", op: "eq", value: inviteId }],
+    limit: 1
+  });
+  const invite = inviteRows[0];
+  if (!invite || invite.to_user_id !== viewerId || invite.status !== "pending") {
+    throw new Error("La invitacion ya no esta disponible.");
+  }
+
+  const [eventRows, profiles] = await Promise.all([
+    selectRows<EventRow>(TABLES.events, {
+      filters: [{ column: "id", op: "eq", value: invite.event_id }],
+      limit: 1
+    }),
+    loadProfiles([invite.from_user_id, invite.to_user_id])
+  ]);
+  const eventRow = eventRows[0];
+  if (!eventRow) {
+    throw new Error("Ese evento ya no existe.");
+  }
+  const profilesById = new Map(profiles.map((profile) => [profile.id, profile]));
+  const fromProfile = profilesById.get(invite.from_user_id);
+  const toProfile = profilesById.get(invite.to_user_id);
+  if (!fromProfile || !toProfile) {
+    throw new Error("No pude resolver la invitacion.");
+  }
+
+  const now = new Date().toISOString();
+  const nextStatus = accept ? "accepted" : "rejected";
+  const patchedRows = await patchRows<EventInviteRow>(
+    TABLES.eventInvites,
+    [{ column: "id", op: "eq", value: inviteId }],
+    {
+      status: nextStatus,
+      responded_at: now
+    }
+  );
+  const updatedInvite = patchedRows[0] ?? {
+    ...invite,
+    status: nextStatus,
+    responded_at: now
+  };
+
+  let membershipStatus: string | null = null;
+  if (accept) {
+    const membership = await joinMobileEvent(viewerId, invite.event_id, {
+      forceApproved: true,
+      invitedByUserId: invite.from_user_id
+    });
+    membershipStatus = membership.status;
+  }
+
+  await notifyUsers([invite.from_user_id], {
+    kind: "event-invite-response",
+    title: accept ? "Han aceptado tu invitacion" : "Han rechazado tu invitacion",
+    body: accept
+      ? `@${toProfile.handle} ya ha respondido y se suma a ${eventRow.title}.`
+      : `@${toProfile.handle} ha rechazado la invitacion a ${eventRow.title}.`,
+    entityType: "event",
+    entityId: invite.event_id,
+    data: {
+      inviteId,
+      accepted: accept,
+      eventSlug: eventRow.slug
+    }
+  });
+
+  publishMobileRealtimeEvent({ type: "event", eventId: invite.event_id, viewerId });
+  publishMobileRealtimeEvent({ type: "event", eventId: invite.event_id, viewerId: invite.from_user_id });
+
+  return {
+    invite: mapEventInvite(updatedInvite, eventRow, fromProfile, toProfile),
+    membershipStatus,
+    eventSlug: eventRow.slug
+  };
+}
+
+export async function reportEventMember(viewerId: string, eventId: string, targetUserId: string, reason: string) {
+  const trimmedReason = reason.trim();
+  if (!trimmedReason) {
+    throw new Error("Escribe el motivo del reporte.");
+  }
+
+  const [eventRows, membershipRows, targetProfiles] = await Promise.all([
+    selectRows<EventRow>(TABLES.events, { filters: [{ column: "id", op: "eq", value: eventId }], limit: 1 }),
+    selectRows<EventMemberRow>(TABLES.eventMembers, {
+      filters: [
+        { column: "event_id", op: "eq", value: eventId },
+        { column: "user_id", op: "eq", value: targetUserId }
+      ],
+      limit: 1
+    }),
+    loadProfiles([targetUserId])
+  ]);
+  const eventRow = eventRows[0];
+  if (!eventRow) {
+    throw new Error("Ese evento ya no existe.");
+  }
+  if (!membershipRows[0] && eventRow.host_id !== targetUserId) {
+    throw new Error("Solo puedes reportar gente relacionada con este evento.");
+  }
+
+  await insertRow(TABLES.eventReports, {
+    id: buildMobileId("report"),
+    event_id: eventId,
+    reporter_id: viewerId,
+    target_user_id: targetUserId,
+    message_id: null,
+    reason: trimmedReason,
+    status: "open",
+    created_at: new Date().toISOString(),
+    resolved_at: null,
+    resolved_by_user_id: null
+  });
+
+  const targetProfile = targetProfiles[0] ?? null;
+  await notifyUsers([eventRow.host_id], {
+    kind: "event-report",
+    title: "Nuevo reporte en el evento",
+    body: targetProfile
+      ? `Han reportado a @${targetProfile.handle}.`
+      : "Han enviado un reporte nuevo.",
+    entityType: "event",
+    entityId: eventId,
+    data: { eventSlug: eventRow.slug }
+  });
 }
 
 export async function setEventChatMode(viewerId: string, eventId: string, mode: "open" | "announcements") {
@@ -1717,7 +2188,7 @@ export async function getEventCheckInToken(viewerId: string, eventId: string) {
 
   const token = createCheckInToken(eventId, viewerId, expiresAtMs);
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "";
-  const checkInUrl = `${appUrl}/evento/${eventId}?checkin=${encodeURIComponent(token)}`;
+  const checkInUrl = `${appUrl}/evento/${eventRow.slug}?checkin=${encodeURIComponent(token)}`;
   return {
     token,
     expiresAt: new Date(Math.max(Date.now() + 1000 * 60 * 30, expiresAtMs)).toISOString(),
@@ -2297,7 +2768,7 @@ export async function markStoryViewed(viewerId: string, storyId: string) {
 }
 
 export async function getMobileEventDetail(viewerId: string, slug: string): Promise<MobileEventDetail> {
-  const [eventRows, memberRows, presenceRows, cohostRows, postRows, storyRows] = await Promise.all([
+  const [eventRows, memberRows, presenceRows, cohostRows, postRows, storyRows, inviteRows, muteRows, banRows] = await Promise.all([
     selectRows<EventRow>(TABLES.events, {
       filters: [{ column: "slug", op: "eq", value: slug }],
       limit: 1
@@ -2306,7 +2777,16 @@ export async function getMobileEventDetail(viewerId: string, slug: string): Prom
     selectRows<EventPresenceRow>(TABLES.eventPresence),
     selectRows<EventCohostRow>(TABLES.eventCohosts),
     selectRows<PostRow>(TABLES.posts, { order: [{ column: "created_at", ascending: false }] }),
-    selectRows<StoryRow>(TABLES.stories, { order: [{ column: "created_at", ascending: false }] })
+    selectRows<StoryRow>(TABLES.stories, { order: [{ column: "created_at", ascending: false }] }),
+    selectRows<EventInviteRow>(TABLES.eventInvites, { order: [{ column: "created_at", ascending: false }] }).catch(
+      async () => [] as EventInviteRow[]
+    ),
+    selectRows<{ event_id: string; user_id: string }>(TABLES.eventMutes).catch(
+      async () => [] as Array<{ event_id: string; user_id: string }>
+    ),
+    selectRows<{ event_id: string; user_id: string }>(TABLES.eventBans).catch(
+      async () => [] as Array<{ event_id: string; user_id: string }>
+    )
   ]);
 
   const eventRow = eventRows[0];
@@ -2316,16 +2796,38 @@ export async function getMobileEventDetail(viewerId: string, slug: string): Prom
 
   const eventMemberships = memberRows.filter((member) => member.event_id === eventRow.id);
   const eventPresences = presenceRows.filter((presence) => presence.event_id === eventRow.id);
+  const eventInviteRows = inviteRows.filter((invite) => invite.event_id === eventRow.id);
+  const eventMuteRows = muteRows.filter((row) => row.event_id === eventRow.id);
+  const eventBanRows = banRows.filter((row) => row.event_id === eventRow.id);
   const event = mapEvent(eventRow, eventMemberships, eventPresences);
   const myMembership = eventMemberships.find((member) => member.user_id === viewerId) ?? null;
-  const isApproved = myMembership?.status === "approved" || event.hostId === viewerId;
-  const memberIds = isApproved
-    ? eventMemberships.filter((member) => member.status === "approved").map((member) => member.user_id)
-    : [event.hostId];
-  const [profiles, allPosts, storyClusters] = await Promise.all([
-    loadProfiles([...new Set([event.hostId, ...memberIds, ...cohostRows.filter((row) => row.event_id === event.id).map((row) => row.user_id)])]),
+  const cohostIds = new Set(cohostRows.filter((row) => row.event_id === event.id).map((row) => row.user_id));
+  const isStaff = event.hostId === viewerId || cohostIds.has(viewerId);
+  const isApproved = myMembership?.status === "approved" || isStaff;
+  const canInviteFriends = isStaff || myMembership?.status === "approved";
+  const approvedMemberIds = new Set(
+    eventMemberships.filter((member) => member.status === "approved").map((member) => member.user_id)
+  );
+  const visibleMemberships = !isApproved
+    ? []
+    : isStaff
+      ? eventMemberships
+      : eventMemberships.filter((member) => member.status === "approved");
+  const visibleInviteRows = isStaff
+    ? eventInviteRows
+    : eventInviteRows.filter((invite) => invite.from_user_id === viewerId || invite.to_user_id === viewerId);
+  const profileIdsToLoad = new Set<string>([
+    event.hostId,
+    viewerId,
+    ...visibleMemberships.map((member) => member.user_id),
+    ...[...cohostIds],
+    ...visibleInviteRows.flatMap((invite) => [invite.from_user_id, invite.to_user_id])
+  ]);
+  const [profiles, allPosts, storyClusters, inviteCandidates] = await Promise.all([
+    loadProfiles([...profileIdsToLoad]),
     loadPostsForViewer(viewerId),
-    loadActiveStoriesForViewer(viewerId)
+    loadActiveStoriesForViewer(viewerId),
+    canInviteFriends ? loadInvitableFriendsForEvent(viewerId, event.id) : Promise.resolve([] as MobileProfile[])
   ]);
 
   const host = profiles.find((profile) => profile.id === event.hostId);
@@ -2337,11 +2839,42 @@ export async function getMobileEventDetail(viewerId: string, slug: string): Prom
     .flatMap((cluster) => cluster.stories)
     .filter((story) => story.ownerType === "event" && story.ownerId === event.id);
   const eventPosts = allPosts.filter((post) => post.ownerType === "event" && post.ownerId === event.id);
-  const approvedMemberIds = new Set(
-    eventMemberships.filter((member) => member.status === "approved").map((member) => member.user_id)
-  );
   const members = profiles.filter((profile) => approvedMemberIds.has(profile.id));
-  const cohostIds = new Set(cohostRows.filter((row) => row.event_id === event.id).map((row) => row.user_id));
+  const profilesById = new Map(profiles.map((profile) => [profile.id, profile]));
+  const myInviteRow =
+    eventInviteRows.find((invite) => invite.to_user_id === viewerId && invite.status === "pending") ?? null;
+  const mappedInvites = visibleInviteRows
+    .map((inviteRow) => {
+      const fromProfile = profilesById.get(inviteRow.from_user_id);
+      const toProfile = profilesById.get(inviteRow.to_user_id);
+      if (!fromProfile || !toProfile) {
+        return null;
+      }
+      return mapEventInvite(inviteRow, eventRow, fromProfile, toProfile);
+    })
+    .filter((invite): invite is MobileEventInvite => Boolean(invite));
+  const myInvite =
+    myInviteRow && profilesById.get(myInviteRow.from_user_id) && profilesById.get(myInviteRow.to_user_id)
+      ? mapEventInvite(
+          myInviteRow,
+          eventRow,
+          profilesById.get(myInviteRow.from_user_id)!,
+          profilesById.get(myInviteRow.to_user_id)!
+        )
+      : null;
+  const participants: MobileEventParticipant[] = visibleMemberships
+    .map((membership) => {
+      const profile = profilesById.get(membership.user_id);
+      if (!profile) {
+        return null;
+      }
+      return {
+        profile,
+        membership: mapMember(membership, eventPresences.find((presence) => presence.user_id === membership.user_id)),
+        isCohost: cohostIds.has(membership.user_id)
+      };
+    })
+    .filter((participant): participant is MobileEventParticipant => Boolean(participant));
 
   return {
     event,
@@ -2351,13 +2884,16 @@ export async function getMobileEventDetail(viewerId: string, slug: string): Prom
       myMembership?.status === "approved" || event.hostId === viewerId
         ? buildEventConversationId(event.id)
         : null,
+    myInvite,
     cohosts: profiles.filter((profile) => cohostIds.has(profile.id)),
     members: isApproved ? members : [],
-    memberRecords: isApproved
-      ? eventMemberships.map((member) =>
-          mapMember(member, eventPresences.find((presence) => presence.user_id === member.user_id))
-        )
-      : [],
+    memberRecords: participants.map((participant) => participant.membership),
+    participants,
+    invites: mappedInvites,
+    inviteCandidates,
+    canInviteFriends,
+    mutedUserIds: eventMuteRows.map((row) => row.user_id),
+    bannedUserIds: eventBanRows.map((row) => row.user_id),
     stories: eventStories,
     posts: eventPosts
   };
@@ -2471,7 +3007,8 @@ export async function runEventReminderDispatch() {
                 ? `${eventRow.title} empieza en unas 2 horas.`
                 : `${eventRow.title} empieza manana.`,
           entityType: "event",
-          entityId: eventRow.id
+          entityId: eventRow.id,
+          data: { eventSlug: eventRow.slug }
         }
       );
     }

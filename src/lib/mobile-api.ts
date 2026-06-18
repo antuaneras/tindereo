@@ -6,9 +6,11 @@ import type {
   MobileConversationSummary,
   MobileEventDetail,
   MobileEventTicket,
+  MobileEventInvite,
   MobilePostComment,
   MobileProfile,
   MobileProfileDetail,
+  MobileSearchFilters,
   MobileSearchPayload,
   PublishMobilePostInput,
   PublishMobileStoryInput,
@@ -75,9 +77,24 @@ export async function fetchViewerSummary() {
   );
 }
 
-export async function searchMobile(query: string) {
+export async function searchMobile(query: string, filters?: Partial<MobileSearchFilters>) {
+  const params = new URLSearchParams();
+  params.set("q", query);
+  if (filters?.city) {
+    params.set("city", filters.city);
+  }
+  if (filters?.when && filters.when !== "all") {
+    params.set("when", filters.when);
+  }
+  if (filters?.visibility && filters.visibility !== "all") {
+    params.set("visibility", filters.visibility);
+  }
+  if (filters?.category) {
+    params.set("category", filters.category);
+  }
+
   return readJson<MobileSearchPayload>(
-    await fetch(`/api/mobile/search?q=${encodeURIComponent(query)}`, { cache: "no-store" })
+    await fetch(`/api/mobile/search?${params.toString()}`, { cache: "no-store" })
   );
 }
 
@@ -167,6 +184,36 @@ export async function moderateEventMember(slug: string, targetUserId: string, ac
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ targetUserId, action })
+    })
+  );
+}
+
+export async function inviteFriendToEvent(slug: string, targetUserId: string) {
+  return readJson<{ invite: MobileEventInvite }>(
+    await fetch(`/api/mobile/events/${slug}/invites`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetUserId })
+    })
+  );
+}
+
+export async function respondToEventInvite(inviteId: string, accept: boolean) {
+  return readJson<{ invite: MobileEventInvite; membershipStatus: string | null; eventSlug: string }>(
+    await fetch(`/api/mobile/event-invites/${inviteId}/respond`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accept })
+    })
+  );
+}
+
+export async function reportEventMember(slug: string, targetUserId: string, reason: string) {
+  return readJson<{ ok: boolean }>(
+    await fetch(`/api/mobile/events/${slug}/reports`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetUserId, reason })
     })
   );
 }

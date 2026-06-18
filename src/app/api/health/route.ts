@@ -1,5 +1,12 @@
-import { NextResponse } from "next/server";
+import { mobileOk } from "@/lib/server/mobile-http";
 
-export function GET() {
-  return NextResponse.json({ status: "ok" });
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  return mobileOk({
+    ok: true,
+    now: new Date().toISOString(),
+    service: "tindereo-mobile"
+  });
 }

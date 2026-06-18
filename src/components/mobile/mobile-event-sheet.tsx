@@ -1,17 +1,27 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { CalendarPlus, Download, Link2, MapPin, QrCode, Share2, Shield, Ticket, Users, X } from "lucide-react";
-import { addEventCohost, fetchCheckInToken, fetchEventTicket, joinEvent, moderateEventMember, setArrivalStatus, setEventChatMode } from "@/lib/mobile-api";
+import { CalendarPlus, Download, Link2, MapPin, QrCode, Share2, Ticket, UserPlus, Users, X } from "lucide-react";
+import {
+  addEventCohost,
+  fetchCheckInToken,
+  fetchEventTicket,
+  inviteFriendToEvent,
+  joinEvent,
+  moderateEventMember,
+  reportEventMember,
+  setArrivalStatus,
+  setEventChatMode
+} from "@/lib/mobile-api";
 import { StoryStrip, PostCard } from "@/components/mobile/mobile-feed";
 import { formatMobileDateTime, getArrivalStatusLabel, getMapLink } from "@/lib/mobile-shared";
-import type { MobileConversationDetail, MobileEventDetail, MobileEventTicket, MobileProfile } from "@/lib/mobile-types";
+import type { MobileConversationDetail, MobileEventDetail, MobileEventTicket, MobileProfile, MobileProfileMini } from "@/lib/mobile-types";
 
 function cn(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
 }
 
-function Avatar({ profile }: { profile: MobileProfile }) {
+function Avatar({ profile }: { profile: Pick<MobileProfile, "handle" | "avatarUrl"> | MobileProfileMini }) {
   if (profile.avatarUrl) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
@@ -47,6 +57,14 @@ function triggerDownload(blob: Blob, fileName: string) {
   link.click();
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+function buildEventShareUrl(slug: string) {
+  if (typeof window !== "undefined") {
+    return `${window.location.origin}/evento/${slug}`;
+  }
+
+  return `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/evento/${slug}`;
 }
 
 async function urlToDataUrl(url: string) {
@@ -202,6 +220,10 @@ export function EventInfoSheet({
   const [ticket, setTicket] = useState<MobileEventTicket | null>(null);
   const [ticketOpen, setTicketOpen] = useState(false);
   const [loadingTicket, setLoadingTicket] = useState(false);
+  const [invitingUserId, setInvitingUserId] = useState<string | null>(null);
+  const [moderatingUserId, setModeratingUserId] = useState<string | null>(null);
+  const [reportingUserId, setReportingUserId] = useState<string | null>(null);
+  const [sharingEvent, setSharingEvent] = useState(false);
   const canManage = Boolean(
     eventDetail &&
       (eventDetail.event.hostId === conversation.viewerId ||
@@ -233,6 +255,7 @@ export function EventInfoSheet({
   }
 
   const event = eventDetail.event;
+  const eventShareUrl = buildEventShareUrl(event.slug);
   const mapLink = getMapLink(
     event.meetingPointAddress,
     event.meetingPointLat,
@@ -280,6 +303,37 @@ export function EventInfoSheet({
     }
 
     await navigator.clipboard.writeText(nextTicket.shareUrl);
+  }
+
+  async function handleShareEvent() {
+    const sharePayload = {
+      title: event.title,
+      text: `${event.summary || event.title} · ${event.city}`,
+      url: eventShareUrl
+    };
+
+    setSharingEvent(true);
+    try {
+      if (navigator.share) {
+        await navigator.share(sharePayload);
+        return;
+      }
+
+      await navigator.clipboard.writeText(eventShareUrl);
+    } finally {
+      setSharingEvent(false);
+    }
+  }
+
+  async function handleWhatsAppShare() {
+    const message = `${event.title} · ${event.city}\n${eventShareUrl}`;
+    if (typeof window !== "undefined") {
+      window.open(`https://wa.me/?text=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
+    }
+  }
+
+  async function handleCopyEventLink() {
+    await navigator.clipboard.writeText(eventShareUrl);
   }
 
   function handleDownloadCalendar() {
@@ -436,6 +490,50 @@ export function EventInfoSheet({
                   </a>
                 ) : null}
               </section>
+              <section className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">Compartir evento</div>
+                    <div className="mt-2 text-sm text-[var(--text-soft)]">
+                      Enlace limpio para WhatsApp, share sheet del movil o copiar y pegar donde quieras.
+                    </div>
+                  </div>
+                  <Share2 className="h-5 w-5 text-[var(--coral)]" />
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={sharingEvent}
+                    onClick={() => void handleShareEvent()}
+                    className="rounded-full bg-[var(--text-main)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                  >
+                    {sharingEvent ? "Abriendo..." : "Compartir"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleWhatsAppShare()}
+                    className="rounded-full border border-[var(--line-warm)] px-4 py-2 text-sm font-semibold"
+                  >
+                    WhatsApp
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyEventLink()}
+                    className="rounded-full border border-[var(--line-warm)] px-4 py-2 text-sm font-semibold"
+                  >
+                    Copiar enlace
+                  </button>
+                </div>
+              </section>
+              {event.experienceState === "afterglow" ? (
+                <section className="rounded-[1.8rem] border border-[rgba(255,107,87,0.16)] bg-[rgba(255,107,87,0.06)] px-4 py-4">
+                  <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">Recap activo</div>
+                  <div className="mt-2 text-base font-bold">El evento ya ha acabado, pero el post-evento sigue vivo.</div>
+                  <div className="mt-2 text-sm leading-6 text-[var(--text-soft)]">
+                    Chat, fotos, historias y album compartido abiertos hasta {formatMobileDateTime(event.recapEndsAt)}.
+                  </div>
+                </section>
+              ) : null}
               {canUseTicket ? (
                 <section className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
                   <div className="flex items-center justify-between">
@@ -549,6 +647,46 @@ export function EventInfoSheet({
                 <div className="mt-2 text-base font-bold">{formatMobileDateTime(event.startsAt)}</div>
                 <p className="mt-4 text-sm leading-6 text-[var(--text-soft)]">{event.description}</p>
               </section>
+              <section className="grid grid-cols-2 gap-3">
+                <div className="rounded-[1.6rem] border border-[var(--line-soft)] bg-white px-4 py-4">
+                  <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">Aforo</div>
+                  <div className="mt-2 text-2xl font-black tracking-[-0.04em]">
+                    {event.approvedCount}/{event.capacity}
+                  </div>
+                  <div className="mt-1 text-xs text-[var(--text-soft)]">{event.waitlistCount} en espera</div>
+                </div>
+                <div className="rounded-[1.6rem] border border-[var(--line-soft)] bg-white px-4 py-4">
+                  <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">Modo</div>
+                  <div className="mt-2 text-base font-bold">
+                    {event.visibility === "private" ? "Privado" : "Publico"}
+                  </div>
+                  <div className="mt-1 text-xs text-[var(--text-soft)]">
+                    {event.chatMode === "announcements" ? "Solo admins" : "Chat abierto"}
+                  </div>
+                </div>
+              </section>
+              <section className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
+                <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">Staff</div>
+                <div className="mt-3 flex items-center gap-3 rounded-[1.4rem] bg-[var(--bg-soft)] px-3 py-3">
+                  <Avatar profile={eventDetail.host} />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-semibold">@{eventDetail.host.handle}</div>
+                    <div className="text-xs text-[var(--text-soft)]">Creador del evento</div>
+                  </div>
+                </div>
+                {eventDetail.cohosts.map((cohost) => (
+                  <div key={cohost.id} className="mt-2 flex items-center gap-3 rounded-[1.4rem] bg-[var(--bg-soft)] px-3 py-3">
+                    <Avatar profile={cohost} />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-semibold">@{cohost.handle}</div>
+                      <div className="text-xs text-[var(--text-soft)]">Coorganizador</div>
+                    </div>
+                  </div>
+                ))}
+                {!eventDetail.cohosts.length ? (
+                  <div className="mt-3 text-sm text-[var(--text-soft)]">Todavia no hay coorganizadores asignados.</div>
+                ) : null}
+              </section>
               <section className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
                 <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">Normas</div>
                 <div className="mt-3 space-y-2">
@@ -571,31 +709,239 @@ export function EventInfoSheet({
               <div className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4 text-sm text-[var(--text-soft)]">
                 <div className="mb-2 flex items-center gap-2 text-[var(--text-main)]">
                   <Users className="h-4 w-4" />
-                  {eventDetail.members.length} personas con acceso
+                  {eventDetail.participants.length} personas visibles
                 </div>
-                {!eventDetail.members.length ? "Hasta que no estés dentro no se expone la lista completa." : "Host, cohosts y gente confirmada."}
+                {!eventDetail.participants.length
+                  ? "Hasta que no estes dentro no se expone la lista completa."
+                  : "Host, cohosts, gente aprobada y estados visibles para staff."}
               </div>
-              {eventDetail.members.map((member) => (
-                <div key={member.id} className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
-                  <div className="flex items-center gap-3">
-                    <Avatar profile={member} />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-semibold">@{member.handle}</div>
-                      <div className="truncate text-xs text-[var(--text-soft)]">{member.city}</div>
-                    </div>
-                    {canManage && member.id !== conversation.viewerId && member.id !== event.hostId ? (
-                      <div className="flex gap-2">
-                        <button type="button" onClick={async () => { await addEventCohost(event.slug, member.id); await onRefresh(); }} className="rounded-full border border-[var(--line-warm)] px-3 py-2 text-xs font-semibold">
-                          Cohost
-                        </button>
-                        <button type="button" onClick={async () => { await moderateEventMember(event.slug, member.id, "mute"); await onRefresh(); }} className="rounded-full border border-[var(--line-warm)] px-3 py-2 text-xs font-semibold">
-                          <Shield className="h-3.5 w-3.5" />
-                        </button>
+              {eventDetail.canInviteFriends && eventDetail.inviteCandidates.length ? (
+                <section className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">
+                        Invitar amistades
                       </div>
-                    ) : null}
+                      <div className="mt-2 text-sm text-[var(--text-soft)]">
+                        Queda trazado quien invita a quien y la otra persona acepta en un toque.
+                      </div>
+                    </div>
+                    <UserPlus className="h-5 w-5 text-[var(--coral)]" />
                   </div>
-                </div>
-              ))}
+                  <div className="mt-4 space-y-2">
+                    {eventDetail.inviteCandidates.slice(0, 8).map((profile) => {
+                      const isBusy = invitingUserId === profile.id;
+                      return (
+                        <div key={profile.id} className="flex items-center gap-3 rounded-[1.4rem] bg-[var(--bg-soft)] px-3 py-3">
+                          <Avatar profile={profile} />
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-sm font-semibold">@{profile.handle}</div>
+                            <div className="truncate text-xs text-[var(--text-soft)]">{profile.city}</div>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={async () => {
+                              setInvitingUserId(profile.id);
+                              try {
+                                await inviteFriendToEvent(event.slug, profile.id);
+                                await onRefresh();
+                              } finally {
+                                setInvitingUserId(null);
+                              }
+                            }}
+                            className="rounded-full bg-[var(--text-main)] px-3 py-2 text-xs font-semibold text-white disabled:opacity-60"
+                          >
+                            {isBusy ? "Enviando..." : "Invitar"}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              ) : null}
+              {eventDetail.invites.length ? (
+                <section className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
+                  <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">
+                    Invitaciones y trazabilidad
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    {eventDetail.invites.map((invite) => (
+                      <div key={invite.id} className="rounded-[1.4rem] bg-[var(--bg-soft)] px-3 py-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-sm font-semibold">
+                              @{invite.fromProfile.handle} invito a @{invite.toProfile.handle}
+                            </div>
+                            <div className="mt-1 text-xs text-[var(--text-soft)]">
+                              {invite.status === "pending"
+                                ? "Pendiente"
+                                : invite.status === "accepted"
+                                  ? "Aceptada"
+                                  : invite.status === "rejected"
+                                    ? "Rechazada"
+                                    : "Cancelada"}{" "}
+                              · {formatMobileDateTime(invite.createdAt)}
+                            </div>
+                          </div>
+                          <span className="rounded-full bg-white px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--coral)]">
+                            {invite.status}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+              {eventDetail.participants.map((participant) => {
+                const member = participant.profile;
+                const membership = participant.membership;
+                const isMuted = eventDetail.mutedUserIds.includes(member.id);
+                const isBanned = eventDetail.bannedUserIds.includes(member.id);
+                const isBusy = moderatingUserId === member.id || reportingUserId === member.id;
+
+                return (
+                  <div key={member.id} className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
+                    <div className="flex items-start gap-3">
+                      <Avatar profile={member} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="truncate text-sm font-semibold">@{member.handle}</div>
+                          {member.id === event.hostId ? (
+                            <span className="rounded-full bg-[var(--text-main)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-white">
+                              Host
+                            </span>
+                          ) : null}
+                          {participant.isCohost ? (
+                            <span className="rounded-full bg-[rgba(255,107,87,0.1)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--coral)]">
+                              Cohost
+                            </span>
+                          ) : null}
+                          {isMuted ? (
+                            <span className="rounded-full bg-[rgba(255,193,7,0.14)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#9c6a00]">
+                              Silenciado
+                            </span>
+                          ) : null}
+                          {isBanned ? (
+                            <span className="rounded-full bg-[rgba(184,64,49,0.12)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#b84031]">
+                              Bloqueado
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="mt-1 truncate text-xs text-[var(--text-soft)]">{member.city}</div>
+                        <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-semibold text-[var(--text-soft)]">
+                          <span className="rounded-full bg-[var(--bg-soft)] px-3 py-2">
+                            {membership.status === "approved"
+                              ? "Aceptado"
+                              : membership.status === "pending"
+                                ? "Pendiente"
+                                : membership.status === "waitlisted"
+                                  ? "Lista de espera"
+                                  : "Rechazado"}
+                          </span>
+                          <span className="rounded-full bg-[var(--bg-soft)] px-3 py-2">
+                            {getArrivalStatusLabel(membership.arrivalStatus)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {canManage && member.id !== conversation.viewerId && member.id !== event.hostId ? (
+                        <>
+                          {!participant.isCohost ? (
+                            <button
+                              type="button"
+                              disabled={isBusy}
+                              onClick={async () => {
+                                setModeratingUserId(member.id);
+                                try {
+                                  await addEventCohost(event.slug, member.id);
+                                  await onRefresh();
+                                } finally {
+                                  setModeratingUserId(null);
+                                }
+                              }}
+                              className="rounded-full border border-[var(--line-warm)] px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                            >
+                              Cohost
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={async () => {
+                              setModeratingUserId(member.id);
+                              try {
+                                await moderateEventMember(event.slug, member.id, isMuted ? "unmute" : "mute");
+                                await onRefresh();
+                              } finally {
+                                setModeratingUserId(null);
+                              }
+                            }}
+                            className="rounded-full border border-[var(--line-warm)] px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                          >
+                            {isMuted ? "Quitar silencio" : "Silenciar"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={async () => {
+                              setModeratingUserId(member.id);
+                              try {
+                                await moderateEventMember(event.slug, member.id, "kick");
+                                await onRefresh();
+                              } finally {
+                                setModeratingUserId(null);
+                              }
+                            }}
+                            className="rounded-full border border-[var(--line-warm)] px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                          >
+                            Expulsar
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={async () => {
+                              setModeratingUserId(member.id);
+                              try {
+                                await moderateEventMember(event.slug, member.id, isBanned ? "unban" : "ban");
+                                await onRefresh();
+                              } finally {
+                                setModeratingUserId(null);
+                              }
+                            }}
+                            className="rounded-full border border-[rgba(184,64,49,0.18)] px-3 py-2 text-xs font-semibold text-[#b84031] disabled:opacity-60"
+                          >
+                            {isBanned ? "Desbloquear" : "Bloquear"}
+                          </button>
+                        </>
+                      ) : null}
+                      {member.id !== conversation.viewerId ? (
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={async () => {
+                            const reason = window.prompt(`Reportar a @${member.handle}. Explica el motivo:`);
+                            if (!reason?.trim()) {
+                              return;
+                            }
+                            setReportingUserId(member.id);
+                            try {
+                              await reportEventMember(event.slug, member.id, reason);
+                            } finally {
+                              setReportingUserId(null);
+                            }
+                          }}
+                          className="rounded-full border border-[var(--line-warm)] px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                        >
+                          Reportar
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           ) : null}
 
