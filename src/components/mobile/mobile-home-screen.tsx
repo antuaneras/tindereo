@@ -36,6 +36,7 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
   const router = useRouter();
   const [data, setData] = useState<MobileBootstrapPayload | null>(() => initialData ?? null);
   const [inviteActionId, setInviteActionId] = useState<string | null>(null);
+  const [joinedEventIndex, setJoinedEventIndex] = useState(0);
   const [gestureStart, setGestureStart] = useState<{ x: number; y: number; ignore: boolean } | null>(null);
   const [dragOffsetX, setDragOffsetX] = useState(0);
   const [isGestureActive, setIsGestureActive] = useState(false);
@@ -66,6 +67,11 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
       writeHomeCache(data);
     }
   }, [data]);
+
+  useEffect(() => {
+    const total = data?.joinedEvents.length ?? 0;
+    setJoinedEventIndex((current) => Math.min(current, Math.max(0, total - 1)));
+  }, [data?.joinedEvents.length]);
 
   useEffect(() => {
     if (data) {
@@ -329,31 +335,55 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
           </div>
           <div className="mt-4">
             {data.joinedEvents.length ? (
-              <div className="scrollbar-hide -mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
+              <div
+                className="scrollbar-hide -mx-1 flex snap-x snap-mandatory overflow-x-auto px-1 pb-1"
+                onScroll={(event) => {
+                  const node = event.currentTarget;
+                  const width = node.clientWidth || 1;
+                  setJoinedEventIndex(
+                    Math.max(0, Math.min(data.joinedEvents.length - 1, Math.round(node.scrollLeft / width)))
+                  );
+                }}
+              >
                 {data.joinedEvents.map((event) => (
-                  <Link
-                    key={event.id}
-                    href={`/evento/${event.slug}`}
-                    className="min-w-[252px] rounded-[1.6rem] border border-[var(--line-soft)] bg-[var(--bg-soft)] px-4 py-4"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-base font-bold">{event.title}</div>
-                        <div className="mt-1 text-sm text-[var(--text-soft)]">{event.city}</div>
-                        <div className="mt-3 text-sm text-[var(--text-soft)]">{formatMobileDateTime(event.startsAt)}</div>
-                      </div>
-                      <div className="flex flex-col items-end gap-2">
-                        <div className="rounded-full bg-white px-3 py-2 text-xs font-semibold text-[var(--coral)]">
-                          {event.experienceState === "live" ? "En vivo" : "Abrir"}
+                  <div key={event.id} className="w-full min-w-full shrink-0 snap-center px-1">
+                    <Link
+                      href={`/evento/${event.slug}`}
+                      className="block rounded-[1.8rem] border border-[var(--line-soft)] bg-[var(--bg-soft)] px-4 py-4"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-base font-bold">{event.title}</div>
+                          <div className="mt-1 text-sm text-[var(--text-soft)]">{event.city}</div>
+                          <div className="mt-3 text-sm text-[var(--text-soft)]">{formatMobileDateTime(event.startsAt)}</div>
                         </div>
-                        {event.visibility === "private" ? (
-                          <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">
-                            Privado
+                        <div className="flex flex-col items-end gap-2">
+                          <div className="rounded-full bg-white px-3 py-2 text-xs font-semibold text-[var(--coral)]">
+                            {event.experienceState === "live" ? "En vivo" : "Abrir"}
                           </div>
-                        ) : null}
+                          {event.visibility === "private" ? (
+                            <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">
+                              Privado
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
-                    </div>
-                  </Link>
+                    </Link>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {data.joinedEvents.length > 1 ? (
+              <div className="mt-3 flex items-center justify-center gap-2">
+                {data.joinedEvents.map((event, index) => (
+                  <span
+                    key={event.id}
+                    className={
+                      index === joinedEventIndex
+                        ? "h-2 w-2 rounded-full bg-[var(--coral)]"
+                        : "h-2 w-2 rounded-full bg-[var(--line-warm)]"
+                    }
+                  />
                 ))}
               </div>
             ) : null}

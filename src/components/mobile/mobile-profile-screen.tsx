@@ -119,6 +119,7 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
   const [peopleSheet, setPeopleSheet] = useState<"followers" | "following" | null>(null);
   const [peopleQuery, setPeopleQuery] = useState("");
   const [visiblePeopleCount, setVisiblePeopleCount] = useState(20);
+  const [profileEventIndex, setProfileEventIndex] = useState(0);
   const [messageComposerOpen, setMessageComposerOpen] = useState(false);
   const [messageDraft, setMessageDraft] = useState("");
   const [messageBusy, setMessageBusy] = useState(false);
@@ -207,6 +208,10 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
 
     return `${profile.sharedFollowerCount} personas siguen a este usuario`;
   }, [profile.sharedFollowerCount, profile.sharedFollowers]);
+
+  useEffect(() => {
+    setProfileEventIndex((current) => Math.min(current, Math.max(0, profileEvents.length - 1)));
+  }, [profileEvents.length]);
 
   useEffect(() => {
     const unsubscribe = subscribeToMobileStream((event) => {
@@ -617,9 +622,19 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
               El perfil es privado. Puedes ver el numero de eventos, pero no abrirlos.
             </div>
           ) : profileEvents.length ? (
-            <div className="scrollbar-hide -mx-1 flex snap-x snap-mandatory overflow-x-auto px-1 pb-1">
+            <>
+              <div
+                className="scrollbar-hide -mx-1 flex snap-x snap-mandatory overflow-x-auto px-1 pb-1"
+                onScroll={(event) => {
+                  const node = event.currentTarget;
+                  const width = node.clientWidth || 1;
+                  setProfileEventIndex(
+                    Math.max(0, Math.min(profileEvents.length - 1, Math.round(node.scrollLeft / width)))
+                  );
+                }}
+              >
               {profileEvents.map((event) => (
-                  <div key={event.id} className="w-full min-w-full snap-center pr-3 first:pl-0 last:pr-0">
+                  <div key={event.id} className="w-full min-w-full shrink-0 snap-center px-1">
                     <div className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4 shadow-sm">
                       <Link href={`/evento/${event.slug}`} className="block">
                         <div className="text-base font-bold">{event.title}</div>
@@ -629,7 +644,22 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                     </div>
                   </div>
                 ))}
-            </div>
+              </div>
+              {profileEvents.length > 1 ? (
+                <div className="mt-3 flex items-center justify-center gap-2">
+                  {profileEvents.map((event, index) => (
+                    <span
+                      key={event.id}
+                      className={
+                        index === profileEventIndex
+                          ? "h-2 w-2 rounded-full bg-[var(--coral)]"
+                          : "h-2 w-2 rounded-full bg-[var(--line-warm)]"
+                      }
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </>
           ) : (
             <div className="rounded-[1.8rem] border border-dashed border-[var(--line-warm)] bg-white/80 px-5 py-8 text-center text-sm text-[var(--text-soft)]">
               Aun no hay eventos en este perfil.
