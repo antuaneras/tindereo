@@ -234,11 +234,20 @@ create table if not exists public.conversation_members (
   role text not null default 'member' check (role in ('owner', 'cohost', 'member')),
   joined_at timestamptz not null default timezone('utc', now()),
   last_read_at timestamptz,
+  pinned_at timestamptz,
+  archived_at timestamptz,
+  hidden_at timestamptz,
   unique (conversation_id, user_id)
 );
 
+alter table public.conversation_members
+  add column if not exists pinned_at timestamptz,
+  add column if not exists archived_at timestamptz,
+  add column if not exists hidden_at timestamptz;
+
 create index if not exists conversation_members_user_idx on public.conversation_members (user_id);
 create index if not exists conversation_members_conversation_idx on public.conversation_members (conversation_id);
+create index if not exists conversation_members_user_hidden_idx on public.conversation_members (user_id, hidden_at, archived_at, pinned_at);
 
 create table if not exists public.media_assets (
   id text primary key,

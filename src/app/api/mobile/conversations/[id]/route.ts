@@ -1,4 +1,9 @@
-import { getMobileConversationDetail, requireMobileViewerId } from "@/lib/server/mobile-service";
+import {
+  deleteConversationFromViewerList,
+  getMobileConversationDetail,
+  requireMobileViewerId,
+  updateConversationState
+} from "@/lib/server/mobile-service";
 import { mobileError, mobileOk } from "@/lib/server/mobile-http";
 
 export const runtime = "nodejs";
@@ -12,6 +17,43 @@ export async function GET(
     const viewerId = await requireMobileViewerId();
     const { id } = await context.params;
     return mobileOk(await getMobileConversationDetail(viewerId, id));
+  } catch (error) {
+    return mobileError(error);
+  }
+}
+
+export async function PATCH(
+  request: Request,
+  context: { params: Promise<{ id: string }> }
+) {
+  try {
+    const viewerId = await requireMobileViewerId();
+    const { id } = await context.params;
+    const body = (await request.json().catch(() => ({}))) as {
+      pinned?: boolean;
+      archived?: boolean;
+    };
+
+    await updateConversationState(viewerId, id, {
+      pinned: typeof body.pinned === "boolean" ? body.pinned : undefined,
+      archived: typeof body.archived === "boolean" ? body.archived : undefined
+    });
+
+    return mobileOk({ ok: true });
+  } catch (error) {
+    return mobileError(error);
+  }
+}
+
+export async function DELETE(
+  _request: Request,
+  context: { params: Promise<{ id: string }> }
+) {
+  try {
+    const viewerId = await requireMobileViewerId();
+    const { id } = await context.params;
+    await deleteConversationFromViewerList(viewerId, id);
+    return mobileOk({ ok: true });
   } catch (error) {
     return mobileError(error);
   }

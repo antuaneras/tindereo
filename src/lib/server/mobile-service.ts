@@ -227,10 +227,13 @@ type ConversationRow = {
 };
 
 type ConversationMemberRow = {
+  archived_at: string | null;
   conversation_id: string;
+  hidden_at: string | null;
   id: string;
   joined_at: string;
   last_read_at: string | null;
+  pinned_at: string | null;
   role: "owner" | "cohost" | "member";
   user_id: string;
 };
@@ -809,7 +812,10 @@ async function listEventInvitesForViewer(viewerId: string, options?: { pendingOn
 
 async function loadConversationRowsForUser(viewerId: string) {
   const memberRows = await selectRows<ConversationMemberRow>(TABLES.conversationMembers, {
-    filters: [{ column: "user_id", op: "eq", value: viewerId }]
+    filters: [
+      { column: "user_id", op: "eq", value: viewerId },
+      { column: "hidden_at", op: "is", value: null }
+    ]
   });
 
   const conversationIds = memberRows.map((row) => row.conversation_id);
@@ -877,6 +883,8 @@ async function listConversationSummariesForUser(viewerId: string) {
         lastMessagePreview: getConversationPreview(lastMessage?.body ?? eventRow.summary),
         lastMessageAt: lastMessage?.created_at ?? eventRow.updated_at,
         unreadCount,
+        isPinned: Boolean(viewerMember?.pinned_at),
+        isArchived: Boolean(viewerMember?.archived_at),
         chatMode: conversation.chat_mode,
         eventSlug: eventRow.slug,
         eventId: eventRow.id
@@ -894,6 +902,8 @@ async function listConversationSummariesForUser(viewerId: string) {
         lastMessagePreview: getConversationPreview(lastMessage?.body ?? ""),
         lastMessageAt: lastMessage?.created_at ?? conversation.updated_at,
         unreadCount,
+        isPinned: Boolean(viewerMember?.pinned_at),
+        isArchived: Boolean(viewerMember?.archived_at),
         chatMode: "open",
         eventSlug: null,
         eventId: null
@@ -909,13 +919,25 @@ async function listConversationSummariesForUser(viewerId: string) {
       lastMessagePreview: getConversationPreview(lastMessage?.body ?? ""),
       lastMessageAt: lastMessage?.created_at ?? conversation.updated_at,
       unreadCount,
+      isPinned: Boolean(viewerMember?.pinned_at),
+      isArchived: Boolean(viewerMember?.archived_at),
       chatMode: conversation.chat_mode,
       eventSlug: null,
       eventId: null
     };
   });
 
-  return summaries.sort((left, right) => (right.lastMessageAt ?? "").localeCompare(left.lastMessageAt ?? ""));
+  return summaries.sort((left, right) => {
+    if (left.isPinned !== right.isPinned) {
+      return left.isPinned ? -1 : 1;
+    }
+
+    if (left.isArchived !== right.isArchived) {
+      return left.isArchived ? 1 : -1;
+    }
+
+    return (right.lastMessageAt ?? "").localeCompare(left.lastMessageAt ?? "");
+  });
 }
 
 export async function listMobileConversationSummaries(viewerId: string) {
@@ -1712,7 +1734,10 @@ async function ensureConversationMembers(
       user_id: userId,
       role: userId === ownerId ? ownerRole : "member",
       joined_at: now,
-      last_read_at: userId === ownerId ? now : null
+      last_read_at: userId === ownerId ? now : null,
+      pinned_at: null,
+      archived_at: null,
+      hidden_at: null
     })),
     {
       onConflict: "conversation_id,user_id",
@@ -1762,6 +1787,84 @@ async function notifyUsers(
   }
 
   void sendMobilePushNotifications(created.map(mapNotification)).catch(() => undefined);
+}
+
+export async function updateConversationState(
+  viewerId: string,
+  conversationId: string,
+  input: {
+    pinned?: boolean;
+    archived?: boolean;
+  }
+) {
+  const membershipRows = await selectRows<ConversationMemberRow>(TABLES.conversationMembers, {
+    filters: [
+      { column: "conversation_id", op: "eq", value: conversationId },
+      { column: "user_id", op: "eq", value: viewerId }
+    ],
+    limit: 1
+  });
+  const membership = membershipRows[0];
+  if (!membership) {
+    throw new Error("No tienes acceso a este chat.");
+  }
+
+  const now = new Date().toISOString();
+  await patchRows(
+    TABLES.conversationMembers,
+    [
+      { column: "conversation_id", op: "eq", value: conversationId },
+      { column: "user_id", op: "eq", value: viewerId }
+    ],
+    {
+      pinned_at:
+        typeof input.pinned === "boolean"
+          ? input.pinned
+            ? membership.pinned_at ?? now
+            : null
+          : membership.pinned_at,
+      archived_at:
+        typeof input.archived === "boolean"
+          ? input.archived
+            ? membership.archived_at ?? now
+            : null
+          : membership.archived_at,
+      hidden_at: null
+    },
+    { returning: "minimal" }
+  );
+
+  publishMobileRealtimeEvent({ type: "conversation", conversationId, viewerId });
+}
+
+export async function deleteConversationFromViewerList(viewerId: string, conversationId: string) {
+  const membershipRows = await selectRows<ConversationMemberRow>(TABLES.conversationMembers, {
+    filters: [
+      { column: "conversation_id", op: "eq", value: conversationId },
+      { column: "user_id", op: "eq", value: viewerId }
+    ],
+    limit: 1
+  });
+
+  if (!membershipRows[0]) {
+    throw new Error("No tienes acceso a este chat.");
+  }
+
+  await patchRows(
+    TABLES.conversationMembers,
+    [
+      { column: "conversation_id", op: "eq", value: conversationId },
+      { column: "user_id", op: "eq", value: viewerId }
+    ],
+    {
+      pinned_at: null,
+      archived_at: null,
+      hidden_at: new Date().toISOString()
+    },
+    { returning: "minimal" }
+  );
+
+  publishMobileRealtimeEvent({ type: "conversation", conversationId, viewerId });
 }
 
 function buildEventConversationId(eventId: string) {
@@ -3093,6 +3196,12 @@ export async function sendMobileMessage(viewerId: string, input: SendMobileMessa
   ], {
     last_read_at: now
   }, { returning: "minimal" });
+  await patchRows(
+    TABLES.conversationMembers,
+    [{ column: "conversation_id", op: "eq", value: input.conversationId }],
+    { hidden_at: null },
+    { returning: "minimal" }
+  );
 
   const memberRows = await selectRows<ConversationMemberRow>(TABLES.conversationMembers, {
     filters: [{ column: "conversation_id", op: "eq", value: input.conversationId }]
@@ -3230,6 +3339,19 @@ export async function getMobileConversationDetail(viewerId: string, conversation
     throw new Error("No tienes acceso a este chat.");
   }
 
+  if (viewerMembership.hidden_at) {
+    await patchRows(
+      TABLES.conversationMembers,
+      [
+        { column: "conversation_id", op: "eq", value: conversationId },
+        { column: "user_id", op: "eq", value: viewerId }
+      ],
+      { hidden_at: null },
+      { returning: "minimal" }
+    );
+    publishMobileRealtimeEvent({ type: "conversation", conversationId, viewerId });
+  }
+
   const participantIds = memberRows.map((row) => row.user_id);
   const parsedStoryMessages = new Map(
     messageRows
@@ -3260,6 +3382,8 @@ export async function getMobileConversationDetail(viewerId: string, conversation
     lastMessagePreview: getConversationPreview(messageRows.slice(-1)[0]?.body ?? ""),
     lastMessageAt: messageRows.slice(-1)[0]?.created_at ?? conversation.updated_at,
     unreadCount: 0,
+    isPinned: Boolean(viewerMembership.pinned_at),
+    isArchived: Boolean(viewerMembership.archived_at),
     chatMode: conversation.chat_mode,
     eventSlug: eventRow?.slug ?? null,
     eventId: eventRow?.id ?? null

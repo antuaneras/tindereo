@@ -79,6 +79,8 @@ export interface MobileConversationSummary {
   lastMessagePreview: string;
   lastMessageAt: string | null;
   unreadCount: number;
+  isPinned: boolean;
+  isArchived: boolean;
   chatMode: MobileChatMode;
   eventSlug: string | null;
   eventId: string | null;

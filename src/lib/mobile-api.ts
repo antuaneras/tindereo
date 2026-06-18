@@ -251,6 +251,27 @@ export async function fetchConversation(id: string) {
   );
 }
 
+export async function updateConversationState(
+  id: string,
+  input: { pinned?: boolean; archived?: boolean }
+) {
+  return readJson<{ ok: boolean }>(
+    await fetch(`/api/mobile/conversations/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input)
+    })
+  );
+}
+
+export async function deleteConversationFromList(id: string) {
+  return readJson<{ ok: boolean }>(
+    await fetch(`/api/mobile/conversations/${id}`, {
+      method: "DELETE"
+    })
+  );
+}
+
 export async function updateConversationCover(id: string, coverImage: string | null) {
   return readJson<{ ok: boolean; avatarUrl: string | null }>(
     await fetch(`/api/mobile/conversations/${id}/cover`, {
