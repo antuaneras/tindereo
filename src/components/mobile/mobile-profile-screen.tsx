@@ -126,7 +126,7 @@ function ProfileAvatar({
   size?: "sm" | "md" | "lg";
 }) {
   const dimensions =
-    size === "sm" ? "h-8 w-8 text-[11px]" : size === "md" ? "h-11 w-11 text-sm" : "h-20 w-20 text-xl";
+    size === "sm" ? "h-8 w-8 text-[11px]" : size === "md" ? "h-11 w-11 text-sm" : "h-16 w-16 text-lg";
 
   const content = profile.avatarUrl ? (
     // eslint-disable-next-line @next/next/no-img-element
@@ -268,6 +268,9 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
     [profile.createdEvents, profile.joinedEvents]
   );
   const canOpenPrivateSections = profile.isViewer || !profile.profile.isPrivate;
+  const showDisplayName =
+    profile.profile.displayName.trim().length > 0 &&
+    profile.profile.displayName.trim().toLowerCase() !== profile.profile.handle.trim().toLowerCase();
   const sharedFollowersLabel = useMemo(() => {
     if (!profile.sharedFollowerCount) {
       return null;
@@ -601,8 +604,8 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
           {headerAction}
         </div>
 
-        <section className="rounded-[1.9rem] border border-[var(--line-soft)] bg-white/94 px-4 py-4 shadow-[0_18px_40px_rgba(29,22,15,0.06)]">
-          <div className="flex items-start gap-3.5">
+        <section className="rounded-[1.7rem] border border-[var(--line-soft)] bg-white/94 px-3.5 py-3.5 shadow-[0_18px_40px_rgba(29,22,15,0.06)]">
+          <div className="flex items-start gap-3">
             <div className="relative shrink-0">
               <button
                 type="button"
@@ -623,8 +626,8 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
               </button>
 
               {profile.isViewer ? (
-                <label className="absolute bottom-0 right-0 flex h-9 w-9 cursor-pointer items-center justify-center rounded-full bg-[var(--text-main)] text-white shadow-lg">
-                  <Camera className="h-4 w-4" />
+                <label className="absolute -bottom-1 -right-1 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full bg-[var(--text-main)] text-white shadow-lg">
+                  <Camera className="h-3.5 w-3.5" />
                   <input
                     type="file"
                     accept="image/*"
@@ -663,11 +666,13 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
             </div>
 
             <div className="min-w-0 flex-1">
-              <div className="text-[1.85rem] font-black tracking-[-0.05em] leading-8">@{profile.profile.handle}</div>
-              <div className="mt-0.5 text-sm font-semibold leading-5">{profile.profile.displayName}</div>
-              <div className="text-sm text-[var(--text-soft)]">{profile.profile.city}</div>
+              <div className="text-[1.65rem] font-black tracking-[-0.05em] leading-7">@{profile.profile.handle}</div>
+              <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[13px] leading-5">
+                {showDisplayName ? <span className="font-semibold text-[var(--text-main)]">{profile.profile.displayName}</span> : null}
+                <span className="text-[var(--text-soft)]">{profile.profile.city}</span>
+              </div>
 
-              <div className="mt-3 flex items-stretch gap-2">
+              <div className="mt-2.5 grid grid-cols-3 gap-3">
                 {[
                   ["Posts", profile.posts.length],
                   ["Seguidores", profile.followerCount],
@@ -689,39 +694,52 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                       }
                     }}
                     className={cn(
-                      "min-w-0 flex-1 rounded-[1rem] bg-[var(--bg-soft)] px-2 py-2 text-center",
+                      "min-w-0 py-0.5 text-left",
                       !canOpenPrivateSections && label !== "Posts" && "opacity-70"
                     )}
                   >
-                    <div className="text-base font-black leading-5 tracking-[-0.04em]">{value}</div>
-                    <div className="mt-0.5 text-[10px] font-semibold text-[var(--text-soft)]">{label}</div>
+                    <div className="text-[1.05rem] font-black leading-5 tracking-[-0.04em]">{value}</div>
+                    <div className="mt-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-soft)]">
+                      {label}
+                    </div>
                   </button>
                 ))}
               </div>
 
-              {profile.profile.isPrivate ? (
-                <div className="mt-3 space-y-1.5">
+              <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                {profile.profile.isPrivate ? (
                   <div className="inline-flex rounded-full bg-[var(--bg-soft)] px-3 py-1.5 text-[11px] font-semibold text-[var(--text-soft)]">
                     Perfil privado
                   </div>
-                  {sharedFollowersLabel && !profile.isViewer ? (
-                    <div className="max-w-[250px] text-xs leading-5 text-[var(--text-soft)]">
-                      {sharedFollowersLabel}
-                    </div>
-                  ) : null}
+                ) : null}
+                {profile.isViewer ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleShareProfile()}
+                    className="inline-flex items-center gap-2 rounded-full border border-[var(--line-warm)] bg-white px-3 py-1.5 text-[12px] font-semibold"
+                  >
+                    <Share2 className="h-3.5 w-3.5" />
+                    Compartir perfil
+                  </button>
+                ) : null}
+              </div>
+
+              {sharedFollowersLabel && !profile.isViewer ? (
+                <div className="mt-2 max-w-[250px] text-xs leading-5 text-[var(--text-soft)]">
+                  {sharedFollowersLabel}
                 </div>
               ) : null}
 
-              <div className="mt-3">
+              <div className="mt-2">
                 {profile.profile.bio ? (
-                  <p className="text-sm leading-5 text-[var(--text-main)]">{profile.profile.bio}</p>
+                  <p className="text-[13px] leading-5 text-[var(--text-main)]">{profile.profile.bio}</p>
                 ) : (
-                  <p className="text-sm text-[var(--text-soft)]">Sin bio todavia.</p>
+                  <p className="text-[13px] text-[var(--text-soft)]">Sin bio todavia.</p>
                 )}
               </div>
 
               {!profile.isViewer ? (
-                <div className="mt-3 flex flex-wrap gap-2">
+                <div className="mt-2.5 flex flex-wrap gap-2">
                   <MobileFollowButton
                     handle={profile.profile.handle}
                     isPrivate={profile.profile.isPrivate}
@@ -743,7 +761,7 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                   <button
                     type="button"
                     onClick={() => void handleOpenMessage()}
-                    className="inline-flex items-center gap-2 rounded-full border border-[var(--line-warm)] bg-white px-4 py-2.5 text-sm font-semibold"
+                    className="inline-flex items-center gap-2 rounded-full border border-[var(--line-warm)] bg-white px-3.5 py-2 text-[13px] font-semibold"
                   >
                     <MessageCircle className="h-4 w-4" />
                     Mensaje
@@ -751,26 +769,15 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                   <button
                     type="button"
                     onClick={() => void handleShareProfile()}
-                    className="inline-flex items-center gap-2 rounded-full border border-[var(--line-warm)] bg-white px-4 py-2.5 text-sm font-semibold"
+                    className="inline-flex items-center gap-2 rounded-full border border-[var(--line-warm)] bg-white px-3.5 py-2 text-[13px] font-semibold"
                   >
-                    <Share2 className="h-4 w-4" />
-                    Compartir
+                      <Share2 className="h-4 w-4" />
+                      Compartir
                   </button>
                 </div>
-              ) : (
-                <div className="mt-3">
-                  <button
-                    type="button"
-                    onClick={() => void handleShareProfile()}
-                    className="inline-flex items-center gap-2 rounded-full border border-[var(--line-warm)] bg-white px-4 py-2.5 text-sm font-semibold"
-                  >
-                    <Share2 className="h-4 w-4" />
-                    Compartir perfil
-                  </button>
-                </div>
-              )}
+              ) : null}
               {!profile.isViewer && messageNotice ? (
-                <div className="mt-3 text-xs text-[var(--text-soft)]">{messageNotice}</div>
+                <div className="mt-2 text-xs text-[var(--text-soft)]">{messageNotice}</div>
               ) : null}
             </div>
           </div>
