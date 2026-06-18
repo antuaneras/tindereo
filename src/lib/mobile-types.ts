@@ -26,6 +26,7 @@ export type MobileNotificationKind =
   | "event-reminder-24h"
   | "event-reminder-2h"
   | "event-live"
+  | "post-like"
   | "story-reply"
   | "story-reaction"
   | "message"
@@ -185,6 +186,9 @@ export interface MobileSuggestedProfile {
   relationship?: MobileProfileRelationship | null;
   mutualFriendCount: number;
   mutualFriends: Array<Pick<MobileProfile, "id" | "handle" | "avatarUrl">>;
+  sharedEventCount: number;
+  interactionCount: number;
+  sameCity: boolean;
 }
 
 export interface MobileEventMember {
@@ -326,6 +330,18 @@ export interface MobileEventDetail {
   bannedUserIds: string[];
   stories: MobileStory[];
   posts: MobilePost[];
+  hostMetrics?: {
+    inviteCount: number;
+    acceptedInviteCount: number;
+    pendingInviteCount: number;
+    checkedInCount: number;
+    inviteConversionRate: number;
+    reminder24hCount: number;
+    reminder2hCount: number;
+    liveReminderCount: number;
+    storyReachCount: number;
+    contentInteractionCount: number;
+  };
 }
 
 export interface MobileEventTicket {

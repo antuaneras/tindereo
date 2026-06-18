@@ -119,6 +119,8 @@ function Avatar({
         src={avatarUrl}
         alt={fallback}
         className={cn(sizeClassName, "rounded-full object-cover")}
+        loading="lazy"
+        decoding="async"
       />
     );
   }
@@ -142,12 +144,23 @@ function SuggestedProfileCard({
   profile: MobileSuggestedProfile;
   onOpen: (profile: MobileSuggestedProfile) => void;
 }) {
-  const mutualLabel =
-    profile.mutualFriendCount > 1
+  const reasonBadges = [
+    profile.sameCity ? `Misma ciudad: ${profile.city}` : null,
+    profile.mutualFriendCount > 0
       ? `${profile.mutualFriendCount} seguidos en comun`
-      : profile.mutualFriendCount === 1
-        ? "1 seguido en comun"
-        : profile.city || "Nuevo por descubrir";
+      : null,
+    profile.sharedEventCount > 0
+      ? profile.sharedEventCount > 1
+        ? `${profile.sharedEventCount} eventos en comun`
+        : "Va a un evento tuyo"
+      : null,
+    profile.interactionCount > 0
+      ? profile.interactionCount > 1
+        ? `${profile.interactionCount} interacciones`
+        : "Ya interactuo contigo"
+      : null
+  ].filter(Boolean) as string[];
+  const mutualLabel = reasonBadges[0] ?? profile.city ?? "Nuevo por descubrir";
 
   return (
     <button
@@ -173,6 +186,18 @@ function SuggestedProfileCard({
           ) : null}
           <span className="truncate">{mutualLabel}</span>
         </div>
+        {reasonBadges.length > 1 ? (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {reasonBadges.slice(1, 4).map((badge) => (
+              <span
+                key={`${profile.id}-${badge}`}
+                className="rounded-full bg-[var(--bg-soft)] px-2.5 py-1 text-[10px] font-semibold text-[var(--text-soft)]"
+              >
+                {badge}
+              </span>
+            ))}
+          </div>
+        ) : null}
       </div>
       {profile.relationship ? (
         <div onClick={(event) => event.stopPropagation()}>
@@ -454,6 +479,8 @@ export function MobileSearchScreen() {
                       src={post.mediaItems[0]?.previewUrl ?? ""}
                       alt={post.caption || post.authorHandle}
                       className="h-full w-full object-cover transition duration-300 group-active:scale-[0.98]"
+                      loading="lazy"
+                      decoding="async"
                     />
                     <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/65 via-black/10 to-transparent px-2 pb-2 pt-8 text-left text-[10px] font-semibold text-white">
                       @{post.authorHandle}

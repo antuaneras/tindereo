@@ -74,6 +74,46 @@ type BarcodeDetectorLike = {
 
 type BarcodeDetectorCtor = new (options?: { formats?: string[] }) => BarcodeDetectorLike;
 
+let sharedScannerCameraSessionStream: MediaStream | null = null;
+let sharedScannerCameraSessionFacingMode: "environment" | "user" | null = null;
+
+function stopSharedScannerCameraSessionStream() {
+  sharedScannerCameraSessionStream?.getTracks().forEach((track) => track.stop());
+  sharedScannerCameraSessionStream = null;
+  sharedScannerCameraSessionFacingMode = null;
+}
+
+function getReusableScannerCameraSessionStream(facingMode: "environment" | "user") {
+  if (
+    !sharedScannerCameraSessionStream ||
+    sharedScannerCameraSessionFacingMode !== facingMode ||
+    sharedScannerCameraSessionStream.getTracks().every((track) => track.readyState === "ended")
+  ) {
+    if (sharedScannerCameraSessionStream?.getTracks().every((track) => track.readyState === "ended")) {
+      stopSharedScannerCameraSessionStream();
+    }
+
+    return null;
+  }
+
+  sharedScannerCameraSessionStream.getVideoTracks().forEach((track) => {
+    track.enabled = true;
+  });
+
+  return sharedScannerCameraSessionStream;
+}
+
+function parkScannerCameraSessionStream(stream: MediaStream | null) {
+  if (!stream) {
+    return;
+  }
+
+  sharedScannerCameraSessionStream = stream;
+  stream.getVideoTracks().forEach((track) => {
+    track.enabled = false;
+  });
+}
+
 function getBarcodeDetectorCtor() {
   if (typeof window === "undefined") {
     return null;
@@ -94,6 +134,12 @@ function normalizeScannedToken(rawValue: string) {
   } catch {
     return trimmed;
   }
+}
+
+function getScanReadyMessage(barcodeDetectorCtor: BarcodeDetectorCtor | null) {
+  return barcodeDetectorCtor
+    ? "Apunta al QR para validar acceso."
+    : "Camara lista. Si tu navegador no detecta QR en vivo, pega el codigo debajo.";
 }
 
 function formatStaffRoleLabel(role: "moderator" | "scanner") {
@@ -453,25 +499,39 @@ export function EventInfoSheet({
     );
   }
 
-  function stopScannerCamera() {
+  function detachScannerVideoElement() {
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.srcObject = null;
+    }
+  }
+
+  function stopScannerCamera(mode: "dispose" | "park" = "dispose") {
     if (scanIntervalRef.current !== null) {
       window.clearInterval(scanIntervalRef.current);
       scanIntervalRef.current = null;
     }
 
-    if (scanStreamRef.current) {
-      for (const track of scanStreamRef.current.getTracks()) {
-        track.stop();
-      }
-      scanStreamRef.current = null;
+    const stream = scanStreamRef.current;
+
+    if (mode === "park") {
+      parkScannerCameraSessionStream(stream);
+    } else if (stream && sharedScannerCameraSessionStream === stream) {
+      stopSharedScannerCameraSessionStream();
+    } else {
+      stream?.getTracks().forEach((track) => track.stop());
     }
 
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-
+    scanStreamRef.current = null;
+    detachScannerVideoElement();
     setCameraReady(false);
   }
+
+  useEffect(() => {
+    return () => {
+      stopSharedScannerCameraSessionStream();
+    };
+  }, []);
 
   async function handleResolveScannedValue(rawValue: string) {
     const token = normalizeScannedToken(rawValue);
@@ -515,55 +575,72 @@ export function EventInfoSheet({
         return;
       }
 
+      const reusableStream = getReusableScannerCameraSessionStream("environment");
+      if (reusableStream) {
+        scanStreamRef.current = reusableStream;
+        setCameraReady(true);
+        setScanError(null);
+        setScanMessage(getScanReadyMessage(barcodeDetectorCtor));
+        return;
+      }
+
+      stopScannerCamera("dispose");
+
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: "environment" }
-          },
-          audio: false
-        });
+        let stream: MediaStream;
+
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: {
+              facingMode: { ideal: "environment" },
+              aspectRatio: { ideal: 4 / 5 },
+              height: { ideal: 1920 },
+              width: { ideal: 1080 }
+            }
+          });
+        } catch {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: true
+          });
+        }
 
         if (cancelled) {
-          for (const track of stream.getTracks()) {
-            track.stop();
-          }
+          stream.getTracks().forEach((track) => track.stop());
           return;
         }
 
         scanStreamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play().catch(() => undefined);
+        sharedScannerCameraSessionStream = stream;
+        sharedScannerCameraSessionFacingMode = "environment";
+
+        const [videoTrack] = stream.getVideoTracks();
+        const capabilities = videoTrack?.getCapabilities?.() as
+          | (MediaTrackCapabilities & { zoom?: { min?: number; max?: number }; focusMode?: string[] })
+          | undefined;
+
+        if (videoTrack && capabilities) {
+          const advancedConstraints: Record<string, number | string> = {};
+
+          if (typeof capabilities.zoom?.min === "number") {
+            advancedConstraints.zoom = capabilities.zoom.min;
+          }
+
+          if (Array.isArray(capabilities.focusMode) && capabilities.focusMode.includes("continuous")) {
+            advancedConstraints.focusMode = "continuous";
+          }
+
+          if (Object.keys(advancedConstraints).length) {
+            void videoTrack.applyConstraints({
+              advanced: [advancedConstraints as MediaTrackConstraintSet]
+            }).catch(() => undefined);
+          }
         }
 
         setCameraReady(true);
         setScanError(null);
-        setScanMessage(
-          barcodeDetectorCtor
-            ? "Apunta al QR para validar acceso."
-            : "Camara lista. Si tu navegador no detecta QR en vivo, pega el codigo debajo."
-        );
-
-        if (!barcodeDetectorCtor) {
-          return;
-        }
-
-        const detector = new barcodeDetectorCtor({ formats: ["qr_code"] });
-        scanIntervalRef.current = window.setInterval(async () => {
-          if (scanLockRef.current || !videoRef.current || videoRef.current.readyState < 2) {
-            return;
-          }
-
-          try {
-            const results = await detector.detect(videoRef.current);
-            const rawValue = results[0]?.rawValue?.trim();
-            if (rawValue) {
-              void handleResolveScannedValue(rawValue);
-            }
-          } catch {
-            // Keep trying while the camera is alive.
-          }
-        }, 700);
+        setScanMessage(getScanReadyMessage(barcodeDetectorCtor));
       } catch {
         setScanError("No pude abrir la camara. Revisa permisos o usa el pegado manual.");
       }
@@ -573,9 +650,93 @@ export function EventInfoSheet({
 
     return () => {
       cancelled = true;
-      stopScannerCamera();
+      stopScannerCamera("park");
     };
   }, [canScan, event.id, onRefresh, tab]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || tab !== "scan" || !canScan || !cameraReady) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const bindScannerPreview = async () => {
+      const video = videoRef.current;
+      const stream = scanStreamRef.current;
+
+      if (!video || !stream) {
+        return;
+      }
+
+      if (video.srcObject !== stream) {
+        video.srcObject = stream;
+      }
+
+      video.muted = true;
+      video.autoplay = true;
+      video.playsInline = true;
+      video.setAttribute("muted", "");
+      video.setAttribute("autoplay", "");
+      video.setAttribute("playsinline", "");
+
+      try {
+        await video.play();
+        if (!cancelled) {
+          setScanError(null);
+        }
+      } catch {
+        if (!cancelled) {
+          setScanError("He pedido acceso a la camara pero el movil no ha mostrado la preview.");
+        }
+      }
+    };
+
+    void bindScannerPreview();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [cameraReady, canScan, tab]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || tab !== "scan" || !canScan || !cameraReady) {
+      if (scanIntervalRef.current !== null) {
+        window.clearInterval(scanIntervalRef.current);
+        scanIntervalRef.current = null;
+      }
+      return undefined;
+    }
+
+    const barcodeDetectorCtor = getBarcodeDetectorCtor();
+    if (!barcodeDetectorCtor) {
+      return undefined;
+    }
+
+    const detector = new barcodeDetectorCtor({ formats: ["qr_code"] });
+    scanIntervalRef.current = window.setInterval(async () => {
+      if (scanLockRef.current || !videoRef.current || videoRef.current.readyState < 2) {
+        return;
+      }
+
+      try {
+        const results = await detector.detect(videoRef.current);
+        const rawValue = results[0]?.rawValue?.trim();
+        if (rawValue) {
+          void handleResolveScannedValue(rawValue);
+        }
+      } catch {
+        // Keep trying while the camera is alive.
+      }
+    }, 700);
+
+    return () => {
+      if (scanIntervalRef.current !== null) {
+        window.clearInterval(scanIntervalRef.current);
+        scanIntervalRef.current = null;
+      }
+    };
+  }, [cameraReady, canScan, event.id, onRefresh, tab]);
 
   return (
     <>
@@ -632,6 +793,43 @@ export function EventInfoSheet({
                   </div>
                 ))}
               </section>
+              {canManage && eventDetail.hostMetrics ? (
+                <section className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
+                  <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">Panel host</div>
+                  <div className="mt-4 grid grid-cols-2 gap-3">
+                    {[
+                      ["Invitaciones", `${eventDetail.hostMetrics.inviteCount}`],
+                      ["Aceptadas", `${eventDetail.hostMetrics.acceptedInviteCount}`],
+                      ["Pendientes", `${eventDetail.hostMetrics.pendingInviteCount}`],
+                      ["Check-ins", `${eventDetail.hostMetrics.checkedInCount}`],
+                      ["Conversion", `${eventDetail.hostMetrics.inviteConversionRate}%`],
+                      ["Impacto", `${eventDetail.hostMetrics.storyReachCount + eventDetail.hostMetrics.contentInteractionCount}`]
+                    ].map(([label, value]) => (
+                      <div key={label} className="rounded-[1.3rem] bg-[var(--bg-soft)] px-4 py-3">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-soft)]">{label}</div>
+                        <div className="mt-2 text-xl font-black tracking-[-0.04em]">{value}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-4 rounded-[1.3rem] bg-[var(--bg-soft)] px-4 py-4">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-soft)]">Recordatorios</div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {[
+                        ["24h", eventDetail.hostMetrics.reminder24hCount],
+                        ["2h", eventDetail.hostMetrics.reminder2hCount],
+                        ["Live", eventDetail.hostMetrics.liveReminderCount]
+                      ].map(([label, value]) => (
+                        <span
+                          key={String(label)}
+                          className="rounded-full bg-white px-3 py-2 text-xs font-semibold text-[var(--text-main)]"
+                        >
+                          {label}: {value}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </section>
+              ) : null}
               <section className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
                 <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">Estado de llegada</div>
                 <div className="mt-3 text-sm text-[var(--text-soft)]">{getArrivalStatusLabel(myMembership?.arrivalStatus ?? "none")}</div>
@@ -1247,7 +1445,7 @@ export function EventInfoSheet({
                     onClick={() => {
                       setManualScanValue("");
                       setScanError(null);
-                      setScanMessage(cameraReady ? "Apunta al QR para validar acceso." : null);
+                      setScanMessage(cameraReady ? getScanReadyMessage(getBarcodeDetectorCtor()) : null);
                     }}
                     className="rounded-full border border-[var(--line-warm)] px-4 py-2 text-sm font-semibold"
                   >

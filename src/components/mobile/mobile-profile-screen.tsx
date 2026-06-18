@@ -5,11 +5,14 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
+  CalendarDays,
   Camera,
+  CornerUpLeft,
   Heart,
   LogOut,
   MessageCircle,
   MoreHorizontal,
+  Share2,
   Settings,
   Send
 } from "lucide-react";
@@ -36,8 +39,80 @@ type MobileProfileScreenProps = {
   initialProfile: MobileProfileDetail;
 };
 
+const PROFILE_CACHE_PREFIX = "mobile-cache:profile:";
+const COMMENT_REPLY_PREFIX = "[reply:";
+
 function cn(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
+}
+
+function readProfileCache(handle: string) {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(`${PROFILE_CACHE_PREFIX}${handle.toLowerCase()}`);
+    return raw ? (JSON.parse(raw) as MobileProfileDetail) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeProfileCache(profile: MobileProfileDetail) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.sessionStorage.setItem(`${PROFILE_CACHE_PREFIX}${profile.profile.handle.toLowerCase()}`, JSON.stringify(profile));
+}
+
+type ParsedPostCommentReply = {
+  commentId: string;
+  authorHandle: string;
+  snippet: string;
+} | null;
+
+function parsePostCommentBody(body: string) {
+  const trimmed = body.trim();
+  if (!trimmed.startsWith(COMMENT_REPLY_PREFIX)) {
+    return { body: trimmed, reply: null as ParsedPostCommentReply };
+  }
+
+  const closingIndex = trimmed.indexOf("]");
+  if (closingIndex < 0) {
+    return { body: trimmed, reply: null as ParsedPostCommentReply };
+  }
+
+  const payload = trimmed.slice(COMMENT_REPLY_PREFIX.length, closingIndex);
+  const [commentId, encodedHandle, encodedSnippet] = payload.split("|");
+  return {
+    body: trimmed.slice(closingIndex + 1).trim(),
+    reply:
+      commentId && encodedHandle
+        ? {
+            commentId,
+            authorHandle: decodeURIComponent(encodedHandle),
+            snippet: decodeURIComponent(encodedSnippet ?? "")
+          }
+        : null
+  };
+}
+
+function getPostCommentSnippet(comment: MobilePostComment) {
+  const parsed = parsePostCommentBody(comment.body);
+  return parsed.body || "comentario";
+}
+
+function buildPostCommentBody(body: string, replyTarget: MobilePostComment | null) {
+  const trimmed = body.trim();
+  if (!replyTarget) {
+    return trimmed;
+  }
+
+  const encodedHandle = encodeURIComponent(replyTarget.authorHandle);
+  const encodedSnippet = encodeURIComponent(getPostCommentSnippet(replyTarget).slice(0, 80));
+  return `${COMMENT_REPLY_PREFIX}${replyTarget.id}|${encodedHandle}|${encodedSnippet}] ${trimmed}`;
 }
 
 function ProfileAvatar({
@@ -110,10 +185,12 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
   const [pendingAvatar, setPendingAvatar] = useState(false);
   const [updatingPrivacy, setUpdatingPrivacy] = useState(false);
   const [activeStoryOpen, setActiveStoryOpen] = useState(false);
+  const [storyStartIndex, setStoryStartIndex] = useState<number | null>(null);
   const [seenStoryIds, setSeenStoryIds] = useState<string[]>([]);
   const [postViewerOpenId, setPostViewerOpenId] = useState<string | null>(null);
   const [activePostId, setActivePostId] = useState<string | null>(null);
   const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
+  const [commentReplyTargets, setCommentReplyTargets] = useState<Record<string, MobilePostComment | null>>({});
   const [pendingComments, setPendingComments] = useState<Record<string, boolean>>({});
   const [commentError, setCommentError] = useState<string | null>(null);
   const [postViewerVisible, setPostViewerVisible] = useState(false);
@@ -192,6 +269,33 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
     [profile.createdEvents, profile.joinedEvents]
   );
   const canOpenPrivateSections = profile.isViewer || !profile.profile.isPrivate;
+  const featuredEvent = useMemo(
+    () =>
+      [...profileEvents]
+        .sort((left, right) => {
+          if (left.experienceState === "live" && right.experienceState !== "live") {
+            return -1;
+          }
+          if (right.experienceState === "live" && left.experienceState !== "live") {
+            return 1;
+          }
+          return left.startsAt.localeCompare(right.startsAt);
+        })[0] ?? null,
+    [profileEvents]
+  );
+  const featuredPost = useMemo(
+    () =>
+      [...profile.posts].sort((left, right) => {
+        if (right.likeCount !== left.likeCount) {
+          return right.likeCount - left.likeCount;
+        }
+        if (right.commentCount !== left.commentCount) {
+          return right.commentCount - left.commentCount;
+        }
+        return right.createdAt.localeCompare(left.createdAt);
+      })[0] ?? null,
+    [profile.posts]
+  );
   const sharedFollowersLabel = useMemo(() => {
     if (!profile.sharedFollowerCount) {
       return null;
@@ -213,6 +317,17 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
 
     return `${profile.sharedFollowerCount} personas siguen a este usuario`;
   }, [profile.sharedFollowerCount, profile.sharedFollowers]);
+
+  useEffect(() => {
+    const cached = readProfileCache(initialProfile.profile.handle);
+    if (cached) {
+      setProfile(cached);
+    }
+  }, [initialProfile.profile.handle]);
+
+  useEffect(() => {
+    writeProfileCache(profile);
+  }, [profile]);
 
   useEffect(() => {
     setProfileEventIndex((current) => Math.min(current, Math.max(0, profileEvents.length - 1)));
@@ -285,6 +400,8 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
 
     setCommentError(null);
     setPendingComments((current) => ({ ...current, [postId]: true }));
+    const replyTarget = commentReplyTargets[postId] ?? null;
+    const encodedBody = buildPostCommentBody(draft, replyTarget);
 
     const optimisticId = `optimistic-${Date.now()}`;
     const optimisticComment: MobilePostComment = {
@@ -294,7 +411,7 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
       authorHandle: profile.viewer.handle,
       authorDisplayName: profile.viewer.displayName,
       authorAvatarUrl: profile.viewer.avatarUrl,
-      body: draft,
+      body: encodedBody,
       createdAt: new Date().toISOString()
     };
 
@@ -304,9 +421,10 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
       comments: [...post.comments, optimisticComment]
     }));
     setCommentDrafts((current) => ({ ...current, [postId]: "" }));
+    setCommentReplyTargets((current) => ({ ...current, [postId]: null }));
 
     try {
-      const created = await createPostComment(postId, draft);
+      const created = await createPostComment(postId, encodedBody);
       updatePost(postId, (post) => ({
         ...post,
         comments: post.comments.map((comment) => (comment.id === optimisticId ? created : comment))
@@ -318,6 +436,7 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
         comments: post.comments.filter((comment) => comment.id !== optimisticId)
       }));
       setCommentDrafts((current) => ({ ...current, [postId]: draft }));
+      setCommentReplyTargets((current) => ({ ...current, [postId]: replyTarget }));
       setCommentError(error instanceof Error ? error.message : "No se pudo publicar el comentario.");
     } finally {
       setPendingComments((current) => ({ ...current, [postId]: false }));
@@ -402,6 +521,26 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
       setProfileActionNotice(error instanceof Error ? error.message : "No pude bloquear este perfil.");
     } finally {
       setBlockBusyHandle(null);
+    }
+  }
+
+  async function handleShareProfile() {
+    const shareUrl =
+      typeof window !== "undefined" ? `${window.location.origin}/perfil/${profile.profile.handle}` : "";
+    const shareText = `Mira el perfil de @${profile.profile.handle} en Tindereo`;
+
+    if (typeof navigator !== "undefined" && navigator.share) {
+      await navigator.share({
+        title: `@${profile.profile.handle}`,
+        text: shareText,
+        url: shareUrl
+      });
+      return;
+    }
+
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
+      await navigator.clipboard.writeText(shareUrl || shareText);
+      setProfileActionNotice("Perfil copiado al portapapeles.");
     }
   }
 
@@ -498,6 +637,7 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                 disabled={!hasStories}
                 onClick={() => {
                   if (hasStories) {
+                    setStoryStartIndex(null);
                     setActiveStoryOpen(true);
                   }
                 }}
@@ -594,8 +734,27 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                     <MessageCircle className="h-4 w-4" />
                     Mensaje
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleShareProfile()}
+                    className="inline-flex items-center gap-2 rounded-full border border-[var(--line-warm)] bg-white px-4 py-3 text-sm font-semibold"
+                  >
+                    <Share2 className="h-4 w-4" />
+                    Compartir
+                  </button>
                 </div>
-              ) : null}
+              ) : (
+                <div className="mt-3">
+                  <button
+                    type="button"
+                    onClick={() => void handleShareProfile()}
+                    className="inline-flex items-center gap-2 rounded-full border border-[var(--line-warm)] bg-white px-4 py-3 text-sm font-semibold"
+                  >
+                    <Share2 className="h-4 w-4" />
+                    Compartir perfil
+                  </button>
+                </div>
+              )}
               {!profile.isViewer && messageNotice ? (
                 <div className="mt-3 text-xs text-[var(--text-soft)]">{messageNotice}</div>
               ) : null}
@@ -641,6 +800,113 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
               <p className="text-sm text-[var(--text-soft)]">Sin bio todavia.</p>
             )}
           </div>
+        </section>
+
+        <section className="space-y-3">
+          {profile.canViewContent && activeStories.length ? (
+            <section className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-soft)]">Destacados</div>
+                <div className="text-xs font-semibold text-[var(--text-soft)]">{activeStories.length}</div>
+              </div>
+              <div className="scrollbar-hide -mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
+                {activeStories.map((story, index) => (
+                  <button
+                    key={story.id}
+                    type="button"
+                    onClick={() => {
+                      setStoryStartIndex(index);
+                      setActiveStoryOpen(true);
+                    }}
+                    className="w-[152px] shrink-0 overflow-hidden rounded-[1.7rem] border border-[var(--line-soft)] bg-white text-left shadow-sm"
+                  >
+                    {story.media?.previewUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={story.media.previewUrl}
+                        alt={story.caption || `Historia ${index + 1}`}
+                        className="h-28 w-full object-cover"
+                        loading="lazy"
+                        decoding="async"
+                      />
+                    ) : (
+                      <div className="flex h-28 items-center justify-center bg-[var(--bg-soft)] text-xs font-semibold text-[var(--text-soft)]">
+                        Historia
+                      </div>
+                    )}
+                    <div className="space-y-1 px-3 py-3">
+                      <div className="text-xs font-semibold text-[var(--text-soft)]">{formatRelativeMobileTime(story.createdAt)}</div>
+                      <div className="line-clamp-2 text-sm font-semibold">{story.caption || "Historia activa"}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          {profile.canViewContent && featuredEvent ? (
+            <section className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-soft)]">Evento destacado</div>
+                <div className="rounded-full bg-[var(--bg-soft)] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--coral)]">
+                  {featuredEvent.experienceState === "live" ? "En vivo" : "Proximo"}
+                </div>
+              </div>
+              <Link
+                href={`/evento/${featuredEvent.slug}`}
+                className="block rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4 shadow-sm"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-base font-bold">{featuredEvent.title}</div>
+                    <div className="mt-1 text-sm text-[var(--text-soft)]">{featuredEvent.city}</div>
+                    <div className="mt-3 inline-flex items-center gap-2 text-xs font-semibold text-[var(--text-soft)]">
+                      <CalendarDays className="h-4 w-4" />
+                      {formatMobileDateTime(featuredEvent.startsAt)}
+                    </div>
+                  </div>
+                </div>
+              </Link>
+            </section>
+          ) : null}
+
+          {profile.canViewContent && featuredPost ? (
+            <section className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-soft)]">Post destacado</div>
+                <div className="rounded-full bg-[var(--bg-soft)] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--coral)]">
+                  {featuredPost.likeCount} likes
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setPostViewerVisible(false);
+                  setPostViewerOpenId(featuredPost.id);
+                  setActivePostId(featuredPost.id);
+                }}
+                className="w-full overflow-hidden rounded-[1.8rem] border border-[var(--line-soft)] bg-white text-left shadow-sm"
+              >
+                {featuredPost.mediaItems[0]?.previewUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={featuredPost.mediaItems[0].previewUrl}
+                    alt={featuredPost.caption || `Post de @${featuredPost.authorHandle}`}
+                    className="aspect-[4/3] w-full object-cover"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                ) : (
+                  <EmptyPostTile />
+                )}
+                <div className="space-y-2 px-4 py-4">
+                  <div className="text-sm font-semibold">@{featuredPost.authorHandle}</div>
+                  {featuredPost.caption ? <div className="line-clamp-2 text-sm text-[var(--text-soft)]">{featuredPost.caption}</div> : null}
+                </div>
+              </button>
+            </section>
+          ) : null}
+
         </section>
 
         <section className="space-y-3">
@@ -1033,8 +1299,11 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
         <MobileStoryOverlay
           clusters={storyCluster}
           initialClusterIndex={0}
-          initialStoryIndex={initialStoryIndex}
-          onClose={() => setActiveStoryOpen(false)}
+          initialStoryIndex={storyStartIndex ?? initialStoryIndex}
+          onClose={() => {
+            setActiveStoryOpen(false);
+            setStoryStartIndex(null);
+          }}
           seenStoryIds={seenStoryIds}
           showOwnStoryStats={profile.isViewer}
           viewer={profile.viewer}
@@ -1179,26 +1448,134 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
 
                       <div className="space-y-2">
                         {post.comments.length ? (
-                          post.comments.map((comment) => (
-                            <div key={comment.id} className="text-sm leading-6">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setPostViewerOpenId(null);
-                                  setActivePostId(null);
-                                  router.push(`/perfil/${comment.authorHandle}`);
-                                }}
-                                className="mr-2 font-semibold"
-                              >
-                                @{comment.authorHandle}
-                              </button>
-                              {comment.body}
-                            </div>
-                          ))
+                          (() => {
+                            const rootComments = post.comments.filter(
+                              (comment) => !parsePostCommentBody(comment.body).reply
+                            );
+                            const repliesByParent = new Map<string, MobilePostComment[]>();
+
+                            for (const comment of post.comments) {
+                              const parsed = parsePostCommentBody(comment.body);
+                              if (!parsed.reply) {
+                                continue;
+                              }
+                              const currentReplies = repliesByParent.get(parsed.reply.commentId) ?? [];
+                              currentReplies.push(comment);
+                              repliesByParent.set(parsed.reply.commentId, currentReplies);
+                            }
+
+                            return rootComments.map((comment) => {
+                              const parsedComment = parsePostCommentBody(comment.body);
+                              const replies = repliesByParent.get(comment.id) ?? [];
+
+                              return (
+                                <div key={comment.id} className="space-y-2 text-sm leading-6">
+                                  <div>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setPostViewerOpenId(null);
+                                        setActivePostId(null);
+                                        router.push(`/perfil/${comment.authorHandle}`);
+                                      }}
+                                      className="mr-2 font-semibold"
+                                    >
+                                      @{comment.authorHandle}
+                                    </button>
+                                    {parsedComment.body}
+                                  </div>
+                                  <div className="flex items-center gap-3 text-xs">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setCommentReplyTargets((current) => ({
+                                          ...current,
+                                          [post.id]: comment
+                                        }))
+                                      }
+                                      className="inline-flex items-center gap-1 font-semibold text-[var(--text-soft)]"
+                                    >
+                                      <CornerUpLeft className="h-3.5 w-3.5" />
+                                      Responder
+                                    </button>
+                                    <span className="text-[var(--text-soft)]">{formatRelativeMobileTime(comment.createdAt)}</span>
+                                  </div>
+
+                                  {replies.length ? (
+                                    <div className="space-y-2 border-l border-[var(--line-soft)] pl-4">
+                                      {replies.map((reply) => {
+                                        const parsedReply = parsePostCommentBody(reply.body);
+                                        return (
+                                          <div key={reply.id} className="space-y-1.5">
+                                            <div className="text-sm leading-6">
+                                              <button
+                                                type="button"
+                                                onClick={() => {
+                                                  setPostViewerOpenId(null);
+                                                  setActivePostId(null);
+                                                  router.push(`/perfil/${reply.authorHandle}`);
+                                                }}
+                                                className="mr-2 font-semibold"
+                                              >
+                                                @{reply.authorHandle}
+                                              </button>
+                                              {parsedReply.reply ? (
+                                                <span className="mr-2 rounded-full bg-[var(--bg-soft)] px-2 py-1 text-[10px] font-semibold text-[var(--text-soft)]">
+                                                  respondiendo a @{parsedReply.reply.authorHandle}
+                                                </span>
+                                              ) : null}
+                                              {parsedReply.body}
+                                            </div>
+                                            <div className="flex items-center gap-3 text-xs">
+                                              <button
+                                                type="button"
+                                                onClick={() =>
+                                                  setCommentReplyTargets((current) => ({
+                                                    ...current,
+                                                    [post.id]: reply
+                                                  }))
+                                                }
+                                                className="inline-flex items-center gap-1 font-semibold text-[var(--text-soft)]"
+                                              >
+                                                <CornerUpLeft className="h-3.5 w-3.5" />
+                                                Responder
+                                              </button>
+                                              <span className="text-[var(--text-soft)]">{formatRelativeMobileTime(reply.createdAt)}</span>
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              );
+                            });
+                          })()
                         ) : (
                           <div className="text-sm text-[var(--text-soft)]">Todavia no hay comentarios.</div>
                         )}
                       </div>
+
+                      {commentReplyTargets[post.id] ? (
+                        <div className="flex items-center justify-between gap-3 rounded-[1.2rem] bg-[var(--bg-soft)] px-4 py-3 text-xs text-[var(--text-soft)]">
+                          <div className="min-w-0">
+                            <div className="font-semibold">Respondiendo a @{commentReplyTargets[post.id]?.authorHandle}</div>
+                            <div className="truncate">{getPostCommentSnippet(commentReplyTargets[post.id]!)}</div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setCommentReplyTargets((current) => ({
+                                ...current,
+                                [post.id]: null
+                              }))
+                            }
+                            className="rounded-full bg-white px-3 py-1.5 font-semibold text-[var(--text-main)]"
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                      ) : null}
 
                       <div className="flex items-center gap-2 rounded-full border border-[var(--line-soft)] bg-[var(--bg-soft)] px-4 py-2">
                         <input
@@ -1209,7 +1586,7 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                               [post.id]: event.target.value
                             }))
                           }
-                          placeholder="Añade un comentario..."
+                          placeholder={commentReplyTargets[post.id] ? "Escribe una respuesta..." : "Añade un comentario..."}
                           className="w-full border-0 bg-transparent text-sm outline-none placeholder:text-[var(--text-soft)]"
                         />
                         <button

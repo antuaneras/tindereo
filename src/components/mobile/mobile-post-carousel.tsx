@@ -27,7 +27,7 @@ function MediaSurface({
 
   return (
     // eslint-disable-next-line @next/next/no-img-element
-    <img alt={alt} className={className} src={item.previewUrl ?? ""} />
+    <img alt={alt} className={className} src={item.previewUrl ?? ""} loading="lazy" decoding="async" />
   );
 }
 

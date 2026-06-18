@@ -20,6 +20,35 @@ function cn(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
 }
 
+const CONVERSATION_CACHE_PREFIX = "mobile-cache:conversation:";
+
+function readConversationCache(conversationId: string) {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(`${CONVERSATION_CACHE_PREFIX}${conversationId}`);
+    return raw ? (JSON.parse(raw) as { conversation: MobileConversationDetail; eventDetail: MobileEventDetail | null }) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeConversationCache(
+  conversation: MobileConversationDetail,
+  eventDetail: MobileEventDetail | null
+) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.sessionStorage.setItem(
+    `${CONVERSATION_CACHE_PREFIX}${conversation.summary.id}`,
+    JSON.stringify({ conversation, eventDetail })
+  );
+}
+
 function ProfileDot({ profile }: { profile: MobileProfile | undefined }) {
   if (profile?.avatarUrl) {
     return (
@@ -163,6 +192,20 @@ export function MobileConversationScreen({
     const nextEventDetail = await fetchEventDetail(conversation.summary.eventSlug);
     setEventDetail(nextEventDetail);
   }
+
+  useEffect(() => {
+    const cached = readConversationCache(initialConversation.summary.id);
+    if (cached?.conversation) {
+      setConversation(cached.conversation);
+      if (cached.eventDetail) {
+        setEventDetail(cached.eventDetail);
+      }
+    }
+  }, [initialConversation.summary.id]);
+
+  useEffect(() => {
+    writeConversationCache(conversation, eventDetail);
+  }, [conversation, eventDetail]);
 
   useEffect(() => {
     void markConversationAsRead(conversation.summary.id).catch(() => undefined);

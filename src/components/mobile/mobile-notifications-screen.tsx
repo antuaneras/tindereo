@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, Trash2, X } from "lucide-react";
 import {
   clearNotifications,
@@ -16,12 +16,108 @@ import {
 import { formatRelativeMobileTime } from "@/lib/mobile-shared";
 import type { MobileNotification } from "@/lib/mobile-types";
 
+type NotificationCard = {
+  id: string;
+  ids: string[];
+  notification: MobileNotification;
+  title: string;
+  body: string;
+  createdAt: string;
+  count: number;
+};
+
+function extractActorHandle(notification: MobileNotification) {
+  const actorHandle = typeof notification.data.actorHandle === "string" ? notification.data.actorHandle.trim() : "";
+  if (actorHandle) {
+    return actorHandle.startsWith("@") ? actorHandle : `@${actorHandle}`;
+  }
+
+  const requesterHandle =
+    typeof notification.data.requesterHandle === "string" ? notification.data.requesterHandle.trim() : "";
+  if (requesterHandle) {
+    return requesterHandle.startsWith("@") ? requesterHandle : `@${requesterHandle}`;
+  }
+
+  if (notification.title.startsWith("@")) {
+    return notification.title.split(" ")[0] ?? "";
+  }
+
+  return "";
+}
+
+function buildNotificationCards(notifications: MobileNotification[]) {
+  const groups = new Map<string, MobileNotification[]>();
+
+  for (const notification of notifications) {
+    const requestId = typeof notification.data.requestId === "string" ? notification.data.requestId : null;
+    const conversationId = typeof notification.data.conversationId === "string" ? notification.data.conversationId : null;
+    const postId = typeof notification.data.postId === "string" ? notification.data.postId : null;
+    const storyId = typeof notification.data.storyId === "string" ? notification.data.storyId : null;
+
+    const key =
+      notification.kind === "follow-request" || notification.kind === "chat-request" || requestId
+        ? notification.id
+        : notification.kind === "post-like" && (postId || notification.entityId)
+          ? `post-like:${postId ?? notification.entityId}`
+          : notification.kind === "mention" && (postId || notification.entityId)
+            ? `mention:${postId ?? notification.entityId}`
+            : notification.kind === "message" && (conversationId || notification.entityId)
+              ? `message:${conversationId ?? notification.entityId}`
+              : (notification.kind === "story-reaction" || notification.kind === "story-reply") && storyId
+                ? `${notification.kind}:${storyId}`
+                : notification.id;
+
+    const current = groups.get(key) ?? [];
+    current.push(notification);
+    groups.set(key, current);
+  }
+
+  return [...groups.values()]
+    .map((group): NotificationCard => {
+      const ordered = [...group].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+      const representative = ordered[0]!;
+      const actorHandles = [...new Set(ordered.map(extractActorHandle).filter(Boolean))];
+      const actorLead = actorHandles[0] ?? "Alguien";
+      const others = Math.max(0, ordered.length - 1);
+
+      let title = representative.title;
+      let body = representative.body;
+
+      if (representative.kind === "post-like") {
+        title = others > 0 ? `${actorLead} y ${others} mas dieron like a tu publicacion` : `${actorLead} le ha dado like a tu publicacion`;
+        body = others > 0 ? "Tu publicacion esta generando interaccion." : "Tu publicacion ha recibido un nuevo like.";
+      } else if (representative.kind === "mention") {
+        title = others > 0 ? `${actorLead} y ${others} mas comentaron tu publicacion` : `${actorLead} comento tu publicacion`;
+        body = representative.body;
+      } else if (representative.kind === "message") {
+        title = ordered.length > 1 ? `${ordered.length} mensajes nuevos` : representative.title;
+        body = representative.body;
+      } else if (representative.kind === "story-reaction") {
+        title = others > 0 ? `${actorLead} y ${others} mas reaccionaron a tu historia` : "Nueva reaccion a una historia";
+      } else if (representative.kind === "story-reply") {
+        title = others > 0 ? `${actorLead} y ${others} mas respondieron a tu historia` : "Nueva respuesta a una historia";
+      }
+
+      return {
+        id: representative.id,
+        ids: ordered.map((notification) => notification.id),
+        notification: representative,
+        title,
+        body,
+        createdAt: representative.createdAt,
+        count: ordered.length
+      };
+    })
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
 export function MobileNotificationsScreen({ initialNotifications }: { initialNotifications: MobileNotification[] }) {
   const router = useRouter();
   const [notifications, setNotifications] = useState(initialNotifications);
   const [busyRequestId, setBusyRequestId] = useState<string | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<{ mode: "single"; notificationId: string } | { mode: "all" } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ mode: "single"; notificationIds: string[] } | { mode: "all" } | null>(null);
   const [deleteBusyKey, setDeleteBusyKey] = useState<string | "all" | null>(null);
+  const notificationCards = useMemo(() => buildNotificationCards(notifications), [notifications]);
 
   async function refresh() {
     const payload = await fetchNotifications();
@@ -62,6 +158,14 @@ export function MobileNotificationsScreen({ initialNotifications }: { initialNot
     }
     if (conversationId) {
       router.push(`/chat/${conversationId}`);
+      return;
+    }
+    if (notification.entityType === "post" || notification.kind === "post-like" || notification.kind === "mention") {
+      router.push("/perfil");
+      return;
+    }
+    if (notification.kind === "story-reaction" || notification.kind === "story-reply") {
+      router.push("/perfil");
     }
   }
 
@@ -71,20 +175,21 @@ export function MobileNotificationsScreen({ initialNotifications }: { initialNot
     }
 
     const previous = notifications;
-    const busyKey = deleteTarget.mode === "all" ? "all" : deleteTarget.notificationId;
+    const busyKey = deleteTarget.mode === "all" ? "all" : deleteTarget.notificationIds[0] ?? "all";
     setDeleteBusyKey(busyKey);
 
     if (deleteTarget.mode === "all") {
       setNotifications([]);
     } else {
-      setNotifications((current) => current.filter((notification) => notification.id !== deleteTarget.notificationId));
+      const idsToDelete = new Set(deleteTarget.notificationIds);
+      setNotifications((current) => current.filter((notification) => !idsToDelete.has(notification.id)));
     }
 
     try {
       if (deleteTarget.mode === "all") {
         await clearNotifications();
       } else {
-        await deleteNotification(deleteTarget.notificationId);
+        await Promise.all(deleteTarget.notificationIds.map((notificationId) => deleteNotification(notificationId)));
       }
       setDeleteTarget(null);
     } catch {
@@ -104,7 +209,7 @@ export function MobileNotificationsScreen({ initialNotifications }: { initialNot
           <div className="rounded-full bg-white/90 px-4 py-3 text-sm font-semibold shadow-sm">Actividad</div>
           <button
             type="button"
-            disabled={!notifications.length || deleteBusyKey === "all"}
+            disabled={!notificationCards.length || deleteBusyKey === "all"}
             onClick={() => setDeleteTarget({ mode: "all" })}
             className="rounded-2xl bg-white/90 px-4 py-3 text-sm font-semibold shadow-sm disabled:opacity-50"
           >
@@ -113,24 +218,32 @@ export function MobileNotificationsScreen({ initialNotifications }: { initialNot
         </div>
 
         <div className="mt-5 space-y-3">
-          {notifications.length ? (
-            notifications.map((notification) => {
+          {notificationCards.length ? (
+            notificationCards.map((card) => {
+              const notification = card.notification;
               const requestId = typeof notification.data.requestId === "string" ? notification.data.requestId : null;
               const isFollowRequest = notification.kind === "follow-request" && requestId;
               const isChatRequest = notification.kind === "chat-request" && requestId;
 
               return (
-                <div key={notification.id} className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4 shadow-sm">
+                <div key={card.id} className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4 shadow-sm">
                   <div className="flex items-start justify-between gap-3">
                     <button type="button" onClick={() => openNotification(notification)} className="min-w-0 flex-1 text-left">
-                      <div className="text-sm font-semibold">{notification.title}</div>
-                      <div className="mt-1 text-sm leading-6 text-[var(--text-soft)]">{notification.body}</div>
-                      <div className="mt-3 text-xs text-[var(--text-soft)]">{formatRelativeMobileTime(notification.createdAt)}</div>
+                      <div className="text-sm font-semibold">{card.title}</div>
+                      <div className="mt-1 text-sm leading-6 text-[var(--text-soft)]">{card.body}</div>
+                      <div className="mt-3 flex items-center gap-2 text-xs text-[var(--text-soft)]">
+                        <span>{formatRelativeMobileTime(card.createdAt)}</span>
+                        {card.count > 1 ? (
+                          <span className="rounded-full bg-[var(--bg-soft)] px-2 py-0.5 text-[10px] font-semibold text-[var(--coral)]">
+                            {card.count}
+                          </span>
+                        ) : null}
+                      </div>
                     </button>
                     <button
                       type="button"
-                      disabled={deleteBusyKey === notification.id}
-                      onClick={() => setDeleteTarget({ mode: "single", notificationId: notification.id })}
+                      disabled={deleteBusyKey === card.ids[0]}
+                      onClick={() => setDeleteTarget({ mode: "single", notificationIds: card.ids })}
                       className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--bg-soft)] text-[var(--text-soft)] disabled:opacity-50"
                       aria-label="Borrar notificacion"
                     >

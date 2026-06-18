@@ -562,9 +562,14 @@ function applyViewerRelationshipsToProfiles(
 
 function buildSuggestedProfilesForViewer(
   viewerId: string,
+  viewerProfile: MobileProfile,
   profiles: MobileProfile[],
   follows: ProfileFollowRow[],
-  blocks: ProfileBlockRow[]
+  blocks: ProfileBlockRow[],
+  events: MobileEvent[],
+  memberships: EventMemberRow[],
+  visiblePosts: MobilePost[],
+  likeRows: PostLikeRow[]
 ) {
   const { followersByUserId, followingByUserId } = buildFollowAdjacency(follows);
   const profilesById = new Map(profiles.map((profile) => [profile.id, profile]));
@@ -572,6 +577,33 @@ function buildSuggestedProfilesForViewer(
   const viewerFollowing = new Set(
     [...(followingByUserId.get(viewerId) ?? new Set<string>())].filter((followedId) => !blockedUserIds.has(followedId))
   );
+  const approvedMemberships = memberships.filter((membership) => membership.status === "approved");
+  const eventIdsByProfileId = new Map<string, Set<string>>();
+  const likesByPostId = new Map<string, PostLikeRow[]>();
+
+  for (const likeRow of likeRows) {
+    const currentLikes = likesByPostId.get(likeRow.post_id) ?? [];
+    currentLikes.push(likeRow);
+    likesByPostId.set(likeRow.post_id, currentLikes);
+  }
+
+  for (const event of events) {
+    const participantIds = new Set<string>([event.hostId]);
+    for (const membership of approvedMemberships) {
+      if (membership.event_id === event.id) {
+        participantIds.add(membership.user_id);
+      }
+    }
+
+    for (const participantId of participantIds) {
+      if (!eventIdsByProfileId.has(participantId)) {
+        eventIdsByProfileId.set(participantId, new Set<string>());
+      }
+      eventIdsByProfileId.get(participantId)?.add(event.id);
+    }
+  }
+
+  const viewerEventIds = eventIdsByProfileId.get(viewerId) ?? new Set<string>();
 
   const suggestedProfiles = profiles
     .filter((profile) => profile.id !== viewerId && !viewerFollowing.has(profile.id) && !blockedUserIds.has(profile.id))
@@ -587,14 +619,49 @@ function buildSuggestedProfilesForViewer(
           handle: connection.handle,
           avatarUrl: connection.avatarUrl
         }));
+      const candidateEventIds = eventIdsByProfileId.get(profile.id) ?? new Set<string>();
+      const sharedEventCount = [...viewerEventIds].filter((eventId) => candidateEventIds.has(eventId)).length;
+      const interactionCount = visiblePosts.reduce((total, post) => {
+        if (post.authorId !== viewerId && post.authorId !== profile.id) {
+          return total;
+        }
+
+        const otherParticipantId = post.authorId === viewerId ? profile.id : viewerId;
+        const likesOnPost = likesByPostId.get(post.id) ?? [];
+        const likeHits = likesOnPost.filter((like) => like.user_id === otherParticipantId).length;
+        const commentHits = post.comments.filter((comment) => comment.authorId === otherParticipantId).length;
+        return total + likeHits + commentHits;
+      }, 0);
+      const sameCity = Boolean(
+        viewerProfile.city.trim() &&
+        profile.city.trim() &&
+        viewerProfile.city.trim().toLowerCase() === profile.city.trim().toLowerCase()
+      );
 
       return {
         ...profile,
         mutualFriendCount: mutualFriends.length,
-        mutualFriends
+        mutualFriends,
+        sharedEventCount,
+        interactionCount,
+        sameCity
       };
     })
     .sort((left, right) => {
+      const leftScore =
+        left.mutualFriendCount * 4 +
+        left.sharedEventCount * 3 +
+        left.interactionCount * 2 +
+        (left.sameCity ? 1 : 0);
+      const rightScore =
+        right.mutualFriendCount * 4 +
+        right.sharedEventCount * 3 +
+        right.interactionCount * 2 +
+        (right.sameCity ? 1 : 0);
+
+      if (rightScore !== leftScore) {
+        return rightScore - leftScore;
+      }
       if (right.mutualFriendCount !== left.mutualFriendCount) {
         return right.mutualFriendCount - left.mutualFriendCount;
       }
@@ -1476,19 +1543,31 @@ export async function getMobileSearch(
   const facets = buildSearchFacets(visibleEvents);
 
   if (!normalizedQuery) {
-    const [profileRows, follows, followRequests, suggestedPosts, blocks] = await Promise.all([
+    const [profileRows, viewerProfiles, follows, followRequests, suggestedPosts, blocks, memberships, likeRows] = await Promise.all([
       selectRows<ProfileRow>(TABLES.profiles, { order: [{ column: "created_at", ascending: false }], limit: 80 }),
+      loadProfiles([viewerId]),
       loadProfileFollows(),
       loadPendingProfileFollowRequests(),
       loadPostsForViewer(viewerId),
-      loadProfileBlocks()
+      loadProfileBlocks(),
+      selectRows<EventMemberRow>(TABLES.eventMembers),
+      selectRows<PostLikeRow>(TABLES.postLikes)
     ]);
+    const viewerProfile = viewerProfiles[0];
+    if (!viewerProfile) {
+      throw new Error("No se ha encontrado tu perfil.");
+    }
     const profiles = applyViewerRelationshipsToProfiles(viewerId, profileRows.map(mapProfile), follows, followRequests, blocks);
     const { suggestedProfiles, viewerFriendIds } = buildSuggestedProfilesForViewer(
       viewerId,
+      viewerProfile,
       profiles,
       follows,
-      blocks
+      blocks,
+      visibleEvents,
+      memberships,
+      suggestedPosts,
+      likeRows
     );
     const suggestedProfileIds = new Set(suggestedProfiles.map((profile) => profile.id));
 
@@ -3785,7 +3864,7 @@ async function canViewerWriteConversation(viewerId: string, conversation: Conver
 }
 
 export async function sendMobileMessage(viewerId: string, input: SendMobileMessageInput) {
-  const [conversationRows, memberRows, blocks] = await Promise.all([
+  const [conversationRows, memberRows, blocks, senderProfiles] = await Promise.all([
     selectRows<ConversationRow>(TABLES.conversations, {
       filters: [{ column: "id", op: "eq", value: input.conversationId }],
       limit: 1
@@ -3793,9 +3872,11 @@ export async function sendMobileMessage(viewerId: string, input: SendMobileMessa
     selectRows<ConversationMemberRow>(TABLES.conversationMembers, {
       filters: [{ column: "conversation_id", op: "eq", value: input.conversationId }]
     }),
-    loadProfileBlocks()
+    loadProfileBlocks(),
+    loadProfiles([viewerId])
   ]);
   const conversation = conversationRows[0];
+  const senderProfile = senderProfiles[0] ?? null;
   if (!conversation) {
     throw new Error("La conversacion no existe.");
   }
@@ -3894,11 +3975,15 @@ export async function sendMobileMessage(viewerId: string, input: SendMobileMessa
       entityId: input.conversationId,
       data: storyMessage
         ? {
+            actorHandle: senderProfile?.handle ?? "",
             storyId: storyMessage.storyId,
             conversationId: input.conversationId,
             mode: storyMessage.mode
           }
-        : { conversationId: input.conversationId }
+        : {
+            actorHandle: senderProfile?.handle ?? "",
+            conversationId: input.conversationId
+          }
     }
   );
 
@@ -4216,14 +4301,35 @@ export async function deleteMobilePost(viewerId: string, postId: string) {
   publishMobileRealtimeEvent({ type: "feed", viewerId });
 }
 
+function stripPostCommentReplyMetadata(body: string) {
+  const trimmed = body.trim();
+  if (!trimmed.startsWith("[reply:")) {
+    return trimmed;
+  }
+
+  const closingIndex = trimmed.indexOf("]");
+  if (closingIndex < 0) {
+    return trimmed;
+  }
+
+  return trimmed.slice(closingIndex + 1).trim();
+}
+
 export async function toggleMobilePostLike(viewerId: string, postId: string) {
-  const existing = await selectRows<PostLikeRow>(TABLES.postLikes, {
-    filters: [
-      { column: "post_id", op: "eq", value: postId },
-      { column: "user_id", op: "eq", value: viewerId }
-    ],
-    limit: 1
-  });
+  const [existing, postRows, actorProfiles] = await Promise.all([
+    selectRows<PostLikeRow>(TABLES.postLikes, {
+      filters: [
+        { column: "post_id", op: "eq", value: postId },
+        { column: "user_id", op: "eq", value: viewerId }
+      ],
+      limit: 1
+    }),
+    selectRows<PostRow>(TABLES.posts, {
+      filters: [{ column: "id", op: "eq", value: postId }],
+      limit: 1
+    }),
+    loadProfiles([viewerId])
+  ]);
   if (existing[0]) {
     await deleteRows(TABLES.postLikes, [
       { column: "post_id", op: "eq", value: postId },
@@ -4236,6 +4342,22 @@ export async function toggleMobilePostLike(viewerId: string, postId: string) {
       user_id: viewerId,
       created_at: new Date().toISOString()
     });
+
+    const post = postRows[0];
+    const actor = actorProfiles[0];
+    if (post && actor && post.author_id !== viewerId) {
+      await notifyUsers([post.author_id], {
+        kind: "post-like",
+        title: `@${actor.handle} le ha dado like a tu publicacion`,
+        body: "Tu publicacion ha recibido un nuevo like.",
+        entityType: "post",
+        entityId: postId,
+        data: {
+          actorHandle: actor.handle,
+          postId
+        }
+      });
+    }
   }
   publishMobileRealtimeEvent({ type: "feed", viewerId });
 }
@@ -4277,10 +4399,13 @@ export async function createMobilePostComment(viewerId: string, postId: string, 
     await notifyUsers([post.author_id], {
       kind: "mention",
       title: `@${author.handle} comento tu publicacion`,
-      body: trimmedBody,
+      body: stripPostCommentReplyMetadata(trimmedBody),
       entityType: "post",
       entityId: postId,
-      data: { postId }
+      data: {
+        actorHandle: author.handle,
+        postId
+      }
     });
   }
 
@@ -4302,7 +4427,7 @@ export async function markStoryViewed(viewerId: string, storyId: string) {
 }
 
 export async function getMobileEventDetail(viewerId: string, slug: string): Promise<MobileEventDetail> {
-  const [eventRows, memberRows, presenceRows, cohostRows, postRows, storyRows, inviteRows, muteRows, banRows, staffRoleRows] = await Promise.all([
+  const [eventRows, memberRows, presenceRows, cohostRows, postRows, storyRows, inviteRows, muteRows, banRows, staffRoleRows, reminderRows] = await Promise.all([
     selectRows<EventRow>(TABLES.events, {
       filters: [{ column: "slug", op: "eq", value: slug }],
       limit: 1
@@ -4321,7 +4446,10 @@ export async function getMobileEventDetail(viewerId: string, slug: string): Prom
     selectRows<{ event_id: string; user_id: string }>(TABLES.eventBans).catch(
       async () => [] as Array<{ event_id: string; user_id: string }>
     ),
-    loadEventStaffRoleRowsFromSlug(slug)
+    loadEventStaffRoleRowsFromSlug(slug),
+    selectRows<{ event_id: string; id: string; reminder_kind: string; sent_at: string; user_id: string }>(TABLES.reminderLogs).catch(
+      async () => [] as Array<{ event_id: string; id: string; reminder_kind: string; sent_at: string; user_id: string }>
+    )
   ]);
 
   const eventRow = eventRows[0];
@@ -4334,6 +4462,7 @@ export async function getMobileEventDetail(viewerId: string, slug: string): Prom
   const eventInviteRows = inviteRows.filter((invite) => invite.event_id === eventRow.id);
   const eventMuteRows = muteRows.filter((row) => row.event_id === eventRow.id);
   const eventBanRows = banRows.filter((row) => row.event_id === eventRow.id);
+  const eventReminderRows = reminderRows.filter((row) => row.event_id === eventRow.id);
   const event = mapEvent(eventRow, eventMemberships, eventPresences);
   const myMembership = eventMemberships.find((member) => member.user_id === viewerId) ?? null;
   const cohostIds = new Set(cohostRows.filter((row) => row.event_id === event.id).map((row) => row.user_id));
@@ -4387,6 +4516,21 @@ export async function getMobileEventDetail(viewerId: string, slug: string): Prom
     .flatMap((cluster) => cluster.stories)
     .filter((story) => story.ownerType === "event" && story.ownerId === event.id);
   const eventPosts = allPosts.filter((post) => post.ownerType === "event" && post.ownerId === event.id);
+  const hostMetrics = {
+    inviteCount: eventInviteRows.length,
+    acceptedInviteCount: eventInviteRows.filter((invite) => invite.status === "accepted").length,
+    pendingInviteCount: eventInviteRows.filter((invite) => invite.status === "pending").length,
+    checkedInCount: eventPresences.filter((presence) => presence.arrival_status === "inside" || Boolean(presence.checked_in_at)).length,
+    inviteConversionRate:
+      eventInviteRows.length > 0
+        ? Math.round((eventInviteRows.filter((invite) => invite.status === "accepted").length / eventInviteRows.length) * 100)
+        : 0,
+    reminder24hCount: eventReminderRows.filter((row) => row.reminder_kind === "event-reminder-24h").length,
+    reminder2hCount: eventReminderRows.filter((row) => row.reminder_kind === "event-reminder-2h").length,
+    liveReminderCount: eventReminderRows.filter((row) => row.reminder_kind === "event-live").length,
+    storyReachCount: eventStories.reduce((total, story) => total + story.viewCount, 0),
+    contentInteractionCount: eventPosts.reduce((total, post) => total + post.likeCount + post.commentCount, 0)
+  };
   const members = profiles.filter((profile) => approvedMemberIds.has(profile.id));
   const profilesById = new Map(profiles.map((profile) => [profile.id, profile]));
   const myInviteRow =
@@ -4447,7 +4591,8 @@ export async function getMobileEventDetail(viewerId: string, slug: string): Prom
     mutedUserIds: eventMuteRows.map((row) => row.user_id),
     bannedUserIds: eventBanRows.map((row) => row.user_id),
     stories: eventStories,
-    posts: eventPosts
+    posts: eventPosts,
+    hostMetrics
   };
 }
 

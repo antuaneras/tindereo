@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Heart, Plus } from "lucide-react";
+import { Bookmark, Heart, Plus, Share2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { likePost } from "@/lib/mobile-api";
 import { formatRelativeMobileTime } from "@/lib/mobile-shared";
@@ -14,11 +14,35 @@ function cn(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
 }
 
+const SAVED_POSTS_KEY = "mobile-saved-posts:v1";
+
+function readSavedPostIds() {
+  if (typeof window === "undefined") {
+    return [] as string[];
+  }
+
+  try {
+    const raw = window.localStorage.getItem(SAVED_POSTS_KEY);
+    const parsed = raw ? (JSON.parse(raw) as string[]) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [] as string[];
+  }
+}
+
+function writeSavedPostIds(postIds: string[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(SAVED_POSTS_KEY, JSON.stringify(postIds));
+}
+
 function Avatar({ src, label }: { src: string | null; label: string }) {
   if (src) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
-      <img src={src} alt={label} className="h-12 w-12 rounded-full object-cover" />
+      <img src={src} alt={label} className="h-12 w-12 rounded-full object-cover" loading="lazy" decoding="async" />
     );
   }
 
@@ -146,6 +170,7 @@ export function PostCard({ post }: { post: MobilePost }) {
   const [liked, setLiked] = useState(post.hasLiked);
   const [likeCount, setLikeCount] = useState(post.likeCount);
   const [likePending, setLikePending] = useState(false);
+  const [saved, setSaved] = useState(false);
   const likedRef = useRef(post.hasLiked);
   const authorHref = `/perfil/${post.authorHandle}`;
   const ownerHref = post.ownerType === "event" && post.eventSlug ? `/evento/${post.eventSlug}` : authorHref;
@@ -155,6 +180,10 @@ export function PostCard({ post }: { post: MobilePost }) {
     setLikeCount(post.likeCount);
     likedRef.current = post.hasLiked;
   }, [post.hasLiked, post.id, post.likeCount]);
+
+  useEffect(() => {
+    setSaved(readSavedPostIds().includes(post.id));
+  }, [post.id]);
 
   const syncLikeState = async (mode: "toggle" | "ensure-liked") => {
     const wasLiked = likedRef.current;
@@ -182,6 +211,39 @@ export function PostCard({ post }: { post: MobilePost }) {
       }
     } finally {
       setLikePending(false);
+    }
+  };
+
+  const handleToggleSave = () => {
+    const current = new Set(readSavedPostIds());
+    if (current.has(post.id)) {
+      current.delete(post.id);
+      setSaved(false);
+    } else {
+      current.add(post.id);
+      setSaved(true);
+    }
+    writeSavedPostIds([...current]);
+  };
+
+  const handleShare = async () => {
+    const shareUrl =
+      typeof window !== "undefined"
+        ? `${window.location.origin}${post.ownerType === "event" && post.eventSlug ? `/evento/${post.eventSlug}` : `/perfil/${post.authorHandle}`}`
+        : "";
+    const shareText = post.caption || `Mira esta publicacion de @${post.authorHandle}`;
+
+    if (typeof navigator !== "undefined" && navigator.share) {
+      await navigator.share({
+        title: `@${post.authorHandle}`,
+        text: shareText,
+        url: shareUrl
+      });
+      return;
+    }
+
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
+      await navigator.clipboard.writeText(shareUrl || shareText);
     }
   };
 
@@ -223,6 +285,29 @@ export function PostCard({ post }: { post: MobilePost }) {
           <Heart className={liked ? "h-5 w-5 fill-[var(--coral)] text-[var(--coral)]" : "h-5 w-5"} />
           {likeCount} likes
         </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void handleShare()}
+            className="inline-flex items-center gap-2 rounded-full border border-[var(--line-soft)] px-3 py-2 text-xs font-semibold text-[var(--text-soft)]"
+          >
+            <Share2 className="h-4 w-4" />
+            Compartir
+          </button>
+          <button
+            type="button"
+            onClick={handleToggleSave}
+            className={cn(
+              "inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold",
+              saved
+                ? "border-[rgba(255,107,87,0.24)] bg-[rgba(255,107,87,0.08)] text-[var(--coral)]"
+                : "border-[var(--line-soft)] text-[var(--text-soft)]"
+            )}
+          >
+            <Bookmark className={saved ? "h-4 w-4 fill-current" : "h-4 w-4"} />
+            {saved ? "Guardado" : "Guardar"}
+          </button>
+        </div>
         {post.caption ? <p className="text-sm leading-6">{post.caption}</p> : null}
       </div>
     </article>
