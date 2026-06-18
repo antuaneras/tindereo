@@ -405,6 +405,22 @@ export async function fetchNotifications() {
   );
 }
 
+export async function deleteNotification(notificationId: string) {
+  return readJson<{ ok: boolean }>(
+    await fetch(`/api/mobile/notifications/${notificationId}`, {
+      method: "DELETE"
+    })
+  );
+}
+
+export async function clearNotifications() {
+  return readJson<{ ok: boolean }>(
+    await fetch("/api/mobile/notifications", {
+      method: "DELETE"
+    })
+  );
+}
+
 export async function markNotificationsRead() {
   return readJson<{ ok: boolean }>(
     await fetch("/api/mobile/notifications/read-all", { method: "POST" })

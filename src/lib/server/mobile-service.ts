@@ -1358,6 +1358,7 @@ async function listNotificationsForViewer(viewerId: string) {
 
   const followRequestsById = new Map(followRequests.map((request) => [request.id, request]));
   const conversationRequestsById = new Map(conversationRequests.map((request) => [request.id, request]));
+  const seenRequestKeys = new Set<string>();
 
   return rows
     .map(mapNotification)
@@ -1371,6 +1372,18 @@ async function listNotificationsForViewer(viewerId: string) {
         const request = requestId ? conversationRequestsById.get(requestId) : null;
         return Boolean(request && request.target_user_id === viewerId && request.status === "pending");
       }
+      return true;
+    })
+    .filter((notification) => {
+      const requestId = typeof notification.data.requestId === "string" ? notification.data.requestId : null;
+      if ((notification.kind === "follow-request" || notification.kind === "chat-request") && requestId) {
+        const key = `${notification.kind}:${requestId}`;
+        if (seenRequestKeys.has(key)) {
+          return false;
+        }
+        seenRequestKeys.add(key);
+      }
+
       return true;
     });
 }
@@ -1623,6 +1636,31 @@ export async function listMobileNotifications(viewerId: string) {
   return listNotificationsForViewer(viewerId);
 }
 
+export async function deleteMobileNotification(viewerId: string, notificationId: string) {
+  await ensureMobileSchema();
+  await deleteRows(
+    TABLES.notifications,
+    [
+      { column: "id", op: "eq", value: notificationId },
+      { column: "user_id", op: "eq", value: viewerId }
+    ],
+    { returning: "minimal" }
+  );
+
+  publishMobileRealtimeEvent({ type: "notifications", viewerId });
+}
+
+export async function clearMobileNotifications(viewerId: string) {
+  await ensureMobileSchema();
+  await deleteRows(
+    TABLES.notifications,
+    [{ column: "user_id", op: "eq", value: viewerId }],
+    { returning: "minimal" }
+  );
+
+  publishMobileRealtimeEvent({ type: "notifications", viewerId });
+}
+
 export async function markAllMobileNotificationsRead(viewerId: string) {
   await patchRows(
     TABLES.notifications,
@@ -1816,17 +1854,50 @@ export async function requestProfileFollow(viewerId: string, handle: string) {
       return relationship;
     }
 
-    const created = await insertRow<ProfileFollowRequestRow, ProfileFollowRequestRow>(TABLES.profileFollowRequests, {
-      id: buildMobileId("follow-request"),
-      requester_id: viewerId,
-      target_user_id: targetProfile.id,
-      status: "pending",
-      created_at: new Date().toISOString(),
-      responded_at: null
-    }, {
-      onConflict: "requester_id,target_user_id,status",
-      returning: "representation"
-    });
+    const existingRequestRows = await selectRows<ProfileFollowRequestRow>(TABLES.profileFollowRequests, {
+      filters: [
+        { column: "requester_id", op: "eq", value: viewerId },
+        { column: "target_user_id", op: "eq", value: targetProfile.id }
+      ],
+      order: [{ column: "created_at", ascending: false }]
+    }).catch(async () => [] as ProfileFollowRequestRow[]);
+    const pendingRequest = existingRequestRows.find((request) => request.status === "pending") ?? null;
+    if (pendingRequest) {
+      return {
+        ...relationship,
+        outgoingFollowRequestId: pendingRequest.id
+      };
+    }
+
+    const now = new Date().toISOString();
+    const reusableRequest = existingRequestRows[0] ?? null;
+    const created = reusableRequest
+      ? (await patchRows<ProfileFollowRequestRow>(
+          TABLES.profileFollowRequests,
+          [{ column: "id", op: "eq", value: reusableRequest.id }],
+          {
+            status: "pending",
+            created_at: now,
+            responded_at: null
+          },
+          { returning: "representation" }
+        ))[0] ?? {
+          ...reusableRequest,
+          status: "pending",
+          created_at: now,
+          responded_at: null
+        }
+      : await insertRow<ProfileFollowRequestRow, ProfileFollowRequestRow>(TABLES.profileFollowRequests, {
+          id: buildMobileId("follow-request"),
+          requester_id: viewerId,
+          target_user_id: targetProfile.id,
+          status: "pending",
+          created_at: now,
+          responded_at: null
+        }, {
+          onConflict: "requester_id,target_user_id,status",
+          returning: "representation"
+        });
 
     await notifyUsers([targetProfile.id], {
       kind: "follow-request",

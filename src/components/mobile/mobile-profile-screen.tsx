@@ -9,10 +9,12 @@ import {
   Heart,
   LogOut,
   MessageCircle,
+  MoreHorizontal,
   Settings,
   Send
 } from "lucide-react";
 import {
+  blockProfile,
   createConversation,
   createPostComment,
   fetchProfileDetail,
@@ -116,6 +118,8 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
   const [commentError, setCommentError] = useState<string | null>(null);
   const [postViewerVisible, setPostViewerVisible] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [profileActionsOpen, setProfileActionsOpen] = useState(false);
+  const [confirmBlockOpen, setConfirmBlockOpen] = useState(false);
   const [peopleSheet, setPeopleSheet] = useState<"followers" | "following" | null>(null);
   const [peopleQuery, setPeopleQuery] = useState("");
   const [visiblePeopleCount, setVisiblePeopleCount] = useState(20);
@@ -124,6 +128,7 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
   const [messageDraft, setMessageDraft] = useState("");
   const [messageBusy, setMessageBusy] = useState(false);
   const [messageNotice, setMessageNotice] = useState<string | null>(null);
+  const [profileActionNotice, setProfileActionNotice] = useState<string | null>(null);
   const [blockBusyHandle, setBlockBusyHandle] = useState<string | null>(null);
   const gestureStartRef = useRef<{ x: number; y: number } | null>(null);
   const postListRef = useRef<HTMLDivElement | null>(null);
@@ -379,6 +384,27 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
     }
   }
 
+  async function handleBlockCurrentProfile() {
+    if (profile.isViewer || blockBusyHandle === profile.profile.handle) {
+      return;
+    }
+
+    setBlockBusyHandle(profile.profile.handle);
+    setProfileActionNotice(null);
+
+    try {
+      await blockProfile(profile.profile.handle);
+      setConfirmBlockOpen(false);
+      setProfileActionsOpen(false);
+      router.push(backHref ?? "/buscar");
+      router.refresh();
+    } catch (error) {
+      setProfileActionNotice(error instanceof Error ? error.message : "No pude bloquear este perfil.");
+    } finally {
+      setBlockBusyHandle(null);
+    }
+  }
+
   function handleBack() {
     if (typeof window !== "undefined" && window.history.length > 1) {
       router.back();
@@ -452,9 +478,14 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
               <Settings className="h-5 w-5" />
             </button>
           ) : (
-            <div className="rounded-full bg-white/90 px-4 py-3 text-sm font-semibold shadow-sm">
-              @{profile.profile.handle}
-            </div>
+            <button
+              type="button"
+              onClick={() => setProfileActionsOpen(true)}
+              className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/90 shadow-sm"
+              aria-label="Opciones del perfil"
+            >
+              <MoreHorizontal className="h-5 w-5" />
+            </button>
           )}
           {headerAction}
         </div>
@@ -713,7 +744,77 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
         {pendingAvatar ? <div className="text-sm text-[var(--text-soft)]">Guardando foto de perfil...</div> : null}
         {updatingPrivacy ? <div className="text-sm text-[var(--text-soft)]">Actualizando privacidad...</div> : null}
         {commentError ? <div className="text-sm text-[#b84031]">{commentError}</div> : null}
+        {profileActionNotice ? <div className="text-sm text-[#b84031]">{profileActionNotice}</div> : null}
       </div>
+
+      {profileActionsOpen ? (
+        <div className="fixed inset-0 z-50 bg-black/30" onClick={() => setProfileActionsOpen(false)}>
+          <div
+            className="absolute bottom-0 left-1/2 w-full max-w-[480px] -translate-x-1/2 rounded-t-[2rem] bg-white px-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-4"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <div className="text-lg font-black tracking-[-0.03em]">Opciones del perfil</div>
+                <div className="text-sm text-[var(--text-soft)]">@{profile.profile.handle}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setProfileActionsOpen(false)}
+                className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--bg-soft)]"
+              >
+                <ArrowLeft className="h-4 w-4 rotate-180" />
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setProfileActionsOpen(false);
+                setConfirmBlockOpen(true);
+              }}
+              className="w-full rounded-[1.6rem] border border-[var(--line-soft)] px-4 py-4 text-left text-sm font-semibold text-[#b84031]"
+            >
+              Bloquear perfil
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {confirmBlockOpen ? (
+        <div className="fixed inset-0 z-[60] bg-black/30 px-4" onClick={() => setConfirmBlockOpen(false)}>
+          <div className="flex min-h-full items-end justify-center py-6">
+            <div
+              className="w-full max-w-sm rounded-[2rem] bg-white p-5 shadow-[0_24px_80px_rgba(27,19,10,0.22)]"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="text-lg font-semibold text-[var(--text-main)]">
+                Bloquear a @{profile.profile.handle}
+              </div>
+              <p className="mt-2 text-sm text-[var(--text-soft)]">
+                Si confirmas, desaparecera de tu app y tambien dejara de verte.
+              </p>
+              <div className="mt-5 flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setConfirmBlockOpen(false)}
+                  className="flex-1 rounded-full border border-[var(--line-warm)] px-4 py-3 text-sm font-semibold text-[var(--text-main)]"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={blockBusyHandle === profile.profile.handle}
+                  onClick={() => void handleBlockCurrentProfile()}
+                  className="flex-1 rounded-full bg-[var(--text-main)] px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
+                >
+                  {blockBusyHandle === profile.profile.handle ? "Bloqueando..." : "Bloquear"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {settingsOpen ? (
         <div className="fixed inset-0 z-50 bg-black/30" onClick={() => setSettingsOpen(false)}>
