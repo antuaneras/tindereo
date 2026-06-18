@@ -18,8 +18,17 @@ jobs:
           RENDER_PING_URL: ${{ secrets.RENDER_PING_URL }}
         run: |
           if [ -n "$RENDER_PING_URL" ]; then
-            echo "url=$RENDER_PING_URL" >> "$GITHUB_OUTPUT"
-            echo "Usando URL definida en secret."
+            NORMALIZED_URL="${RENDER_PING_URL%/}"
+            case "$NORMALIZED_URL" in
+              */api/health)
+                FINAL_URL="$NORMALIZED_URL"
+                ;;
+              *)
+                FINAL_URL="$NORMALIZED_URL/api/health"
+                ;;
+            esac
+            echo "url=$FINAL_URL" >> "$GITHUB_OUTPUT"
+            echo "Usando URL normalizada desde secret: $FINAL_URL"
           else
             echo "url=$DEFAULT_RENDER_PING_URL" >> "$GITHUB_OUTPUT"
             echo "Usando URL por defecto: $DEFAULT_RENDER_PING_URL"
