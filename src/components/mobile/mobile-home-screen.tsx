@@ -165,6 +165,12 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
     );
   }
 
+  const eventChatRouteByEventId = new Map(
+    data.chatSummaries
+      .filter((summary) => summary.eventId)
+      .map((summary) => [summary.eventId as string, `/chat/${summary.id}`])
+  );
+
   async function handleInviteResponse(invite: MobileEventInvite, accept: boolean) {
     setInviteActionId(invite.id);
     try {
@@ -172,7 +178,9 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
       const nextData = await fetchMobileBootstrap();
       setData(nextData);
       if (accept) {
-        router.push(`/evento/${invite.eventSlug}`);
+        const nextChatRoute =
+          nextData.chatSummaries.find((summary) => summary.eventSlug === invite.eventSlug)?.id ?? null;
+        router.push(nextChatRoute ? `/chat/${nextChatRoute}` : `/evento/${invite.eventSlug}`);
       }
     } finally {
       setInviteActionId(null);
@@ -482,7 +490,7 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
                 {data.joinedEvents.map((event) => (
                   <div key={event.id} className="w-full min-w-full shrink-0 snap-center px-1">
                     <Link
-                      href={`/evento/${event.slug}`}
+                      href={eventChatRouteByEventId.get(event.id) ?? `/evento/${event.slug}`}
                       className="block rounded-[1.8rem] border border-[var(--line-soft)] bg-[var(--bg-soft)] px-4 py-4"
                     >
                       <div className="flex items-start justify-between gap-3">

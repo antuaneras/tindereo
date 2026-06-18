@@ -337,6 +337,7 @@ export function EventInfoSheet({
   const scanStreamRef = useRef<MediaStream | null>(null);
   const scanIntervalRef = useRef<number | null>(null);
   const scanLockRef = useRef(false);
+  const onRefreshRef = useRef(onRefresh);
   const myMembership = eventDetail?.myMembership ?? null;
   const isInside = myMembership?.arrivalStatus === "inside";
   const storyClusters = useMemo(
@@ -373,6 +374,10 @@ export function EventInfoSheet({
     event.meetingPointLng
   );
   const canUseTicket = myMembership?.status === "approved" || canManage;
+
+  useEffect(() => {
+    onRefreshRef.current = onRefresh;
+  }, [onRefresh]);
 
   async function ensureTicket() {
     if (ticket) {
@@ -549,7 +554,7 @@ export function EventInfoSheet({
 
       setManualScanValue("");
       setScanMessage(`${result.attendeeHandle} dentro. QR invalidado.`);
-      await onRefresh();
+      await onRefreshRef.current();
     } catch (error) {
       setScanError(error instanceof Error ? error.message : "No pude validar esta entrada.");
     } finally {
@@ -652,7 +657,7 @@ export function EventInfoSheet({
       cancelled = true;
       stopScannerCamera("park");
     };
-  }, [canScan, event.id, onRefresh, tab]);
+  }, [canScan, event.id, tab]);
 
   useEffect(() => {
     if (typeof window === "undefined" || tab !== "scan" || !canScan || !cameraReady) {
@@ -736,7 +741,7 @@ export function EventInfoSheet({
         scanIntervalRef.current = null;
       }
     };
-  }, [cameraReady, canScan, event.id, onRefresh, tab]);
+  }, [cameraReady, canScan, event.id, tab]);
 
   return (
     <>

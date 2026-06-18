@@ -122,15 +122,18 @@ function StoryContextCard({
 }
 
 type ConversationScreenProps = {
-  initialConversation: MobileConversationDetail;
+  conversationId?: string | null;
+  initialConversation?: MobileConversationDetail | null;
   initialEvent?: MobileEventDetail | null;
 };
 
 export function MobileConversationScreen({
-  initialConversation,
+  conversationId = null,
+  initialConversation = null,
   initialEvent = null
 }: ConversationScreenProps) {
-  const [conversation, setConversation] = useState(initialConversation);
+  const resolvedConversationId = initialConversation?.summary.id ?? conversationId;
+  const [conversation, setConversation] = useState<MobileConversationDetail | null>(initialConversation);
   const [eventDetail, setEventDetail] = useState(initialEvent);
   const [draft, setDraft] = useState("");
   const [replyRoot, setReplyRoot] = useState<MobileMessage | null>(null);
@@ -140,12 +143,12 @@ export function MobileConversationScreen({
   const [sending, setSending] = useState(false);
   const [updatingConversationAvatar, setUpdatingConversationAvatar] = useState(false);
   const participantsById = useMemo(
-    () => new Map(conversation.participants.map((participant) => [participant.id, participant])),
-    [conversation.participants]
+    () => new Map((conversation?.participants ?? []).map((participant) => [participant.id, participant])),
+    [conversation?.participants]
   );
   const messages = useMemo(
-    () => [...conversation.messages, ...pendingMessages].sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
-    [conversation.messages, pendingMessages]
+    () => [...(conversation?.messages ?? []), ...pendingMessages].sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
+    [conversation?.messages, pendingMessages]
   );
   const rootMessages = useMemo(
     () => messages.filter((message) => !message.threadRootId),
@@ -155,13 +158,15 @@ export function MobileConversationScreen({
     () => messages.filter((message) => message.threadRootId === threadRoot?.id),
     [messages, threadRoot]
   );
-  const viewer = participantsById.get(conversation.viewerId);
-  const conversationAvatarLabel = conversation.summary.title.replace(/^@/, "") || "Chat";
+  const viewer = conversation ? participantsById.get(conversation.viewerId) : undefined;
+  const conversationAvatarLabel = conversation?.summary.title.replace(/^@/, "") || initialEvent?.event.title || "Chat";
   const canWrite =
-    !eventDetail ||
-    eventDetail.event.chatMode === "open" ||
-    eventDetail.event.hostId === conversation.viewerId ||
-    eventDetail.cohosts.some((cohost) => cohost.id === conversation.viewerId);
+    conversation
+      ? !eventDetail ||
+        eventDetail.event.chatMode === "open" ||
+        eventDetail.event.hostId === conversation.viewerId ||
+        eventDetail.cohosts.some((cohost) => cohost.id === conversation.viewerId)
+      : false;
 
   function getReplySnippet(message: MobileMessage) {
     if (message.storyContext) {
@@ -180,59 +185,115 @@ export function MobileConversationScreen({
   }
 
   async function refreshConversation() {
-    const nextConversation = await fetchConversation(conversation.summary.id);
+    if (!resolvedConversationId) {
+      return;
+    }
+
+    const nextConversation = await fetchConversation(resolvedConversationId);
     setConversation(nextConversation);
   }
 
   async function refreshEvent() {
-    if (!conversation.summary.eventSlug) {
+    const eventSlug = conversation?.summary.eventSlug ?? initialEvent?.event.slug ?? null;
+    if (!eventSlug) {
       return;
     }
 
-    const nextEventDetail = await fetchEventDetail(conversation.summary.eventSlug);
+    const nextEventDetail = await fetchEventDetail(eventSlug);
     setEventDetail(nextEventDetail);
   }
 
   useEffect(() => {
-    const cached = readConversationCache(initialConversation.summary.id);
+    if (!resolvedConversationId) {
+      return;
+    }
+
+    const cached = readConversationCache(resolvedConversationId);
     if (cached?.conversation) {
       setConversation(cached.conversation);
       if (cached.eventDetail) {
         setEventDetail(cached.eventDetail);
       }
     }
-  }, [initialConversation.summary.id]);
+  }, [resolvedConversationId]);
 
   useEffect(() => {
-    writeConversationCache(conversation, eventDetail);
+    if (conversation) {
+      writeConversationCache(conversation, eventDetail);
+    }
   }, [conversation, eventDetail]);
 
   useEffect(() => {
+    if (!conversation) {
+      return;
+    }
+
     void markConversationAsRead(conversation.summary.id).catch(() => undefined);
-  }, [conversation.summary.id]);
+  }, [conversation]);
+
+  useEffect(() => {
+    if (conversation || !resolvedConversationId) {
+      return;
+    }
+
+    void refreshConversation().catch(() => undefined);
+  }, [conversation, resolvedConversationId]);
 
   useEffect(() => {
     const unsubscribe = subscribeToMobileStream((event) => {
-      if (event.type === "conversation" && event.conversationId === conversation.summary.id) {
+      if (event.type === "conversation" && event.conversationId === resolvedConversationId) {
         void refreshConversation();
-        void markConversationAsRead(conversation.summary.id).catch(() => undefined);
+        if (resolvedConversationId) {
+          void markConversationAsRead(resolvedConversationId).catch(() => undefined);
+        }
       }
-      if (event.type === "event" && conversation.summary.eventId && event.eventId === conversation.summary.eventId) {
+      if (event.type === "event" && (conversation?.summary.eventId ?? initialEvent?.event.id) && event.eventId === (conversation?.summary.eventId ?? initialEvent?.event.id)) {
         void refreshEvent();
       }
     });
 
     return unsubscribe;
-  }, [conversation.summary.eventId, conversation.summary.id, conversation.summary.eventSlug]);
+  }, [conversation?.summary.eventId, initialEvent?.event.id, resolvedConversationId]);
+
+  if (!conversation) {
+    return (
+      <div className="mx-auto flex min-h-[100dvh] w-full max-w-[480px] flex-col bg-[var(--bg-main)]">
+        <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-[var(--line-soft)] bg-[rgba(246,239,231,0.94)] px-4 pb-3 pt-[calc(1rem+env(safe-area-inset-top))] backdrop-blur-xl">
+          <Link
+            href={initialEvent?.event.slug ? "/inicio" : "/chats"}
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-white/80 shadow-sm"
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </Link>
+          <div className="min-w-0 flex-1">
+            <div className="h-5 w-32 rounded-full bg-white/80 shadow-sm" />
+            <div className="mt-2 h-4 w-24 rounded-full bg-white/70 shadow-sm" />
+          </div>
+        </header>
+
+        <div className="flex-1 space-y-3 px-4 py-5">
+          <div className="h-24 rounded-[1.8rem] bg-white/80 shadow-sm" />
+          <div className="ml-auto h-20 w-[72%] rounded-[1.8rem] bg-[rgba(202,255,185,0.45)] shadow-sm" />
+          <div className="h-20 w-[68%] rounded-[1.8rem] bg-white/80 shadow-sm" />
+        </div>
+      </div>
+    );
+  }
+
+  const activeConversation = conversation;
 
   async function handleSendMedia(file: File) {
+    if (!resolvedConversationId) {
+      return;
+    }
+
     setSending(true);
     try {
       const uploaded = await uploadManagedMediaFromClient(file, "chat");
       const optimisticId = `pending-${Date.now()}`;
       const optimistic: MobileMessage = {
         id: optimisticId,
-        conversationId: conversation.summary.id,
+        conversationId: activeConversation.summary.id,
         authorId: viewer?.id ?? null,
         body: file.name,
         kind: "media",
@@ -256,7 +317,7 @@ export function MobileConversationScreen({
         storyContext: null
       };
       setPendingMessages((current) => [...current, optimistic]);
-      await sendConversationMessage(conversation.summary.id, {
+      await sendConversationMessage(resolvedConversationId, {
         body: "",
         threadRootId: replyRoot?.id ?? null,
         media: {
@@ -278,14 +339,14 @@ export function MobileConversationScreen({
       <div className="mx-auto flex min-h-[100dvh] w-full max-w-[480px] flex-col bg-[var(--bg-main)]">
         <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-[var(--line-soft)] bg-[rgba(246,239,231,0.94)] px-4 pb-3 pt-[calc(1rem+env(safe-area-inset-top))] backdrop-blur-xl">
           <Link
-            href={conversation.summary.eventSlug ? "/inicio" : "/chats"}
+            href={activeConversation.summary.eventSlug ? "/inicio" : "/chats"}
             className="flex h-11 w-11 items-center justify-center rounded-full bg-white/80 shadow-sm"
           >
             <ArrowLeft className="h-5 w-5" />
           </Link>
-          {conversation.summary.kind === "group" ? (
+          {activeConversation.summary.kind === "group" ? (
             <label className="relative block cursor-pointer">
-              <ConversationAvatar src={conversation.summary.avatarUrl} label={conversationAvatarLabel} />
+              <ConversationAvatar src={activeConversation.summary.avatarUrl} label={conversationAvatarLabel} />
               <span className="absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--coral)] text-[10px] font-bold text-white shadow-sm">
                 +
               </span>
@@ -302,15 +363,23 @@ export function MobileConversationScreen({
 
                   setUpdatingConversationAvatar(true);
                   try {
+                    if (!resolvedConversationId) {
+                      return;
+                    }
+
                     const upload = await uploadManagedMediaFromClient(file, "avatar");
-                    const next = await updateConversationCover(conversation.summary.id, upload.assetRef);
-                    setConversation((current) => ({
-                      ...current,
-                      summary: {
-                        ...current.summary,
-                        avatarUrl: next.avatarUrl
-                      }
-                    }));
+                    const next = await updateConversationCover(resolvedConversationId, upload.assetRef);
+                    setConversation((current) =>
+                      current
+                        ? {
+                            ...current,
+                            summary: {
+                              ...current.summary,
+                              avatarUrl: next.avatarUrl
+                            }
+                          }
+                        : current
+                    );
                   } finally {
                     setUpdatingConversationAvatar(false);
                     event.currentTarget.value = "";
@@ -319,12 +388,12 @@ export function MobileConversationScreen({
               />
             </label>
           ) : (
-            <ConversationAvatar src={conversation.summary.avatarUrl} label={conversationAvatarLabel} />
+            <ConversationAvatar src={activeConversation.summary.avatarUrl} label={conversationAvatarLabel} />
           )}
           <div className="min-w-0 flex-1">
             <button type="button" onClick={() => setInfoOpen(true)} className="w-full text-left">
-              <div className="truncate text-lg font-black tracking-[-0.03em]">{conversation.summary.title}</div>
-              <div className="truncate text-sm text-[var(--text-soft)]">{conversation.summary.subtitle}</div>
+              <div className="truncate text-lg font-black tracking-[-0.03em]">{activeConversation.summary.title}</div>
+              <div className="truncate text-sm text-[var(--text-soft)]">{activeConversation.summary.subtitle}</div>
             </button>
           </div>
           <button
@@ -332,14 +401,14 @@ export function MobileConversationScreen({
             onClick={() => setInfoOpen(true)}
             className="flex h-11 w-11 items-center justify-center rounded-full bg-white/80 shadow-sm"
           >
-            {conversation.summary.eventId ? <Info className="h-5 w-5" /> : <Users className="h-5 w-5" />}
+            {activeConversation.summary.eventId ? <Info className="h-5 w-5" /> : <Users className="h-5 w-5" />}
           </button>
         </header>
 
         <div className="flex-1 space-y-3 overflow-y-auto px-4 py-5 pb-36">
           {rootMessages.map((message) => {
             const author = message.authorId ? participantsById.get(message.authorId) : undefined;
-            const mine = message.authorId === conversation.viewerId;
+            const mine = message.authorId === activeConversation.viewerId;
             const replies = messages.filter((item) => item.threadRootId === message.id);
             return (
               <article
@@ -348,7 +417,7 @@ export function MobileConversationScreen({
               >
                 {!mine ? <ProfileDot profile={author} /> : null}
                 <div className={cn("max-w-[78%]", mine && "items-end")}>
-                  {!mine && author && conversation.summary.kind !== "direct" ? (
+                  {!mine && author && activeConversation.summary.kind !== "direct" ? (
                     <Link href={`/perfil/${author.handle}`} className="mb-1 block text-xs font-semibold text-[var(--coral)]">
                       @{author.handle}
                     </Link>
@@ -447,7 +516,7 @@ export function MobileConversationScreen({
               const optimisticId = `pending-${Date.now()}`;
               const optimistic: MobileMessage = {
                 id: optimisticId,
-                conversationId: conversation.summary.id,
+                conversationId: activeConversation.summary.id,
                 authorId: viewer?.id ?? null,
                 body: draft,
                 kind: "text",
@@ -465,7 +534,7 @@ export function MobileConversationScreen({
               setPendingMessages((current) => [...current, optimistic]);
               setSending(true);
               try {
-                await sendConversationMessage(conversation.summary.id, {
+                await sendConversationMessage(activeConversation.summary.id, {
                   body: optimistic.body,
                   threadRootId: replyRoot?.id ?? null
                 });
@@ -546,7 +615,7 @@ export function MobileConversationScreen({
 
       {infoOpen ? (
         <EventInfoSheet
-          conversation={conversation}
+          conversation={activeConversation}
           eventDetail={eventDetail}
           onClose={() => setInfoOpen(false)}
           onRefresh={async () => {
