@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CalendarPlus, Download, Link2, MapPin, QrCode, Share2, Ticket, UserPlus, Users, X } from "lucide-react";
+import { CalendarPlus, Camera, Download, Link2, MapPin, QrCode, Share2, Ticket, UserPlus, Users, X } from "lucide-react";
 import {
   addEventCohost,
   fetchEventTicket,
@@ -74,46 +74,6 @@ type BarcodeDetectorLike = {
 
 type BarcodeDetectorCtor = new (options?: { formats?: string[] }) => BarcodeDetectorLike;
 
-let sharedScannerCameraSessionStream: MediaStream | null = null;
-let sharedScannerCameraSessionFacingMode: "environment" | "user" | null = null;
-
-function stopSharedScannerCameraSessionStream() {
-  sharedScannerCameraSessionStream?.getTracks().forEach((track) => track.stop());
-  sharedScannerCameraSessionStream = null;
-  sharedScannerCameraSessionFacingMode = null;
-}
-
-function getReusableScannerCameraSessionStream(facingMode: "environment" | "user") {
-  if (
-    !sharedScannerCameraSessionStream ||
-    sharedScannerCameraSessionFacingMode !== facingMode ||
-    sharedScannerCameraSessionStream.getTracks().every((track) => track.readyState === "ended")
-  ) {
-    if (sharedScannerCameraSessionStream?.getTracks().every((track) => track.readyState === "ended")) {
-      stopSharedScannerCameraSessionStream();
-    }
-
-    return null;
-  }
-
-  sharedScannerCameraSessionStream.getVideoTracks().forEach((track) => {
-    track.enabled = true;
-  });
-
-  return sharedScannerCameraSessionStream;
-}
-
-function parkScannerCameraSessionStream(stream: MediaStream | null) {
-  if (!stream) {
-    return;
-  }
-
-  sharedScannerCameraSessionStream = stream;
-  stream.getVideoTracks().forEach((track) => {
-    track.enabled = false;
-  });
-}
-
 function getBarcodeDetectorCtor() {
   if (typeof window === "undefined") {
     return null;
@@ -155,7 +115,7 @@ function normalizeScannedToken(rawValue: string) {
 function getScanReadyMessage(barcodeDetectorCtor: BarcodeDetectorCtor | null) {
   return barcodeDetectorCtor
     ? "Apunta al QR para validar acceso."
-    : "Camara lista. Si tu navegador no detecta QR en vivo, pega el codigo debajo.";
+    : "Este navegador no ofrece lectura QR en vivo aqui. Usa el codigo manual.";
 }
 
 function formatStaffRoleLabel(role: "moderator" | "scanner") {
@@ -417,7 +377,10 @@ function EventInfoSheetLoaded({
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanBusy, setScanBusy] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
+  const [scannerEnabled, setScannerEnabled] = useState(false);
+  const [insideSheetOpen, setInsideSheetOpen] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const scanCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const scanStreamRef = useRef<MediaStream | null>(null);
   const scanIntervalRef = useRef<number | null>(null);
   const scanLockRef = useRef(false);
@@ -442,6 +405,18 @@ function EventInfoSheetLoaded({
   );
   const viewerProfile =
     conversation.participants.find((participant) => participant.id === conversation.viewerId) ?? eventDetail?.host ?? null;
+  const insideParticipants = useMemo(
+    () =>
+      eventDetail.participants
+        .filter(
+          (participant) =>
+            participant.membership.arrivalStatus === "inside" || Boolean(participant.membership.checkedInAt)
+        )
+        .sort((left, right) =>
+          (right.membership.checkedInAt ?? "").localeCompare(left.membership.checkedInAt ?? "")
+        ),
+    [eventDetail.participants]
+  );
 
   const event = eventDetail.event;
   const canManage = eventDetail.canManage;
@@ -591,22 +566,14 @@ function EventInfoSheetLoaded({
     }
   }
 
-  function stopScannerCamera(mode: "dispose" | "park" = "dispose") {
+  function stopScannerCamera() {
     if (scanIntervalRef.current !== null) {
       window.clearInterval(scanIntervalRef.current);
       scanIntervalRef.current = null;
     }
 
     const stream = scanStreamRef.current;
-
-    if (mode === "park") {
-      parkScannerCameraSessionStream(stream);
-    } else if (stream && sharedScannerCameraSessionStream === stream) {
-      stopSharedScannerCameraSessionStream();
-    } else {
-      stream?.getTracks().forEach((track) => track.stop());
-    }
-
+    stream?.getTracks().forEach((track) => track.stop());
     scanStreamRef.current = null;
     detachScannerVideoElement();
     setCameraReady(false);
@@ -614,7 +581,7 @@ function EventInfoSheetLoaded({
 
   useEffect(() => {
     return () => {
-      stopSharedScannerCameraSessionStream();
+      stopScannerCamera();
     };
   }, []);
 
@@ -634,6 +601,8 @@ function EventInfoSheetLoaded({
 
       setManualScanValue("");
       setScanMessage(`${result.attendeeHandle} dentro. QR invalidado.`);
+      stopScannerCamera();
+      setScannerEnabled(false);
       await onRefreshRef.current();
     } catch (error) {
       setScanError(error instanceof Error ? error.message : "No pude validar esta entrada.");
@@ -646,7 +615,7 @@ function EventInfoSheetLoaded({
   }
 
   useEffect(() => {
-    if (typeof window === "undefined" || tab !== "scan" || !canScan) {
+    if (typeof window === "undefined" || tab !== "scan" || !canScan || !scannerEnabled) {
       stopScannerCamera();
       return;
     }
@@ -660,16 +629,7 @@ function EventInfoSheetLoaded({
         return;
       }
 
-      const reusableStream = getReusableScannerCameraSessionStream("environment");
-      if (reusableStream) {
-        scanStreamRef.current = reusableStream;
-        setCameraReady(true);
-        setScanError(null);
-        setScanMessage(getScanReadyMessage(barcodeDetectorCtor));
-        return;
-      }
-
-      stopScannerCamera("dispose");
+      stopScannerCamera();
 
       try {
         let stream: MediaStream;
@@ -697,8 +657,6 @@ function EventInfoSheetLoaded({
         }
 
         scanStreamRef.current = stream;
-        sharedScannerCameraSessionStream = stream;
-        sharedScannerCameraSessionFacingMode = "environment";
 
         const [videoTrack] = stream.getVideoTracks();
         const capabilities = videoTrack?.getCapabilities?.() as
@@ -735,12 +693,12 @@ function EventInfoSheetLoaded({
 
     return () => {
       cancelled = true;
-      stopScannerCamera("park");
+      stopScannerCamera();
     };
-  }, [canScan, event.id, tab]);
+  }, [canScan, event.id, scannerEnabled, tab]);
 
   useEffect(() => {
-    if (typeof window === "undefined" || tab !== "scan" || !canScan || !cameraReady) {
+    if (typeof window === "undefined" || tab !== "scan" || !canScan || !cameraReady || !scannerEnabled) {
       return undefined;
     }
 
@@ -782,10 +740,37 @@ function EventInfoSheetLoaded({
     return () => {
       cancelled = true;
     };
-  }, [cameraReady, canScan, tab]);
+  }, [cameraReady, canScan, scannerEnabled, tab]);
+
+  async function detectQrFromFrame(detector: BarcodeDetectorLike, video: HTMLVideoElement) {
+    const directResults = await detector.detect(video);
+    const directValue = directResults[0]?.rawValue?.trim();
+    if (directValue) {
+      return directValue;
+    }
+
+    const canvas = scanCanvasRef.current;
+    if (!canvas || !video.videoWidth || !video.videoHeight) {
+      return null;
+    }
+
+    const maxWidth = 960;
+    const ratio = Math.min(1, maxWidth / video.videoWidth);
+    canvas.width = Math.max(1, Math.round(video.videoWidth * ratio));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * ratio));
+
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) {
+      return null;
+    }
+
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const canvasResults = await detector.detect(canvas);
+    return canvasResults[0]?.rawValue?.trim() ?? null;
+  }
 
   useEffect(() => {
-    if (typeof window === "undefined" || tab !== "scan" || !canScan || !cameraReady) {
+    if (typeof window === "undefined" || tab !== "scan" || !canScan || !cameraReady || !scannerEnabled) {
       if (scanIntervalRef.current !== null) {
         window.clearInterval(scanIntervalRef.current);
         scanIntervalRef.current = null;
@@ -805,8 +790,7 @@ function EventInfoSheetLoaded({
       }
 
       try {
-        const results = await detector.detect(videoRef.current);
-        const rawValue = results[0]?.rawValue?.trim();
+        const rawValue = await detectQrFromFrame(detector, videoRef.current);
         if (rawValue) {
           void handleResolveScannedValue(rawValue);
         }
@@ -821,7 +805,16 @@ function EventInfoSheetLoaded({
         scanIntervalRef.current = null;
       }
     };
-  }, [cameraReady, canScan, event.id, tab]);
+  }, [cameraReady, canScan, event.id, scannerEnabled, tab]);
+
+  useEffect(() => {
+    if (tab !== "scan") {
+      setScannerEnabled(false);
+      setScanError(null);
+      setScanBusy(false);
+      setScanMessage(null);
+    }
+  }, [tab]);
 
   return (
     <>
@@ -868,15 +861,28 @@ function EventInfoSheetLoaded({
             <div className="space-y-4">
               <section className="grid grid-cols-3 gap-3">
                 {[
-                  ["Dentro", `${event.insideCount}`],
-                  ["Confirmados", `${event.approvedCount}`],
-                  ["Cola", `${event.waitlistCount}`]
-                ].map(([label, value]) => (
-                  <div key={label} className="rounded-[1.6rem] border border-[var(--line-soft)] bg-white px-4 py-4">
-                    <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-soft)]">{label}</div>
-                    <div className="mt-3 text-2xl font-black tracking-[-0.04em]">{value}</div>
-                  </div>
-                ))}
+                  { label: "Dentro", value: `${event.insideCount}`, action: () => setInsideSheetOpen(true) },
+                  { label: "Confirmados", value: `${event.approvedCount}`, action: null },
+                  { label: "Cola", value: `${event.waitlistCount}`, action: null }
+                ].map((item) =>
+                  item.action ? (
+                    <button
+                      key={item.label}
+                      type="button"
+                      onClick={item.action}
+                      className="rounded-[1.6rem] border border-[var(--line-soft)] bg-white px-4 py-4 text-left"
+                    >
+                      <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-soft)]">{item.label}</div>
+                      <div className="mt-3 text-2xl font-black tracking-[-0.04em]">{item.value}</div>
+                      <div className="mt-2 text-[11px] font-semibold text-[var(--coral)]">Ver lista oficial</div>
+                    </button>
+                  ) : (
+                    <div key={item.label} className="rounded-[1.6rem] border border-[var(--line-soft)] bg-white px-4 py-4">
+                      <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-soft)]">{item.label}</div>
+                      <div className="mt-3 text-2xl font-black tracking-[-0.04em]">{item.value}</div>
+                    </div>
+                  )
+                )}
               </section>
               {canManage && eventDetail.hostMetrics ? (
                 <section className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
@@ -1492,17 +1498,54 @@ function EventInfoSheetLoaded({
                 </div>
 
                 <div className="mt-4 overflow-hidden rounded-[1.8rem] bg-[#120d0a]">
-                  <video ref={videoRef} playsInline muted className="aspect-[4/5] w-full object-cover" />
+                  {scannerEnabled ? (
+                    <video ref={videoRef} playsInline muted className="aspect-[4/5] w-full object-cover" />
+                  ) : (
+                    <div className="flex aspect-[4/5] items-center justify-center px-6 text-center text-sm text-white/80">
+                      {getBarcodeDetectorCtor()
+                        ? "La camara no se activa sola. Tocala solo cuando quieras escanear."
+                        : "En este navegador el QR en vivo no va fino. Mejor usa el codigo manual de la entrada."}
+                    </div>
+                  )}
+                  <canvas ref={scanCanvasRef} className="hidden" />
                 </div>
 
                 <div className="mt-3 rounded-[1.4rem] bg-[var(--bg-soft)] px-4 py-3 text-sm text-[var(--text-soft)]">
-                  {cameraReady ? scanMessage || "Camara lista." : "Preparando camara..."}
+                  {scannerEnabled
+                    ? cameraReady
+                      ? scanMessage || "Camara lista."
+                      : "Preparando camara..."
+                    : getBarcodeDetectorCtor()
+                      ? "Activa la camara cuando vayas a leer un QR."
+                      : "Escaner en vivo no disponible aqui. Usa el codigo manual."}
                 </div>
                 {scanError ? (
                   <div className="rounded-[1.4rem] border border-[rgba(184,64,49,0.16)] bg-[rgba(184,64,49,0.06)] px-4 py-3 text-sm text-[#b84031]">
                     {scanError}
                   </div>
                 ) : null}
+                <div className="mt-3 flex gap-2">
+                  <button
+                    type="button"
+                    disabled={Boolean(scannerEnabled && !cameraReady && !scanError)}
+                    onClick={() => {
+                      if (scannerEnabled) {
+                        stopScannerCamera();
+                        setScannerEnabled(false);
+                        setScanMessage(null);
+                        setScanError(null);
+                        return;
+                      }
+
+                      setScanError(null);
+                      setScanMessage(null);
+                      setScannerEnabled(true);
+                    }}
+                    className="rounded-full bg-[var(--text-main)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                  >
+                    {scannerEnabled ? "Apagar camara" : "Activar camara"}
+                  </button>
+                </div>
               </section>
 
               <section className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
@@ -1568,6 +1611,54 @@ function EventInfoSheetLoaded({
           onCalendar={handleDownloadCalendar}
           onShare={handleShareTicket}
         />
+      ) : null}
+
+      {insideSheetOpen ? (
+        <div className="fixed inset-0 z-[60] bg-black/30" onClick={() => setInsideSheetOpen(false)}>
+          <div
+            className="absolute bottom-0 left-1/2 flex h-[72dvh] w-full max-w-[480px] -translate-x-1/2 flex-col rounded-t-[2rem] bg-white px-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-4"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <div className="text-lg font-black tracking-[-0.03em]">Gente dentro</div>
+                <div className="text-sm text-[var(--text-soft)]">Listado oficial segun check-in del evento.</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setInsideSheetOpen(false)}
+                className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--bg-soft)]"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 space-y-2 overflow-y-auto">
+              {insideParticipants.length ? (
+                insideParticipants.map((participant) => (
+                  <div key={participant.profile.id} className="flex items-center gap-3 rounded-[1.4rem] border border-[var(--line-soft)] px-3 py-3">
+                    <Avatar profile={participant.profile} />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-semibold">@{participant.profile.handle}</div>
+                      <div className="truncate text-xs text-[var(--text-soft)]">
+                        {participant.membership.checkedInAt
+                          ? `Check-in ${formatMobileDateTime(participant.membership.checkedInAt)}`
+                          : "Dentro"}
+                      </div>
+                    </div>
+                    <span className="rounded-full bg-[rgba(42,168,118,0.12)] px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#2a8a66]">
+                      Dentro
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-[1.4rem] border border-dashed border-[var(--line-warm)] px-4 py-6 text-center text-sm text-[var(--text-soft)]">
+                  Aun no hay check-ins oficiales visibles en este evento.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       ) : null}
     </>
   );
