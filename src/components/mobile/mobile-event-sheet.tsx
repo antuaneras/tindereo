@@ -324,6 +324,44 @@ function EventTicketPreview({
   );
 }
 
+function EventInfoSheetFallback({
+  loading,
+  onClose
+}: {
+  loading: boolean;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 bg-black/30" onClick={onClose}>
+      <div
+        className="absolute bottom-0 left-1/2 flex h-[88dvh] w-full max-w-[480px] -translate-x-1/2 flex-col rounded-t-[2rem] bg-[var(--bg-main)]"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-4 pb-4 pt-4">
+          <div>
+            <div className="h-6 w-36 rounded-full bg-white/80 shadow-sm" />
+            <div className="mt-2 h-4 w-24 rounded-full bg-white/70 shadow-sm" />
+          </div>
+          <button type="button" onClick={onClose} className="flex h-11 w-11 items-center justify-center rounded-full bg-white">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 space-y-4 px-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-3">
+          <div className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
+            <div className="text-sm text-[var(--text-soft)]">
+              {loading ? "Cargando informacion del evento..." : "No pude cargar la informacion del evento."}
+            </div>
+          </div>
+          <div className="h-24 rounded-[1.8rem] bg-white/80 shadow-sm" />
+          <div className="h-28 rounded-[1.8rem] bg-white/80 shadow-sm" />
+          <div className="h-40 rounded-[1.8rem] bg-white/80 shadow-sm" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function EventInfoSheet({
   conversation,
   eventDetail,
@@ -333,6 +371,34 @@ export function EventInfoSheet({
 }: {
   conversation: MobileConversationDetail;
   eventDetail: MobileEventDetail | null;
+  loading?: boolean;
+  onClose: () => void;
+  onRefresh: () => Promise<void>;
+}) {
+  if (!eventDetail) {
+    return <EventInfoSheetFallback loading={loading} onClose={onClose} />;
+  }
+
+  return (
+    <EventInfoSheetLoaded
+      conversation={conversation}
+      eventDetail={eventDetail}
+      loading={loading}
+      onClose={onClose}
+      onRefresh={onRefresh}
+    />
+  );
+}
+
+function EventInfoSheetLoaded({
+  conversation,
+  eventDetail,
+  loading = false,
+  onClose,
+  onRefresh
+}: {
+  conversation: MobileConversationDetail;
+  eventDetail: MobileEventDetail;
   loading?: boolean;
   onClose: () => void;
   onRefresh: () => Promise<void>;
@@ -376,38 +442,6 @@ export function EventInfoSheet({
   );
   const viewerProfile =
     conversation.participants.find((participant) => participant.id === conversation.viewerId) ?? eventDetail?.host ?? null;
-
-  if (!eventDetail) {
-    return (
-      <div className="fixed inset-0 z-50 bg-black/30" onClick={onClose}>
-        <div
-          className="absolute bottom-0 left-1/2 flex h-[88dvh] w-full max-w-[480px] -translate-x-1/2 flex-col rounded-t-[2rem] bg-[var(--bg-main)]"
-          onClick={(event) => event.stopPropagation()}
-        >
-          <div className="flex items-center justify-between px-4 pb-4 pt-4">
-            <div>
-              <div className="h-6 w-36 rounded-full bg-white/80 shadow-sm" />
-              <div className="mt-2 h-4 w-24 rounded-full bg-white/70 shadow-sm" />
-            </div>
-            <button type="button" onClick={onClose} className="flex h-11 w-11 items-center justify-center rounded-full bg-white">
-              <X className="h-5 w-5" />
-            </button>
-          </div>
-
-          <div className="flex-1 space-y-4 px-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-3">
-            <div className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
-              <div className="text-sm text-[var(--text-soft)]">
-                {loading ? "Cargando informacion del evento..." : "No pude cargar la informacion del evento."}
-              </div>
-            </div>
-            <div className="h-24 rounded-[1.8rem] bg-white/80 shadow-sm" />
-            <div className="h-28 rounded-[1.8rem] bg-white/80 shadow-sm" />
-            <div className="h-40 rounded-[1.8rem] bg-white/80 shadow-sm" />
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   const event = eventDetail.event;
   const canManage = eventDetail.canManage;
