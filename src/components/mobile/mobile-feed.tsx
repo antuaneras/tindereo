@@ -43,6 +43,7 @@ export function StoryStrip({
   const [activeClusterIndex, setActiveClusterIndex] = useState<number | null>(null);
   const [storyIndex, setStoryIndex] = useState(0);
   const [sessionSeenIds, setSessionSeenIds] = useState<string[]>([]);
+  const preloadedUrlsRef = useRef<Set<string>>(new Set());
 
   const normalizedClusters = useMemo(
     () =>
@@ -82,6 +83,51 @@ export function StoryStrip({
   const getPendingCount = (cluster: MobileStoryCluster) => cluster.stories.filter((story) => !isStorySeen(story)).length;
   const ownPendingCount = ownCluster ? getPendingCount(ownCluster) : 0;
 
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const preloadTargets = overlayClusters
+      .map((cluster) => {
+        if (!cluster.stories.length) {
+          return null;
+        }
+
+        const startIndex =
+          cluster.ownerType === "user" && cluster.ownerId === viewer.id
+            ? 0
+            : (() => {
+                const firstPendingIndex = cluster.stories.findIndex((story) => !isStorySeen(story));
+                return firstPendingIndex >= 0 ? firstPendingIndex : Math.max(0, cluster.stories.length - 1);
+              })();
+
+        return cluster.stories[startIndex] ?? cluster.stories[0] ?? null;
+      })
+      .filter((story): story is MobileStoryCluster["stories"][number] => Boolean(story))
+      .slice(0, 5);
+
+    for (const story of preloadTargets) {
+      const previewUrl = story.media?.previewUrl;
+      if (!previewUrl || preloadedUrlsRef.current.has(previewUrl)) {
+        continue;
+      }
+
+      preloadedUrlsRef.current.add(previewUrl);
+      if (story.media?.mimeType?.startsWith("video/")) {
+        const video = document.createElement("video");
+        video.preload = "metadata";
+        video.src = previewUrl;
+        video.load();
+        continue;
+      }
+
+      const image = new window.Image();
+      image.decoding = "async";
+      image.src = previewUrl;
+    }
+  }, [overlayClusters, sessionSeenIds, viewer.id]);
+
   const closeViewer = () => {
     setActiveClusterIndex(null);
     setStoryIndex(0);
@@ -96,7 +142,7 @@ export function StoryStrip({
             onClick={() => {
               if (ownCluster) {
                 setActiveClusterIndex(0);
-                setStoryIndex(getStartIndexForCluster(ownCluster));
+                setStoryIndex(0);
                 return;
               }
 

@@ -5,12 +5,12 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { CalendarDays, Camera, Heart, RefreshCw } from "lucide-react";
 import { fetchMobileBootstrap, respondToEventInvite, subscribeToMobileStream } from "@/lib/mobile-api";
+import { buildMobileCacheKey, readMobilePersistentCache, writeMobilePersistentCache } from "@/lib/mobile-client-cache";
 import { hydrateSavedPostsFromCandidates } from "@/lib/mobile-saved-posts";
 import { formatMobileDateTime } from "@/lib/mobile-shared";
 import { PostCard, StoryStrip } from "@/components/mobile/mobile-feed";
 import type { MobileBootstrapPayload, MobileEventInvite } from "@/lib/mobile-types";
 
-const HOME_CACHE_KEY = "mobile-cache:home";
 const HOME_PULL_REFRESH_TRIGGER = 88;
 
 function getScrollTop() {
@@ -26,30 +26,31 @@ function clampPullDistance(distance: number) {
   return Math.max(0, Math.min(112, distance * 0.42));
 }
 
-function readHomeCache() {
-  if (typeof window === "undefined") {
-    return null;
-  }
-
-  try {
-    const raw = window.sessionStorage.getItem(HOME_CACHE_KEY);
-    return raw ? (JSON.parse(raw) as MobileBootstrapPayload) : null;
-  } catch {
-    return null;
-  }
+function getHomeCacheKey(viewerId: string) {
+  return buildMobileCacheKey(viewerId, "home");
 }
 
-function writeHomeCache(data: MobileBootstrapPayload) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  window.sessionStorage.setItem(HOME_CACHE_KEY, JSON.stringify(data));
+function readHomeCache(viewerId: string) {
+  return readMobilePersistentCache<MobileBootstrapPayload>(getHomeCacheKey(viewerId));
 }
 
-export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstrapPayload | null }) {
+function writeHomeCache(viewerId: string, data: MobileBootstrapPayload) {
+  writeMobilePersistentCache(getHomeCacheKey(viewerId), data);
+}
+
+function resolveInitialHomeData(viewerId: string, initialData?: MobileBootstrapPayload | null) {
+  return initialData ?? readHomeCache(viewerId);
+}
+
+export function MobileHomeScreen({
+  initialData,
+  viewerId
+}: {
+  initialData?: MobileBootstrapPayload | null;
+  viewerId: string;
+}) {
   const router = useRouter();
-  const [data, setData] = useState<MobileBootstrapPayload | null>(() => initialData ?? null);
+  const [data, setData] = useState<MobileBootstrapPayload | null>(() => resolveInitialHomeData(viewerId, initialData));
   const [inviteActionId, setInviteActionId] = useState<string | null>(null);
   const [joinedEventIndex, setJoinedEventIndex] = useState(0);
   const [dragOffsetX, setDragOffsetX] = useState(0);
@@ -59,7 +60,7 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
   const createNavigationTimeoutRef = useRef<number | null>(null);
   const gestureSessionRef = useRef<{ x: number; y: number; ignore: boolean; mode: "pending" | "horizontal" | "vertical" } | null>(null);
   const refreshRequestRef = useRef<Promise<MobileBootstrapPayload> | null>(null);
-  const dataRef = useRef<MobileBootstrapPayload | null>(initialData ?? null);
+  const dataRef = useRef<MobileBootstrapPayload | null>(data);
 
   useEffect(() => {
     return () => {
@@ -71,21 +72,22 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
 
   useEffect(() => {
     if (initialData) {
-      writeHomeCache(initialData);
+      setData(initialData);
+      writeHomeCache(viewerId, initialData);
       return;
     }
 
-    const cached = readHomeCache();
+    const cached = readHomeCache(viewerId);
     if (cached) {
       setData(cached);
     }
-  }, [initialData]);
+  }, [initialData, viewerId]);
 
   useEffect(() => {
     if (data) {
-      writeHomeCache(data);
+      writeHomeCache(viewerId, data);
     }
-  }, [data]);
+  }, [data, viewerId]);
 
   useEffect(() => {
     if (!data?.feedPosts.length) {
@@ -105,12 +107,23 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
   }, [data?.joinedEvents.length]);
 
   useEffect(() => {
-    if (data) {
+    const runRefresh = () => {
+      void refreshHome().catch(() => undefined);
+    };
+
+    if (!dataRef.current) {
+      runRefresh();
       return;
     }
 
-    void refreshHome().catch(() => undefined);
-  }, [data]);
+    if (typeof window.requestIdleCallback === "function") {
+      const idleId = window.requestIdleCallback(runRefresh, { timeout: 1400 });
+      return () => window.cancelIdleCallback(idleId);
+    }
+
+    const timeoutId = window.setTimeout(runRefresh, 220);
+    return () => window.clearTimeout(timeoutId);
+  }, []);
 
   useEffect(() => {
     const unsubscribe = subscribeToMobileStream((event) => {

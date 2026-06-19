@@ -8,7 +8,7 @@ export default async function ChatPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  await requireMobileViewerOrRedirect();
+  const viewerId = await requireMobileViewerOrRedirect();
   const { id } = await params;
-  return <MobileConversationScreen conversationId={id} />;
+  return <MobileConversationScreen conversationId={id} viewerId={viewerId} />;
 }

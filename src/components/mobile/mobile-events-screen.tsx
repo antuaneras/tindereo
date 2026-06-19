@@ -3,55 +3,52 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Plus } from "lucide-react";
+import { buildMobileCacheKey, readMobilePersistentCache, writeMobilePersistentCache } from "@/lib/mobile-client-cache";
 import { fetchEvents } from "@/lib/mobile-api";
 import { formatMobileDateTime } from "@/lib/mobile-shared";
 import type { MobileEvent } from "@/lib/mobile-types";
 
-const EVENTS_CACHE_KEY = "mobile-cache:events";
-
-function readEventsCache() {
-  if (typeof window === "undefined") {
-    return null;
-  }
-
-  try {
-    const raw = window.sessionStorage.getItem(EVENTS_CACHE_KEY);
-    return raw ? (JSON.parse(raw) as MobileEvent[]) : null;
-  } catch {
-    return null;
-  }
+function getEventsCacheKey(viewerId: string) {
+  return buildMobileCacheKey(viewerId, "events");
 }
 
-function writeEventsCache(events: MobileEvent[]) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  window.sessionStorage.setItem(EVENTS_CACHE_KEY, JSON.stringify(events));
+function readEventsCache(viewerId: string) {
+  return readMobilePersistentCache<MobileEvent[]>(getEventsCacheKey(viewerId));
 }
 
-export function MobileEventsScreen({ initialEvents }: { initialEvents?: MobileEvent[] | null }) {
-  const [events, setEvents] = useState<MobileEvent[]>(() => initialEvents ?? []);
+function writeEventsCache(viewerId: string, events: MobileEvent[]) {
+  writeMobilePersistentCache(getEventsCacheKey(viewerId), events);
+}
+
+export function MobileEventsScreen({
+  initialEvents,
+  viewerId
+}: {
+  initialEvents?: MobileEvent[] | null;
+  viewerId: string;
+}) {
+  const [events, setEvents] = useState<MobileEvent[]>(() => initialEvents ?? readEventsCache(viewerId) ?? []);
 
   useEffect(() => {
-    if (initialEvents?.length) {
-      writeEventsCache(initialEvents);
+    if (initialEvents) {
+      setEvents(initialEvents);
+      writeEventsCache(viewerId, initialEvents);
       return;
     }
 
-    const cached = readEventsCache();
-    if (cached?.length) {
+    const cached = readEventsCache(viewerId);
+    if (cached) {
       setEvents(cached);
     }
-  }, [initialEvents]);
+  }, [initialEvents, viewerId]);
 
   useEffect(() => {
     void fetchEvents().then(setEvents).catch(() => undefined);
   }, []);
 
   useEffect(() => {
-    writeEventsCache(events);
-  }, [events]);
+    writeEventsCache(viewerId, events);
+  }, [events, viewerId]);
 
   return (
     <div className="space-y-5">

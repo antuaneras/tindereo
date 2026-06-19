@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Archive, ArchiveRestore, MoreHorizontal, Pin, PinOff, Plus, Search, Trash2, Users } from "lucide-react";
+import { buildMobileCacheKey, readMobilePersistentCache, writeMobilePersistentCache } from "@/lib/mobile-client-cache";
 import {
   createConversation,
   deleteConversationFromList,
@@ -14,29 +15,18 @@ import {
 import { formatRelativeMobileTime } from "@/lib/mobile-shared";
 import type { MobileConversationSummary, MobileProfile } from "@/lib/mobile-types";
 
-const CHATS_CACHE_KEY = "mobile-cache:chats";
-
 type MobileChatTab = "events" | "people";
 
-function readChatsCache() {
-  if (typeof window === "undefined") {
-    return null;
-  }
-
-  try {
-    const raw = window.sessionStorage.getItem(CHATS_CACHE_KEY);
-    return raw ? (JSON.parse(raw) as MobileConversationSummary[]) : null;
-  } catch {
-    return null;
-  }
+function getChatsCacheKey(viewerId: string) {
+  return buildMobileCacheKey(viewerId, "chats");
 }
 
-function writeChatsCache(chats: MobileConversationSummary[]) {
-  if (typeof window === "undefined") {
-    return;
-  }
+function readChatsCache(viewerId: string) {
+  return readMobilePersistentCache<MobileConversationSummary[]>(getChatsCacheKey(viewerId));
+}
 
-  window.sessionStorage.setItem(CHATS_CACHE_KEY, JSON.stringify(chats));
+function writeChatsCache(viewerId: string, chats: MobileConversationSummary[]) {
+  writeMobilePersistentCache(getChatsCacheKey(viewerId), chats);
 }
 
 function sortChats(chats: MobileConversationSummary[]) {
@@ -49,9 +39,15 @@ function sortChats(chats: MobileConversationSummary[]) {
   });
 }
 
-export function MobileChatsScreen({ initialChats }: { initialChats?: MobileConversationSummary[] | null }) {
+export function MobileChatsScreen({
+  initialChats,
+  viewerId
+}: {
+  initialChats?: MobileConversationSummary[] | null;
+  viewerId: string;
+}) {
   const router = useRouter();
-  const [chats, setChats] = useState<MobileConversationSummary[]>(() => initialChats ?? []);
+  const [chats, setChats] = useState<MobileConversationSummary[]>(() => initialChats ?? readChatsCache(viewerId) ?? []);
   const [activeTab, setActiveTab] = useState<MobileChatTab>("events");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -65,16 +61,17 @@ export function MobileChatsScreen({ initialChats }: { initialChats?: MobileConve
   const [pickerNotice, setPickerNotice] = useState<string | null>(null);
 
   useEffect(() => {
-    if (initialChats?.length) {
-      writeChatsCache(initialChats);
+    if (initialChats) {
+      setChats(initialChats);
+      writeChatsCache(viewerId, initialChats);
       return;
     }
 
-    const cached = readChatsCache();
-    if (cached?.length) {
+    const cached = readChatsCache(viewerId);
+    if (cached) {
       setChats(cached);
     }
-  }, [initialChats]);
+  }, [initialChats, viewerId]);
 
   useEffect(() => {
     void fetchConversations().then(setChats).catch(() => undefined);
@@ -90,8 +87,8 @@ export function MobileChatsScreen({ initialChats }: { initialChats?: MobileConve
   }, []);
 
   useEffect(() => {
-    writeChatsCache(chats);
-  }, [chats]);
+    writeChatsCache(viewerId, chats);
+  }, [chats, viewerId]);
 
   useEffect(() => {
     if (!pickerOpen || !query.trim()) {

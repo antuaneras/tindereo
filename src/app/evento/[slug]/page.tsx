@@ -18,5 +18,5 @@ export default async function EventPage({
     return <MobileEventAccessGate initialDetail={detail} />;
   }
 
-  return <MobileConversationScreen conversationId={detail.myConversationId} initialEvent={detail} />;
+  return <MobileConversationScreen conversationId={detail.myConversationId} initialEvent={detail} viewerId={viewerId} />;
 }

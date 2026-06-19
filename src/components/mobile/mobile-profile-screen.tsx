@@ -28,6 +28,7 @@ import {
   unblockProfile,
   updateViewerProfile
 } from "@/lib/mobile-api";
+import { buildMobileCacheKey, readMobilePersistentCache, writeMobilePersistentCache } from "@/lib/mobile-client-cache";
 import {
   SAVED_POSTS_UPDATED_EVENT,
   hydrateSavedPostsFromCandidates,
@@ -46,33 +47,26 @@ type MobileProfileScreenProps = {
   initialProfile: MobileProfileDetail;
 };
 
-const PROFILE_CACHE_PREFIX = "mobile-cache:profile:";
 const COMMENT_REPLY_PREFIX = "[reply:";
-const HOME_CACHE_KEY = "mobile-cache:home";
 
 function cn(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
 }
 
-function readProfileCache(handle: string) {
-  if (typeof window === "undefined") {
-    return null;
-  }
-
-  try {
-    const raw = window.sessionStorage.getItem(`${PROFILE_CACHE_PREFIX}${handle.toLowerCase()}`);
-    return raw ? (JSON.parse(raw) as MobileProfileDetail) : null;
-  } catch {
-    return null;
-  }
+function getProfileCacheKey(viewerId: string, handle: string) {
+  return buildMobileCacheKey(viewerId, "profile", handle.toLowerCase());
 }
 
-function writeProfileCache(profile: MobileProfileDetail) {
-  if (typeof window === "undefined") {
-    return;
-  }
+function readProfileCache(viewerId: string, handle: string) {
+  return readMobilePersistentCache<MobileProfileDetail>(getProfileCacheKey(viewerId, handle));
+}
 
-  window.sessionStorage.setItem(`${PROFILE_CACHE_PREFIX}${profile.profile.handle.toLowerCase()}`, JSON.stringify(profile));
+function writeProfileCache(viewerId: string, profile: MobileProfileDetail) {
+  writeMobilePersistentCache(getProfileCacheKey(viewerId, profile.profile.handle), profile);
+}
+
+function getHomeCacheKey(viewerId: string) {
+  return buildMobileCacheKey(viewerId, "home");
 }
 
 type ParsedPostCommentReply = {
@@ -249,8 +243,12 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
   );
   const initialStoryIndex = useMemo(() => {
     const firstPendingIndex = activeStories.findIndex((story) => !story.hasSeen && !seenStoryIds.includes(story.id));
-    return firstPendingIndex >= 0 ? firstPendingIndex : Math.max(0, activeStories.length - 1);
-  }, [activeStories, seenStoryIds]);
+    if (firstPendingIndex >= 0) {
+      return firstPendingIndex;
+    }
+
+    return profile.isViewer ? 0 : Math.max(0, activeStories.length - 1);
+  }, [activeStories, profile.isViewer, seenStoryIds]);
   const visiblePosts = useMemo(
     () => (contentTab === "saved" ? savedPosts : profile.posts),
     [contentTab, profile.posts, savedPosts]
@@ -310,14 +308,14 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
   }, [profile.sharedFollowerCount, profile.sharedFollowers]);
 
   useEffect(() => {
-    const cached = readProfileCache(initialProfile.profile.handle);
+    const cached = readProfileCache(initialProfile.viewer.id, initialProfile.profile.handle);
     if (cached) {
       setProfile(cached);
     }
-  }, [initialProfile.profile.handle]);
+  }, [initialProfile.profile.handle, initialProfile.viewer.id]);
 
   useEffect(() => {
-    writeProfileCache(profile);
+    writeProfileCache(profile.viewer.id, profile);
   }, [profile]);
 
   useEffect(() => {
@@ -345,8 +343,7 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
       typeof window !== "undefined"
         ? (() => {
             try {
-              const raw = window.sessionStorage.getItem(HOME_CACHE_KEY);
-              const parsed = raw ? (JSON.parse(raw) as { feedPosts?: MobilePost[] }) : null;
+              const parsed = readMobilePersistentCache<{ feedPosts?: MobilePost[] }>(getHomeCacheKey(profile.viewer.id));
               return Array.isArray(parsed?.feedPosts) ? parsed.feedPosts : [];
             } catch {
               return [] as MobilePost[];
@@ -675,7 +672,7 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                 disabled={!hasStories}
                 onClick={() => {
                   if (hasStories) {
-                    setStoryStartIndex(null);
+                    setStoryStartIndex(profile.isViewer ? 0 : null);
                     setActiveStoryOpen(true);
                   }
                 }}

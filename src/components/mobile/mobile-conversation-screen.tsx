@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ImagePlus, Info, MessageSquareReply, Send, Shield, Users, X } from "lucide-react";
+import { buildMobileCacheKey, readMobilePersistentCache, writeMobilePersistentCache } from "@/lib/mobile-client-cache";
 import {
   fetchConversation,
   fetchEventDetail,
@@ -20,32 +21,24 @@ function cn(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
 }
 
-const CONVERSATION_CACHE_PREFIX = "mobile-cache:conversation:";
+function getConversationCacheKey(viewerId: string, conversationId: string) {
+  return buildMobileCacheKey(viewerId, "conversation", conversationId);
+}
 
-function readConversationCache(conversationId: string) {
-  if (typeof window === "undefined") {
-    return null;
-  }
-
-  try {
-    const raw = window.sessionStorage.getItem(`${CONVERSATION_CACHE_PREFIX}${conversationId}`);
-    return raw ? (JSON.parse(raw) as { conversation: MobileConversationDetail; eventDetail: MobileEventDetail | null }) : null;
-  } catch {
-    return null;
-  }
+function readConversationCache(viewerId: string, conversationId: string) {
+  return readMobilePersistentCache<{ conversation: MobileConversationDetail; eventDetail: MobileEventDetail | null }>(
+    getConversationCacheKey(viewerId, conversationId)
+  );
 }
 
 function writeConversationCache(
+  viewerId: string,
   conversation: MobileConversationDetail,
   eventDetail: MobileEventDetail | null
 ) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  window.sessionStorage.setItem(
-    `${CONVERSATION_CACHE_PREFIX}${conversation.summary.id}`,
-    JSON.stringify({ conversation, eventDetail })
+  writeMobilePersistentCache(
+    getConversationCacheKey(viewerId, conversation.summary.id),
+    { conversation, eventDetail }
   );
 }
 
@@ -125,16 +118,32 @@ type ConversationScreenProps = {
   conversationId?: string | null;
   initialConversation?: MobileConversationDetail | null;
   initialEvent?: MobileEventDetail | null;
+  viewerId: string;
 };
+
+function resolveInitialConversationCache(viewerId: string, conversationId?: string | null) {
+  if (!conversationId) {
+    return null;
+  }
+
+  return readConversationCache(viewerId, conversationId);
+}
 
 export function MobileConversationScreen({
   conversationId = null,
   initialConversation = null,
-  initialEvent = null
+  initialEvent = null,
+  viewerId
 }: ConversationScreenProps) {
   const resolvedConversationId = initialConversation?.summary.id ?? conversationId;
-  const [conversation, setConversation] = useState<MobileConversationDetail | null>(initialConversation);
-  const [eventDetail, setEventDetail] = useState(initialEvent);
+  const [conversation, setConversation] = useState<MobileConversationDetail | null>(() => {
+    const cached = resolveInitialConversationCache(viewerId, resolvedConversationId);
+    return initialConversation ?? cached?.conversation ?? null;
+  });
+  const [eventDetail, setEventDetail] = useState<MobileEventDetail | null>(() => {
+    const cached = resolveInitialConversationCache(viewerId, resolvedConversationId);
+    return initialEvent ?? cached?.eventDetail ?? null;
+  });
   const [loadingEventDetail, setLoadingEventDetail] = useState(false);
   const [draft, setDraft] = useState("");
   const [replyRoot, setReplyRoot] = useState<MobileMessage | null>(null);
@@ -143,6 +152,7 @@ export function MobileConversationScreen({
   const [threadRoot, setThreadRoot] = useState<MobileMessage | null>(null);
   const [sending, setSending] = useState(false);
   const [updatingConversationAvatar, setUpdatingConversationAvatar] = useState(false);
+  const initialSyncDoneRef = useRef(false);
   const participantsById = useMemo(
     () => new Map((conversation?.participants ?? []).map((participant) => [participant.id, participant])),
     [conversation?.participants]
@@ -218,24 +228,26 @@ export function MobileConversationScreen({
   }
 
   useEffect(() => {
-    if (!resolvedConversationId) {
+    if (!initialConversation) {
       return;
     }
 
-    const cached = readConversationCache(resolvedConversationId);
-    if (cached?.conversation) {
-      setConversation(cached.conversation);
-      if (cached.eventDetail) {
-        setEventDetail(cached.eventDetail);
-      }
+    setConversation(initialConversation);
+  }, [initialConversation]);
+
+  useEffect(() => {
+    if (!initialEvent) {
+      return;
     }
-  }, [resolvedConversationId]);
+
+    setEventDetail(initialEvent);
+  }, [initialEvent]);
 
   useEffect(() => {
     if (conversation) {
-      writeConversationCache(conversation, eventDetail);
+      writeConversationCache(viewerId, conversation, eventDetail);
     }
-  }, [conversation, eventDetail]);
+  }, [conversation, eventDetail, viewerId]);
 
   useEffect(() => {
     if (!conversation) {
@@ -246,11 +258,26 @@ export function MobileConversationScreen({
   }, [conversation]);
 
   useEffect(() => {
-    if (conversation || !resolvedConversationId) {
+    initialSyncDoneRef.current = false;
+  }, [resolvedConversationId]);
+
+  useEffect(() => {
+    if (!resolvedConversationId || initialSyncDoneRef.current) {
       return;
     }
 
-    void refreshConversation().catch(() => undefined);
+    initialSyncDoneRef.current = true;
+
+    if (!conversation) {
+      void refreshConversation().catch(() => undefined);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void refreshConversation().catch(() => undefined);
+    }, 180);
+
+    return () => window.clearTimeout(timeoutId);
   }, [conversation, resolvedConversationId]);
 
   useEffect(() => {

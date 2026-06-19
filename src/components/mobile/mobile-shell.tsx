@@ -4,21 +4,35 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { Camera, Compass, MessageCircleMore, Search } from "lucide-react";
+import { buildMobileCacheKey, readMobilePersistentCache, writeMobilePersistentCache } from "@/lib/mobile-client-cache";
 import { enableWebPushNotifications } from "@/lib/tindereo-push-client";
 import { fetchViewerSummary, subscribeToMobileStream } from "@/lib/mobile-api";
 import type { MobileViewerSummary } from "@/lib/mobile-types";
 
 type MobileShellProps = {
   children: React.ReactNode;
-  initialSummary: MobileViewerSummary;
+  initialSummary?: MobileViewerSummary | null;
+  viewerId: string;
 };
 
 function cn(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
 }
 
-function renderProfileAvatar(summary: MobileViewerSummary) {
-  if (summary.profile.avatarUrl) {
+function getSummaryCacheKey(viewerId: string) {
+  return buildMobileCacheKey(viewerId, "viewer-summary");
+}
+
+function readSummaryCache(viewerId: string) {
+  return readMobilePersistentCache<MobileViewerSummary>(getSummaryCacheKey(viewerId));
+}
+
+function writeSummaryCache(viewerId: string, summary: MobileViewerSummary) {
+  writeMobilePersistentCache(getSummaryCacheKey(viewerId), summary);
+}
+
+function renderProfileAvatar(summary: MobileViewerSummary | null) {
+  if (summary?.profile.avatarUrl) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
       <img
@@ -29,22 +43,40 @@ function renderProfileAvatar(summary: MobileViewerSummary) {
     );
   }
 
+  const fallbackLabel = summary?.profile.handle.slice(0, 2).toUpperCase() ?? "TU";
   return (
     <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--bg-soft)] text-xs font-semibold text-[var(--text-main)] ring-2 ring-white/90">
-      {summary.profile.handle.slice(0, 2).toUpperCase()}
+      {fallbackLabel}
     </span>
   );
 }
 
-export function MobileShell({ children, initialSummary }: MobileShellProps) {
+export function MobileShell({ children, initialSummary = null, viewerId }: MobileShellProps) {
   const currentPath = usePathname();
   const router = useRouter();
-  const [summary, setSummary] = useState(initialSummary);
+  const [summary, setSummary] = useState<MobileViewerSummary | null>(() => initialSummary ?? readSummaryCache(viewerId));
   const isCreateRoute = currentPath.startsWith("/crear");
   const hideNavigation = isCreateRoute;
+  const hasSummary = Boolean(summary);
+
+  useEffect(() => {
+    if (!initialSummary) {
+      return;
+    }
+
+    setSummary(initialSummary);
+    writeSummaryCache(viewerId, initialSummary);
+  }, [initialSummary, viewerId]);
+
+  useEffect(() => {
+    if (summary) {
+      writeSummaryCache(viewerId, summary);
+    }
+  }, [summary, viewerId]);
 
   useEffect(() => {
     let cancelled = false;
+    let clearScheduledRefresh: (() => void) | null = null;
 
     const refresh = async () => {
       try {
@@ -57,6 +89,20 @@ export function MobileShell({ children, initialSummary }: MobileShellProps) {
       }
     };
 
+    if (!hasSummary) {
+      void refresh();
+    } else if (typeof window.requestIdleCallback === "function") {
+      const idleId = window.requestIdleCallback(() => {
+        void refresh();
+      }, { timeout: 1200 });
+      clearScheduledRefresh = () => window.cancelIdleCallback(idleId);
+    } else {
+      const timeoutId = window.setTimeout(() => {
+        void refresh();
+      }, 180);
+      clearScheduledRefresh = () => window.clearTimeout(timeoutId);
+    }
+
     const unsubscribe = subscribeToMobileStream((event) => {
       if (event.type === "notifications" || event.type === "conversation" || event.type === "stories" || event.type === "profile" || event.type === "bootstrap") {
         void refresh();
@@ -65,9 +111,10 @@ export function MobileShell({ children, initialSummary }: MobileShellProps) {
 
     return () => {
       cancelled = true;
+      clearScheduledRefresh?.();
       unsubscribe();
     };
-  }, []);
+  }, [hasSummary, viewerId]);
 
   useEffect(() => {
     const alreadyPrompted = window.localStorage.getItem("mobile-push-prompted");
@@ -104,7 +151,7 @@ export function MobileShell({ children, initialSummary }: MobileShellProps) {
         label: "Chats",
         icon: <MessageCircleMore className="h-5 w-5" />,
         active: currentPath.startsWith("/chats"),
-        badge: summary.pendingChatCount
+        badge: summary?.pendingChatCount ?? 0
       },
       {
         href: "/perfil",
