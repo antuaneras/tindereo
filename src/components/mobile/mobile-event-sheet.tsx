@@ -128,9 +128,25 @@ function normalizeScannedToken(rawValue: string) {
     return "";
   }
 
+  const extractTicketValue = (value: string, baseUrl?: string) => {
+    try {
+      const parsedUrl = baseUrl ? new URL(value, baseUrl) : new URL(value);
+      return parsedUrl.searchParams.get("entry") ?? parsedUrl.searchParams.get("checkin");
+    } catch {
+      return null;
+    }
+  };
+
+  const extractedValue =
+    extractTicketValue(trimmed) ??
+    extractTicketValue(trimmed, typeof window !== "undefined" ? window.location.origin : "https://tindereo.local");
+
+  if (extractedValue) {
+    return extractedValue;
+  }
+
   try {
-    const parsedUrl = new URL(trimmed);
-    return parsedUrl.searchParams.get("entry") ?? parsedUrl.searchParams.get("checkin") ?? trimmed;
+    return new URL(trimmed).toString();
   } catch {
     return trimmed;
   }
@@ -1428,12 +1444,12 @@ export function EventInfoSheet({
               <section className="rounded-[1.8rem] border border-[var(--line-soft)] bg-white px-4 py-4">
                 <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-soft)]">Validacion manual</div>
                 <div className="mt-2 text-sm text-[var(--text-soft)]">
-                  Si el movil no detecta el QR en vivo, pega aqui el contenido del codigo o el enlace completo.
+                  Si el movil no detecta el QR en vivo, pega aqui el codigo TDR, el contenido del QR o el enlace completo.
                 </div>
                 <textarea
                   value={manualScanValue}
                   onChange={(eventInput) => setManualScanValue(eventInput.target.value)}
-                  placeholder="Pega aqui el QR o la URL de entrada"
+                  placeholder="Pega aqui el codigo TDR, el QR o la URL de entrada"
                   className="mt-4 min-h-28 w-full rounded-[1.4rem] border border-[var(--line-soft)] bg-[var(--bg-soft)] px-4 py-3 text-sm outline-none"
                 />
                 <div className="mt-3 flex gap-2">

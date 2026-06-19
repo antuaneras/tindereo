@@ -3528,6 +3528,98 @@ function parseEventAccessTicketToken(token: string) {
   };
 }
 
+function normalizeCheckInInput(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const extractCheckInParam = (rawValue: string, baseUrl?: string) => {
+    try {
+      const parsedUrl = baseUrl ? new URL(rawValue, baseUrl) : new URL(rawValue);
+      return parsedUrl.searchParams.get("entry") ?? parsedUrl.searchParams.get("checkin");
+    } catch {
+      return null;
+    }
+  };
+
+  return (
+    extractCheckInParam(trimmed) ??
+    extractCheckInParam(trimmed, "https://tindereo.local") ??
+    trimmed
+  );
+}
+
+function tryParseEventAccessTicketToken(token: string) {
+  try {
+    return parseEventAccessTicketToken(token);
+  } catch (error) {
+    if (error instanceof Error && error.message === "QR invalido.") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function findEventEntryTicketForCheckIn(token: string, expectedEventId?: string | null) {
+  const filtersByEvent = expectedEventId ? [{ column: "event_id", op: "eq" as const, value: expectedEventId }] : [];
+  const parsedToken = tryParseEventAccessTicketToken(token);
+
+  if (parsedToken) {
+    if (expectedEventId && parsedToken.eventId !== expectedEventId) {
+      throw new Error("Ese QR pertenece a otro evento.");
+    }
+
+    const parsedRows = await selectRows<EventEntryTicketRow>(TABLES.eventEntryTickets, {
+      filters: [
+        { column: "id", op: "eq", value: parsedToken.ticketId },
+        { column: "event_id", op: "eq", value: parsedToken.eventId },
+        { column: "user_id", op: "eq", value: parsedToken.viewerId }
+      ],
+      limit: 1
+    });
+
+    const parsedRow = parsedRows[0] ?? null;
+    if (parsedRow?.token === token) {
+      return {
+        ticketRow: parsedRow,
+        tokenExpiresAt: parsedToken.expiresAt
+      };
+    }
+  }
+
+  const exactTokenRows = await selectRows<EventEntryTicketRow>(TABLES.eventEntryTickets, {
+    filters: [...filtersByEvent, { column: "token", op: "eq", value: token }],
+    limit: 1
+  });
+  const exactTokenRow = exactTokenRows[0] ?? null;
+  if (exactTokenRow) {
+    return {
+      ticketRow: exactTokenRow,
+      tokenExpiresAt: tryParseEventAccessTicketToken(exactTokenRow.token)?.expiresAt ?? null
+    };
+  }
+
+  if (/^TDR-/i.test(token)) {
+    const ticketCodeRows = await selectRows<EventEntryTicketRow>(TABLES.eventEntryTickets, {
+      filters: [...filtersByEvent, { column: "ticket_code", op: "eq", value: token.toUpperCase() }],
+      limit: 1
+    });
+    const ticketCodeRow = ticketCodeRows[0] ?? null;
+    if (ticketCodeRow) {
+      return {
+        ticketRow: ticketCodeRow,
+        tokenExpiresAt: tryParseEventAccessTicketToken(ticketCodeRow.token)?.expiresAt ?? null
+      };
+    }
+  }
+
+  return {
+    ticketRow: null,
+    tokenExpiresAt: null
+  };
+}
+
 export async function getEventCheckInToken(viewerId: string, eventId: string) {
   const canManage = await viewerCanManageEvent(viewerId, eventId);
   if (!canManage) {
@@ -3678,46 +3770,32 @@ export async function getEventAccessTicket(viewerId: string, eventId: string): P
 }
 
 export async function checkInToEvent(viewerId: string, token: string, expectedEventId?: string | null) {
-  try {
-    const parsedTicket = parseEventAccessTicketToken(token);
-    if (expectedEventId && parsedTicket.eventId !== expectedEventId) {
-      throw new Error("Ese QR pertenece a otro evento.");
-    }
-    const canScan = await viewerCanScanEvent(viewerId, parsedTicket.eventId);
+  const normalizedToken = normalizeCheckInInput(token);
+  const { ticketRow, tokenExpiresAt } = await findEventEntryTicketForCheckIn(normalizedToken, expectedEventId);
+
+  if (ticketRow) {
+    const canScan = await viewerCanScanEvent(viewerId, ticketRow.event_id);
     if (!canScan) {
       throw new Error("No puedes escanear accesos en este evento.");
     }
 
-    const [ticketRows, membershipRows, banRows, attendeeProfiles] = await Promise.all([
-      selectRows<EventEntryTicketRow>(TABLES.eventEntryTickets, {
-        filters: [
-          { column: "id", op: "eq", value: parsedTicket.ticketId },
-          { column: "event_id", op: "eq", value: parsedTicket.eventId },
-          { column: "user_id", op: "eq", value: parsedTicket.viewerId }
-        ],
-        limit: 1
-      }),
+    const [membershipRows, banRows, attendeeProfiles] = await Promise.all([
       selectRows<EventMemberRow>(TABLES.eventMembers, {
         filters: [
-          { column: "event_id", op: "eq", value: parsedTicket.eventId },
-          { column: "user_id", op: "eq", value: parsedTicket.viewerId }
+          { column: "event_id", op: "eq", value: ticketRow.event_id },
+          { column: "user_id", op: "eq", value: ticketRow.user_id }
         ],
         limit: 1
       }),
       selectRows(TABLES.eventBans, {
         filters: [
-          { column: "event_id", op: "eq", value: parsedTicket.eventId },
-          { column: "user_id", op: "eq", value: parsedTicket.viewerId }
+          { column: "event_id", op: "eq", value: ticketRow.event_id },
+          { column: "user_id", op: "eq", value: ticketRow.user_id }
         ],
         limit: 1
       }),
-      loadProfiles([parsedTicket.viewerId])
+      loadProfiles([ticketRow.user_id])
     ]);
-
-    const ticketRow = ticketRows[0];
-    if (!ticketRow || ticketRow.token !== token) {
-      throw new Error("Esta entrada ya no es valida.");
-    }
 
     if (ticketRow.invalidated_at) {
       throw new Error(ticketRow.invalidated_reason || "Esta entrada ya no es valida.");
@@ -3727,7 +3805,7 @@ export async function checkInToEvent(viewerId: string, token: string, expectedEv
       throw new Error("Esta entrada ya fue escaneada.");
     }
 
-    if (new Date(ticketRow.valid_until).getTime() < Date.now() || parsedTicket.expiresAt < Date.now()) {
+    if (new Date(ticketRow.valid_until).getTime() < Date.now() || (tokenExpiresAt !== null && tokenExpiresAt < Date.now())) {
       throw new Error("Esta entrada ha caducado.");
     }
 
@@ -3743,8 +3821,8 @@ export async function checkInToEvent(viewerId: string, token: string, expectedEv
     const now = new Date().toISOString();
     await insertRow(TABLES.eventPresence, {
       id: buildMobileId("presence"),
-      event_id: parsedTicket.eventId,
-      user_id: parsedTicket.viewerId,
+      event_id: ticketRow.event_id,
+      user_id: ticketRow.user_id,
       arrival_status: "inside",
       checked_in_at: now,
       checked_in_by_user_id: viewerId,
@@ -3757,8 +3835,8 @@ export async function checkInToEvent(viewerId: string, token: string, expectedEv
     await patchRows(
       TABLES.eventPresence,
       [
-        { column: "event_id", op: "eq", value: parsedTicket.eventId },
-        { column: "user_id", op: "eq", value: parsedTicket.viewerId }
+        { column: "event_id", op: "eq", value: ticketRow.event_id },
+        { column: "user_id", op: "eq", value: ticketRow.user_id }
       ],
       {
         arrival_status: "inside",
@@ -3778,69 +3856,65 @@ export async function checkInToEvent(viewerId: string, token: string, expectedEv
     );
 
     const attendee = attendeeProfiles[0];
-    publishMobileRealtimeEvent({ type: "event", eventId: parsedTicket.eventId, viewerId });
-    publishMobileRealtimeEvent({ type: "event", eventId: parsedTicket.eventId, viewerId: parsedTicket.viewerId });
+    publishMobileRealtimeEvent({ type: "event", eventId: ticketRow.event_id, viewerId });
+    publishMobileRealtimeEvent({ type: "event", eventId: ticketRow.event_id, viewerId: ticketRow.user_id });
     return {
-      eventId: parsedTicket.eventId,
+      eventId: ticketRow.event_id,
       attendeeHandle: attendee?.handle ? `@${attendee.handle}` : "Entrada validada",
       ticketStatus: "used"
     };
-  } catch (error) {
-    if (!(error instanceof Error) || error.message !== "QR invalido.") {
-      throw error;
-    }
+  }
 
-    const parsed = parseCheckInToken(token);
-    if (expectedEventId && parsed.eventId !== expectedEventId) {
-      throw new Error("Ese QR pertenece a otro evento.");
-    }
-    const [membershipRows, banRows] = await Promise.all([
-      selectRows<EventMemberRow>(TABLES.eventMembers, {
-        filters: [
-          { column: "event_id", op: "eq", value: parsed.eventId },
-          { column: "user_id", op: "eq", value: viewerId }
-        ],
-        limit: 1
-      }),
-      selectRows(TABLES.eventBans, {
-        filters: [
-          { column: "event_id", op: "eq", value: parsed.eventId },
-          { column: "user_id", op: "eq", value: viewerId }
-        ],
-        limit: 1
-      })
-    ]);
-
-    if (banRows[0]) {
-      throw new Error("No puedes hacer check-in en este evento.");
-    }
-
-    const membership = membershipRows[0];
-    if (!membership || membership.status !== "approved") {
-      throw new Error("Solo puede hacer check-in gente aprobada.");
-    }
-
-    const now = new Date().toISOString();
-    await patchRows(
-      TABLES.eventPresence,
-      [
+  const parsed = parseCheckInToken(normalizedToken);
+  if (expectedEventId && parsed.eventId !== expectedEventId) {
+    throw new Error("Ese QR pertenece a otro evento.");
+  }
+  const [membershipRows, banRows] = await Promise.all([
+    selectRows<EventMemberRow>(TABLES.eventMembers, {
+      filters: [
         { column: "event_id", op: "eq", value: parsed.eventId },
         { column: "user_id", op: "eq", value: viewerId }
       ],
-      {
-        arrival_status: "inside",
-        checked_in_at: now,
-        checked_in_by_user_id: parsed.issuedByUserId,
-        updated_at: now
-      }
-    );
-    publishMobileRealtimeEvent({ type: "event", eventId: parsed.eventId, viewerId });
-    return {
-      eventId: parsed.eventId,
-      attendeeHandle: "Check-in completado",
-      ticketStatus: "legacy"
-    };
+      limit: 1
+    }),
+    selectRows(TABLES.eventBans, {
+      filters: [
+        { column: "event_id", op: "eq", value: parsed.eventId },
+        { column: "user_id", op: "eq", value: viewerId }
+      ],
+      limit: 1
+    })
+  ]);
+
+  if (banRows[0]) {
+    throw new Error("No puedes hacer check-in en este evento.");
   }
+
+  const membership = membershipRows[0];
+  if (!membership || membership.status !== "approved") {
+    throw new Error("Solo puede hacer check-in gente aprobada.");
+  }
+
+  const now = new Date().toISOString();
+  await patchRows(
+    TABLES.eventPresence,
+    [
+      { column: "event_id", op: "eq", value: parsed.eventId },
+      { column: "user_id", op: "eq", value: viewerId }
+    ],
+    {
+      arrival_status: "inside",
+      checked_in_at: now,
+      checked_in_by_user_id: parsed.issuedByUserId,
+      updated_at: now
+    }
+  );
+  publishMobileRealtimeEvent({ type: "event", eventId: parsed.eventId, viewerId });
+  return {
+    eventId: parsed.eventId,
+    attendeeHandle: "Check-in completado",
+    ticketStatus: "legacy"
+  };
 }
 
 async function canViewerWriteConversation(viewerId: string, conversation: ConversationRow) {
