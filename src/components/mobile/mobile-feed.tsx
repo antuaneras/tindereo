@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Bookmark, Heart, Plus, Share2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { likePost } from "@/lib/mobile-api";
+import { isPostSaved, syncSavedPostSnapshot, toggleSavedPost } from "@/lib/mobile-saved-posts";
 import { formatRelativeMobileTime } from "@/lib/mobile-shared";
 import { MobilePostCarousel } from "@/components/mobile/mobile-post-carousel";
 import { MobileStoryOverlay } from "@/components/mobile/mobile-story-overlay";
@@ -12,30 +13,6 @@ import type { MobilePost, MobileProfile, MobileStoryCluster } from "@/lib/mobile
 
 function cn(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
-}
-
-const SAVED_POSTS_KEY = "mobile-saved-posts:v1";
-
-function readSavedPostIds() {
-  if (typeof window === "undefined") {
-    return [] as string[];
-  }
-
-  try {
-    const raw = window.localStorage.getItem(SAVED_POSTS_KEY);
-    const parsed = raw ? (JSON.parse(raw) as string[]) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [] as string[];
-  }
-}
-
-function writeSavedPostIds(postIds: string[]) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  window.localStorage.setItem(SAVED_POSTS_KEY, JSON.stringify(postIds));
 }
 
 function Avatar({ src, label, size = "md" }: { src: string | null; label: string; size?: "md" | "lg" }) {
@@ -230,8 +207,20 @@ export function PostCard({ post }: { post: MobilePost }) {
   }, [post.hasLiked, post.id, post.likeCount]);
 
   useEffect(() => {
-    setSaved(readSavedPostIds().includes(post.id));
+    setSaved(isPostSaved(post.id));
   }, [post.id]);
+
+  useEffect(() => {
+    if (!saved) {
+      return;
+    }
+
+    syncSavedPostSnapshot({
+      ...post,
+      hasLiked: liked,
+      likeCount
+    });
+  }, [likeCount, liked, post, saved]);
 
   const syncLikeState = async (mode: "toggle" | "ensure-liked") => {
     const wasLiked = likedRef.current;
@@ -263,15 +252,12 @@ export function PostCard({ post }: { post: MobilePost }) {
   };
 
   const handleToggleSave = () => {
-    const current = new Set(readSavedPostIds());
-    if (current.has(post.id)) {
-      current.delete(post.id);
-      setSaved(false);
-    } else {
-      current.add(post.id);
-      setSaved(true);
-    }
-    writeSavedPostIds([...current]);
+    const nextSaved = toggleSavedPost({
+      ...post,
+      hasLiked: liked,
+      likeCount
+    });
+    setSaved(nextSaved);
   };
 
   const handleShare = async () => {

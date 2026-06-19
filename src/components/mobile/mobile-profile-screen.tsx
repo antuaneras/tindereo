@@ -5,8 +5,10 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
+  Bookmark,
   Camera,
   CornerUpLeft,
+  Grid2x2,
   Heart,
   LogOut,
   MessageCircle,
@@ -26,6 +28,12 @@ import {
   unblockProfile,
   updateViewerProfile
 } from "@/lib/mobile-api";
+import {
+  SAVED_POSTS_UPDATED_EVENT,
+  hydrateSavedPostsFromCandidates,
+  readSavedPosts,
+  syncSavedPostSnapshot
+} from "@/lib/mobile-saved-posts";
 import { MobileFollowButton } from "@/components/mobile/mobile-follow-button";
 import { MobilePostCarousel } from "@/components/mobile/mobile-post-carousel";
 import { MobileStoryOverlay } from "@/components/mobile/mobile-story-overlay";
@@ -40,6 +48,7 @@ type MobileProfileScreenProps = {
 
 const PROFILE_CACHE_PREFIX = "mobile-cache:profile:";
 const COMMENT_REPLY_PREFIX = "[reply:";
+const HOME_CACHE_KEY = "mobile-cache:home";
 
 function cn(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
@@ -181,6 +190,7 @@ function ProfileMiniAvatar({ profile }: { profile: { handle: string; avatarUrl: 
 export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileScreenProps) {
   const router = useRouter();
   const [profile, setProfile] = useState(initialProfile);
+  const [contentTab, setContentTab] = useState<"posts" | "saved">("posts");
   const [pendingAvatar, setPendingAvatar] = useState(false);
   const [updatingPrivacy, setUpdatingPrivacy] = useState(false);
   const [activeStoryOpen, setActiveStoryOpen] = useState(false);
@@ -206,9 +216,11 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
   const [messageNotice, setMessageNotice] = useState<string | null>(null);
   const [profileActionNotice, setProfileActionNotice] = useState<string | null>(null);
   const [blockBusyHandle, setBlockBusyHandle] = useState<string | null>(null);
+  const [savedPosts, setSavedPosts] = useState<MobilePost[]>(() => readSavedPosts());
   const gestureStartRef = useRef<{ x: number; y: number } | null>(null);
   const postListRef = useRef<HTMLDivElement | null>(null);
   const postCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const savedPostsRef = useRef<MobilePost[]>(readSavedPosts());
 
   const activeStories = useMemo(
     () => [...profile.stories].sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
@@ -239,9 +251,13 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
     const firstPendingIndex = activeStories.findIndex((story) => !story.hasSeen && !seenStoryIds.includes(story.id));
     return firstPendingIndex >= 0 ? firstPendingIndex : Math.max(0, activeStories.length - 1);
   }, [activeStories, seenStoryIds]);
+  const visiblePosts = useMemo(
+    () => (contentTab === "saved" ? savedPosts : profile.posts),
+    [contentTab, profile.posts, savedPosts]
+  );
   const currentOverlayIndex = useMemo(
-    () => Math.max(0, profile.posts.findIndex((post) => post.id === activePostId)),
-    [activePostId, profile.posts]
+    () => Math.max(0, visiblePosts.findIndex((post) => post.id === activePostId)),
+    [activePostId, visiblePosts]
   );
   const visiblePeople = useMemo(() => {
     const source = peopleSheet === "followers" ? profile.followers : profile.following;
@@ -305,6 +321,10 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
   }, [profile]);
 
   useEffect(() => {
+    savedPostsRef.current = savedPosts;
+  }, [savedPosts]);
+
+  useEffect(() => {
     setProfileEventIndex((current) => Math.min(current, Math.max(0, profileEvents.length - 1)));
   }, [profileEvents.length]);
 
@@ -319,6 +339,42 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
 
     return unsubscribe;
   }, [profile.profile.handle]);
+
+  useEffect(() => {
+    const cachedHomePosts =
+      typeof window !== "undefined"
+        ? (() => {
+            try {
+              const raw = window.sessionStorage.getItem(HOME_CACHE_KEY);
+              const parsed = raw ? (JSON.parse(raw) as { feedPosts?: MobilePost[] }) : null;
+              return Array.isArray(parsed?.feedPosts) ? parsed.feedPosts : [];
+            } catch {
+              return [] as MobilePost[];
+            }
+          })()
+        : [];
+
+    hydrateSavedPostsFromCandidates([...cachedHomePosts, ...profile.posts]);
+    setSavedPosts(readSavedPosts());
+  }, [profile.posts]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const syncSavedCollection = () => {
+      setSavedPosts(readSavedPosts());
+    };
+
+    window.addEventListener(SAVED_POSTS_UPDATED_EVENT, syncSavedCollection);
+    window.addEventListener("storage", syncSavedCollection);
+
+    return () => {
+      window.removeEventListener(SAVED_POSTS_UPDATED_EVENT, syncSavedCollection);
+      window.removeEventListener("storage", syncSavedCollection);
+    };
+  }, []);
 
   useEffect(() => {
     if (!postViewerOpenId || !postListRef.current) {
@@ -346,10 +402,17 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
       ...current,
       posts: current.posts.map((post) => (post.id === postId ? updater(post) : post))
     }));
+
+    const savedPost = savedPostsRef.current.find((post) => post.id === postId);
+    if (savedPost) {
+      const nextSavedPost = updater(savedPost);
+      setSavedPosts((current) => current.map((post) => (post.id === postId ? nextSavedPost : post)));
+      syncSavedPostSnapshot(nextSavedPost);
+    }
   }
 
   async function handleLike(postId: string) {
-    const current = profile.posts.find((post) => post.id === postId);
+    const current = profile.posts.find((post) => post.id === postId) ?? savedPostsRef.current.find((post) => post.id === postId);
     if (!current) {
       return;
     }
@@ -839,14 +902,44 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
         </section>
 
         <section className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-soft)]">Publicaciones</div>
-            <div className="text-xs font-semibold text-[var(--text-soft)]">{profile.posts.length}</div>
-          </div>
+          {profile.isViewer ? (
+            <div className="overflow-hidden rounded-[1.4rem] border border-[var(--line-soft)] bg-white/88">
+              <div className="grid grid-cols-2">
+                {[
+                  { value: "posts" as const, label: "Posts", Icon: Grid2x2 },
+                  { value: "saved" as const, label: "Guardadas", Icon: Bookmark }
+                ].map(({ value, label, Icon }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => {
+                      setContentTab(value as "posts" | "saved");
+                      setPostViewerOpenId(null);
+                      setActivePostId(null);
+                    }}
+                    className={cn(
+                      "flex items-center justify-center gap-2 border-b-2 px-4 py-3 text-sm font-semibold transition-colors",
+                      contentTab === value
+                        ? "border-[var(--text-main)] text-[var(--text-main)]"
+                        : "border-transparent text-[var(--text-soft)]"
+                    )}
+                  >
+                    <Icon className={cn("h-4 w-4", value === "saved" && contentTab === value && "fill-current")} />
+                    <span>{label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between">
+              <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-soft)]">Publicaciones</div>
+              <div className="text-xs font-semibold text-[var(--text-soft)]">{profile.posts.length}</div>
+            </div>
+          )}
 
-          {profile.canViewContent && profile.posts.length ? (
+          {profile.canViewContent && visiblePosts.length ? (
             <div className="grid grid-cols-3 gap-[2px] overflow-hidden rounded-[1.8rem] bg-[var(--line-soft)]">
-              {profile.posts.map((post) => (
+              {visiblePosts.map((post) => (
                 <button
                   key={post.id}
                   type="button"
@@ -869,6 +962,10 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                   )}
                 </button>
               ))}
+            </div>
+          ) : profile.isViewer && contentTab === "saved" ? (
+            <div className="rounded-[1.8rem] border border-dashed border-[var(--line-warm)] bg-white/80 px-5 py-10 text-center text-sm text-[var(--text-soft)]">
+              Aqui veras las publicaciones que guardes, como en Instagram.
             </div>
           ) : !profile.canViewContent ? (
             <div className="rounded-[1.8rem] border border-dashed border-[var(--line-warm)] bg-white/80 px-5 py-10 text-center text-sm text-[var(--text-soft)]">
@@ -1202,11 +1299,15 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                 <ArrowLeft className="h-5 w-5" />
               </button>
               <div className="text-center">
-                <div className="text-base font-black tracking-[-0.03em]">Publicaciones</div>
-                <div className="text-xs text-[var(--text-soft)]">@{profile.profile.handle}</div>
+                <div className="text-base font-black tracking-[-0.03em]">
+                  {contentTab === "saved" ? "Guardadas" : "Publicaciones"}
+                </div>
+                <div className="text-xs text-[var(--text-soft)]">
+                  {contentTab === "saved" ? "Solo tu puedes ver esta coleccion" : `@${profile.profile.handle}`}
+                </div>
               </div>
               <div className="rounded-full bg-white px-3 py-2 text-xs font-semibold text-[var(--text-soft)] shadow-sm">
-                {profile.posts.length ? `${currentOverlayIndex + 1}/${profile.posts.length}` : "0/0"}
+                {visiblePosts.length ? `${currentOverlayIndex + 1}/${visiblePosts.length}` : "0/0"}
               </div>
             </div>
 
@@ -1218,7 +1319,7 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                 let closestId = activePostId;
                 let smallestDistance = Number.POSITIVE_INFINITY;
 
-                for (const post of profile.posts) {
+                for (const post of visiblePosts) {
                   const node = postCardRefs.current[post.id];
                   if (!node) {
                     continue;
@@ -1236,7 +1337,7 @@ export function MobileProfileScreen({ backHref, initialProfile }: MobileProfileS
                 }
               }}
             >
-              {profile.posts.map((post) => (
+              {visiblePosts.map((post) => (
                 <div
                   key={post.id}
                   ref={(node) => {

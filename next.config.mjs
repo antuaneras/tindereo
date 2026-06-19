@@ -1,4 +1,5 @@
 const nextConfig = {
+  output: "standalone",
   experimental: {
     cpus: 1,
     workerThreads: process.platform === "win32",

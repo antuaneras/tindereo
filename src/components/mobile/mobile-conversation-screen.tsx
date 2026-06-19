@@ -135,6 +135,7 @@ export function MobileConversationScreen({
   const resolvedConversationId = initialConversation?.summary.id ?? conversationId;
   const [conversation, setConversation] = useState<MobileConversationDetail | null>(initialConversation);
   const [eventDetail, setEventDetail] = useState(initialEvent);
+  const [loadingEventDetail, setLoadingEventDetail] = useState(false);
   const [draft, setDraft] = useState("");
   const [replyRoot, setReplyRoot] = useState<MobileMessage | null>(null);
   const [pendingMessages, setPendingMessages] = useState<MobileMessage[]>([]);
@@ -199,8 +200,21 @@ export function MobileConversationScreen({
       return;
     }
 
-    const nextEventDetail = await fetchEventDetail(eventSlug);
-    setEventDetail(nextEventDetail);
+    setLoadingEventDetail(true);
+    try {
+      const nextEventDetail = await fetchEventDetail(eventSlug);
+      setEventDetail(nextEventDetail);
+    } finally {
+      setLoadingEventDetail(false);
+    }
+  }
+
+  async function handleOpenInfo() {
+    setInfoOpen(true);
+
+    if (activeConversation.summary.eventId && !eventDetail && !loadingEventDetail) {
+      await refreshEvent().catch(() => undefined);
+    }
   }
 
   useEffect(() => {
@@ -238,6 +252,14 @@ export function MobileConversationScreen({
 
     void refreshConversation().catch(() => undefined);
   }, [conversation, resolvedConversationId]);
+
+  useEffect(() => {
+    if (!conversation?.summary.eventId || eventDetail || loadingEventDetail) {
+      return;
+    }
+
+    void refreshEvent().catch(() => undefined);
+  }, [conversation?.summary.eventId, eventDetail, loadingEventDetail]);
 
   useEffect(() => {
     const unsubscribe = subscribeToMobileStream((event) => {
@@ -391,14 +413,14 @@ export function MobileConversationScreen({
             <ConversationAvatar src={activeConversation.summary.avatarUrl} label={conversationAvatarLabel} />
           )}
           <div className="min-w-0 flex-1">
-            <button type="button" onClick={() => setInfoOpen(true)} className="w-full text-left">
+            <button type="button" onClick={() => void handleOpenInfo()} className="w-full text-left">
               <div className="truncate text-lg font-black tracking-[-0.03em]">{activeConversation.summary.title}</div>
               <div className="truncate text-sm text-[var(--text-soft)]">{activeConversation.summary.subtitle}</div>
             </button>
           </div>
           <button
             type="button"
-            onClick={() => setInfoOpen(true)}
+            onClick={() => void handleOpenInfo()}
             className="flex h-11 w-11 items-center justify-center rounded-full bg-white/80 shadow-sm"
           >
             {activeConversation.summary.eventId ? <Info className="h-5 w-5" /> : <Users className="h-5 w-5" />}
@@ -617,6 +639,7 @@ export function MobileConversationScreen({
         <EventInfoSheet
           conversation={activeConversation}
           eventDetail={eventDetail}
+          loading={loadingEventDetail}
           onClose={() => setInfoOpen(false)}
           onRefresh={async () => {
             await refreshConversation();

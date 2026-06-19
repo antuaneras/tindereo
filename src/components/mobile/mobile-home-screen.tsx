@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { CalendarDays, Camera, Heart, RefreshCw } from "lucide-react";
 import { fetchMobileBootstrap, respondToEventInvite, subscribeToMobileStream } from "@/lib/mobile-api";
+import { hydrateSavedPostsFromCandidates } from "@/lib/mobile-saved-posts";
 import { formatMobileDateTime } from "@/lib/mobile-shared";
 import { PostCard, StoryStrip } from "@/components/mobile/mobile-feed";
 import type { MobileBootstrapPayload, MobileEventInvite } from "@/lib/mobile-types";
@@ -84,6 +85,14 @@ export function MobileHomeScreen({ initialData }: { initialData?: MobileBootstra
     if (data) {
       writeHomeCache(data);
     }
+  }, [data]);
+
+  useEffect(() => {
+    if (!data?.feedPosts.length) {
+      return;
+    }
+
+    hydrateSavedPostsFromCandidates(data.feedPosts);
   }, [data]);
 
   useEffect(() => {
